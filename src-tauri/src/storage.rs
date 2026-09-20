@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::types::StoredAccount;
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AccountStore {
     #[serde(default)]
     pub accounts: Vec<StoredAccount>,
@@ -32,7 +32,11 @@ pub fn save_atomic(path: &Path, store: &AccountStore) -> Result<(), String> {
     let content = serde_json::to_vec_pretty(store)
         .map_err(|error| format!("Unable to serialize account store: {error}"))?;
 
+    #[cfg(unix)]
     let mut options = OpenOptions::new();
+
+    #[cfg(not(unix))]
+    let options = OpenOptions::new();
 
     #[cfg(unix)]
     {
@@ -91,6 +95,8 @@ mod tests {
                 id: "one".into(),
                 label: "Personal".into(),
                 kind: AccountKind::ChatGpt,
+                email: Some("user@example.com".into()),
+                plan_type: Some("pro".into()),
                 credential: credential.clone(),
             }],
         };
@@ -113,6 +119,8 @@ mod tests {
                 id: "two".into(),
                 label: "Work".into(),
                 kind: AccountKind::ChatGpt,
+                email: Some("work@example.com".into()),
+                plan_type: Some("plus".into()),
                 credential: json!({"tokens": {"access_token": "new"}}),
             }],
         };
@@ -121,6 +129,31 @@ mod tests {
         let loaded = load(&path).expect("load replacement");
         assert_eq!(loaded.accounts.len(), 1);
         assert_eq!(loaded.accounts[0].label, "Work");
+
+        let _ = fs::remove_dir_all(path.parent().expect("parent"));
+    }
+
+    #[test]
+    fn loads_accounts_saved_before_optional_metadata_existed() {
+        let path = temp_store_path("legacy-metadata");
+        fs::create_dir_all(path.parent().expect("parent")).expect("create parent");
+        fs::write(
+            &path,
+            r#"{
+                "accounts": [{
+                    "id": "legacy",
+                    "label": "Legacy",
+                    "kind": "chat_gpt",
+                    "credential": {"tokens": {"access_token": "secret"}}
+                }]
+            }"#,
+        )
+        .expect("write legacy store");
+
+        let loaded = load(&path).expect("load legacy store");
+        assert_eq!(loaded.accounts.len(), 1);
+        assert_eq!(loaded.accounts[0].email, None);
+        assert_eq!(loaded.accounts[0].plan_type, None);
 
         let _ = fs::remove_dir_all(path.parent().expect("parent"));
     }

@@ -78,7 +78,7 @@ fn monitor_oauth(
             return Err(error);
         }
 
-        let account_result = server.account_read(2)?;
+        let account_result = server.account_read(2, false)?;
         let metadata = account_metadata(&account_result)?;
         let credential = profile.read_auth()?;
         let label = metadata
@@ -105,13 +105,17 @@ pub fn import_json(
 ) -> Result<AccountView, String> {
     let credential: Value =
         serde_json::from_str(raw_json).map_err(|error| format!("Invalid auth JSON: {error}"))?;
+    if !credential.is_object() {
+        return Err("Invalid auth JSON: expected a JSON object".to_string());
+    }
 
     let profile = TempCodexHome::create()?;
     profile.write_auth(&credential)?;
 
     let mut server = AppServer::start(&profile.path)?;
-    let result = server.account_read(1)?;
+    let result = server.account_read(1, true)?;
     let metadata = account_metadata(&result)?;
+    let credential = profile.read_auth()?;
     let label = clean_label(label)
         .or_else(|| metadata.email.clone())
         .unwrap_or_else(|| "Imported account".to_string());
@@ -143,7 +147,7 @@ pub fn import_api_key(
     }))?;
     server.read_response(1)?;
 
-    let result = server.account_read(2)?;
+    let result = server.account_read(2, false)?;
     let metadata = account_metadata(&result)?;
     let credential = profile.read_auth()?;
 
@@ -160,4 +164,29 @@ fn clean_label(label: Option<String>) -> Option<String> {
     label
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_malformed_json_before_starting_codex() {
+        let path =
+            std::env::temp_dir().join(format!("gswitch-invalid-{}.json", uuid::Uuid::new_v4()));
+        let state = AppState::new(path).expect("state");
+
+        let error = import_json(&state, "{not valid", None).expect_err("invalid JSON");
+        assert!(error.starts_with("Invalid auth JSON:"));
+    }
+
+    #[test]
+    fn rejects_non_object_json_before_starting_codex() {
+        let path =
+            std::env::temp_dir().join(format!("gswitch-invalid-{}.json", uuid::Uuid::new_v4()));
+        let state = AppState::new(path).expect("state");
+
+        let error = import_json(&state, "[]", None).expect_err("invalid document");
+        assert_eq!(error, "Invalid auth JSON: expected a JSON object");
+    }
 }

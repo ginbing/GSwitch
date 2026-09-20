@@ -100,11 +100,11 @@ impl AppServer {
         }
     }
 
-    pub fn account_read(&mut self, id: i64) -> Result<Value, String> {
+    pub fn account_read(&mut self, id: i64, refresh_token: bool) -> Result<Value, String> {
         self.send(json!({
             "method": "account/read",
             "id": id,
-            "params": { "refreshToken": false }
+            "params": { "refreshToken": refresh_token }
         }))?;
         self.read_response(id)
     }
@@ -124,21 +124,32 @@ pub struct TempCodexHome {
 impl TempCodexHome {
     pub fn create() -> Result<Self, String> {
         let path = std::env::temp_dir().join(format!("gswitch-{}", Uuid::new_v4()));
-        fs::create_dir_all(&path)
+        fs::create_dir(&path)
             .map_err(|error| format!("Unable to create temporary Codex profile: {error}"))?;
-        fs::write(
-            path.join("config.toml"),
-            "cli_auth_credentials_store = \"file\"\n",
-        )
-        .map_err(|error| format!("Unable to configure temporary Codex profile: {error}"))?;
+
+        let configure = || -> Result<(), String> {
+            set_private_permissions(&path, 0o700)?;
+            let config_path = path.join("config.toml");
+            fs::write(&config_path, "cli_auth_credentials_store = \"file\"\n")
+                .map_err(|error| format!("Unable to configure temporary Codex profile: {error}"))?;
+            set_private_permissions(&config_path, 0o600)
+        };
+
+        if let Err(error) = configure() {
+            let _ = fs::remove_dir_all(&path);
+            return Err(error);
+        }
+
         Ok(Self { path })
     }
 
     pub fn write_auth(&self, credential: &Value) -> Result<(), String> {
         let bytes = serde_json::to_vec_pretty(credential)
             .map_err(|error| format!("Unable to serialize imported credentials: {error}"))?;
-        fs::write(self.path.join("auth.json"), bytes)
-            .map_err(|error| format!("Unable to write temporary auth file: {error}"))
+        let path = self.path.join("auth.json");
+        fs::write(&path, bytes)
+            .map_err(|error| format!("Unable to write temporary auth file: {error}"))?;
+        set_private_permissions(&path, 0o600)
     }
 
     pub fn read_auth(&self) -> Result<Value, String> {
@@ -148,6 +159,23 @@ impl TempCodexHome {
         serde_json::from_str(&content)
             .map_err(|error| format!("Invalid Codex auth JSON at {}: {error}", path.display()))
     }
+}
+
+#[cfg(unix)]
+fn set_private_permissions(path: &Path, mode: u32) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut permissions = fs::metadata(path)
+        .map_err(|error| format!("Unable to inspect temporary credential path: {error}"))?
+        .permissions();
+    permissions.set_mode(mode);
+    fs::set_permissions(path, permissions)
+        .map_err(|error| format!("Unable to protect temporary credential path: {error}"))
+}
+
+#[cfg(not(unix))]
+fn set_private_permissions(_path: &Path, _mode: u32) -> Result<(), String> {
+    Ok(())
 }
 
 impl Drop for TempCodexHome {
@@ -216,5 +244,18 @@ mod tests {
     fn rejects_missing_account() {
         let value = json!({"account": null, "requiresOpenaiAuth": true});
         assert!(account_metadata(&value).is_err());
+    }
+
+    #[test]
+    fn temporary_profile_round_trips_complete_credential_document() {
+        let profile = TempCodexHome::create().expect("profile");
+        let credential = json!({
+            "tokens": {"access_token": "secret", "refresh_token": "rotate-me"},
+            "auth_mode": "chatgpt",
+            "future_field": {"preserve": true}
+        });
+
+        profile.write_auth(&credential).expect("write auth");
+        assert_eq!(profile.read_auth().expect("read auth"), credential);
     }
 }
