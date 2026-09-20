@@ -186,6 +186,57 @@ pub struct ResetCreditOutcome {
     pub refresh_warning: Option<String>,
 }
 
+/// A short-lived, in-memory Wake result. Wake is intentionally not a job
+/// system: completed operations may disappear when the app restarts or when a
+/// later operation replaces them.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WakeResultKind {
+    AlreadyActive,
+    WindowStarted,
+    RequestCompletedUnconfirmed,
+    NeedsModelSelection,
+    Failed,
+    Skipped,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WakeAccountResult {
+    pub account_id: String,
+    pub label: String,
+    pub result: WakeResultKind,
+    pub message: String,
+    /// Only model names suitable for an explicit user choice. The automatic
+    /// policy never falls back to this list by itself.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub available_models: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WakeOperationStatus {
+    Running,
+    Completed,
+    Cancelled,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WakeOperationView {
+    pub id: String,
+    pub status: WakeOperationStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_account_id: Option<String>,
+    #[serde(default)]
+    pub results: Vec<WakeAccountResult>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WakeStart {
+    pub operation_id: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct QuotaBucket {
     pub limit_id: String,
