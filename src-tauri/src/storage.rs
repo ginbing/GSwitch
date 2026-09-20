@@ -1,8 +1,4 @@
-use std::{
-    fs,
-    io::Write,
-    path::Path,
-};
+use std::{fs, io::Write, path::Path};
 
 use atomic_write_file::OpenOptions;
 use serde::{Deserialize, Serialize};
@@ -47,9 +43,12 @@ pub fn save_atomic(path: &Path, store: &AccountStore) -> Result<(), String> {
         StdOpenOptionsExt::mode(&mut options, 0o600);
     }
 
-    let mut file = options
-        .open(path)
-        .map_err(|error| format!("Unable to open {} for atomic write: {error}", path.display()))?;
+    let mut file = options.open(path).map_err(|error| {
+        format!(
+            "Unable to open {} for atomic write: {error}",
+            path.display()
+        )
+    })?;
 
     file.write_all(&content)
         .map_err(|error| format!("Unable to write {}: {error}", path.display()))?;
