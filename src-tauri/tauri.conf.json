@@ -13,10 +13,10 @@
     "windows": [
       {
         "title": "GSwitch",
-        "width": 760,
-        "height": 620,
-        "minWidth": 620,
-        "minHeight": 480,
+        "width": 1100,
+        "height": 700,
+        "minWidth": 900,
+        "minHeight": 580,
         "resizable": true
       }
     ],

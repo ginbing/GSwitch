@@ -1,7 +1,14 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  AccountView,
+  ImportResult,
+  LiveAccountView,
+  OAuthLoginStart,
+  OAuthLoginStatus,
   QuotaView,
   ResetCreditOutcome,
+  RuntimeInfo,
+  SwitchOutcome,
   WakeOperationView,
   WakeStart,
 } from "./types";
@@ -9,6 +16,30 @@ import type {
 // Keep provider payloads on the Rust side. The WebView only deals with this
 // small, display-oriented capacity view.
 export const api = {
+  runtimeInfo: () => invoke<RuntimeInfo>("get_runtime_info"),
+  listAccounts: () => invoke<AccountView[]>("list_accounts"),
+  liveAccount: () => invoke<LiveAccountView>("get_live_account_state"),
+  startOAuth: () => invoke<OAuthLoginStart>("start_oauth_login"),
+  oauthStatus: (loginId: string) =>
+    invoke<OAuthLoginStatus>("get_oauth_login_status", { loginId }),
+  cancelOAuth: (loginId: string) =>
+    invoke<void>("cancel_oauth_login", { loginId }),
+  openOAuth: (loginId: string) =>
+    invoke<void>("open_oauth_login", { loginId }),
+  importAuthJson: (rawJson: string, label?: string) =>
+    invoke<AccountView>("import_auth_json", { rawJson, label }),
+  importAuthFile: (path: string) =>
+    invoke<ImportResult>("import_auth_file", { path }),
+  importApiKey: (apiKey: string, label?: string) =>
+    invoke<AccountView>("import_api_key", { apiKey, label }),
+  saveCurrentAccount: () => invoke<AccountView>("save_current_account"),
+  enableAccountSwitching: () =>
+    invoke<boolean>("enable_account_switching"),
+  switchAccount: (targetId: string) =>
+    invoke<SwitchOutcome>("switch_account", { targetId }),
+  recoverPendingSwitch: () => invoke<void>("recover_pending_switch"),
+  removeSavedAccount: (id: string) =>
+    invoke<void>("remove_saved_account", { id }),
   accountQuota: (id: string) => invoke<QuotaView>("get_account_quota", { id }),
   refreshAccountQuota: (id: string) => invoke<QuotaView>("refresh_account_quota", { id }),
   redeemEarliestResetCredit: (id: string) =>

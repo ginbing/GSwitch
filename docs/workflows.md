@@ -30,6 +30,14 @@ runtime, and require the validated identity to match the imported document.
 Pasted JSON is transient form input and is cleared after submission. A selected
 or dropped file is read by Rust; its contents are not returned to the WebView.
 
+GSwitch can import a complete official Codex auth document and explicitly
+user-selected public exports from Cockpit Tools, Sub2API, and CPA. It never
+searches for, reads, or decrypts Cockpit Tools private application storage.
+Portable exports are converted only to the minimum complete Codex credential
+shape needed for validation. Cockpit-specific private metadata such as 2FA
+secrets, passwords, phone fields, notes, labels, tags, and mail settings is
+dropped rather than copied into GSwitch.
+
 ### API key
 
 Use the official Codex login surface in an isolated profile. The key field is

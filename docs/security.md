@@ -13,6 +13,10 @@ product behavior, not optional implementation polish.
   submission and must be cleared immediately afterward.
 - A selected or dropped auth file is read in Rust. Its contents are not placed
   in WebView storage.
+- Import support for Cockpit Tools, Sub2API, and CPA applies only to a file the
+  user explicitly selects or drops. GSwitch never scans their private storage.
+  When a portable Cockpit export includes non-Codex account metadata, it drops
+  password, 2FA, note, phone, tag, group, provider, and mail-setting fields.
 - Do not write credentials, raw provider payloads, reset-credit IDs, or account
   secrets to logs, telemetry, issue-report output, or user-facing errors.
 - Credential-bearing files use atomic replacement and restrictive permissions

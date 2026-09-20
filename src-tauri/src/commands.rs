@@ -1,10 +1,11 @@
-use tauri::State;
+use tauri::{AppHandle, State};
+use tauri_plugin_opener::OpenerExt;
 
 use crate::{
     accounts::AppState,
     codex, intake, quota, switching,
     types::{
-        AccountView, LiveAccountView, OAuthLoginStart, OAuthLoginStatus, QuotaView,
+        AccountView, ImportResult, LiveAccountView, OAuthLoginStart, OAuthLoginStatus, QuotaView,
         ResetCreditOutcome, RuntimeInfo, SwitchOutcome, WakeOperationView, WakeStart,
     },
     wake,
@@ -34,12 +35,34 @@ pub fn get_oauth_login_status(
 }
 
 #[tauri::command]
+pub fn cancel_oauth_login(state: State<'_, AppState>, login_id: String) -> Result<(), String> {
+    intake::cancel_oauth(state.inner(), &login_id)
+}
+
+#[tauri::command]
+pub fn open_oauth_login(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    login_id: String,
+) -> Result<(), String> {
+    let url = state.oauth_url(&login_id)?;
+    app.opener()
+        .open_url(&url, None::<&str>)
+        .map_err(|_| "Unable to open the OAuth URL in your browser".to_string())
+}
+
+#[tauri::command]
 pub fn import_auth_json(
     state: State<'_, AppState>,
     raw_json: String,
     label: Option<String>,
 ) -> Result<AccountView, String> {
     intake::import_json(state.inner(), &raw_json, label)
+}
+
+#[tauri::command]
+pub fn import_auth_file(state: State<'_, AppState>, path: String) -> Result<ImportResult, String> {
+    intake::import_file(state.inner(), &path)
 }
 
 #[tauri::command]

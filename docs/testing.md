@@ -60,7 +60,9 @@ as applicable:
 - earliest eligible unexpired reset-credit selection and idempotent outcomes;
 - Wake model allowlisting, low reasoning effort, quota guards, and confirmation;
 - frontend clearing secret inputs, confirming reset consumption, and disabling
-  conflicting actions.
+  conflicting actions;
+- browser-login cancellation, selected-file import boundaries, account-space
+  empty state, quota stale state, and visible Wake progress.
 
 Prefer behavior assertions over broad snapshots. Mock protocol payloads prove
 normalization and local policy; they do not prove the current remote provider.
