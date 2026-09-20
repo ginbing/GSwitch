@@ -39,7 +39,7 @@ pub fn credential_store_mode(codex_home: &Path) -> CredentialStoreMode {
             continue;
         }
 
-        let value = value.trim().trim_matches(['"', ''']);
+        let value = value.trim().trim_matches('"');
         return match value {
             "file" => CredentialStoreMode::File,
             "keyring" => CredentialStoreMode::Keyring,
