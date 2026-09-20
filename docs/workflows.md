@@ -81,9 +81,18 @@ profile. GSwitch normalizes the Codex bucket into five-hour and weekly windows
 by the durations supplied by the provider, while retaining other buckets as
 other. Missing or malformed values remain unknown.
 
-A cached snapshot is labeled stale after its freshness window. API-key accounts
-show quota as not applicable. Quota is operational account state, not usage
-analytics.
+The supported minimum is Codex 0.144.5. GSwitch sends its rate-limit request
+with a null parameter payload for that version and retries once with an empty
+object only when a newer server explicitly rejects the parameter shape. It
+never treats a cached `account/read` result as proof that a credential can reach
+the provider.
+
+An isolated read can rotate credentials. GSwitch verifies the returned document
+still belongs to the saved identity, then atomically stores it with the quota
+snapshot; a failed store write retains protected recovery data rather than
+discarding the refreshed credential. A snapshot is fresh for five minutes and
+then visibly stale. API-key accounts show quota as not applicable. Quota is
+operational account state, not usage analytics.
 
 ## Reset credits
 

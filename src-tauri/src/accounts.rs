@@ -75,6 +75,19 @@ impl AppState {
             .collect())
     }
 
+    pub fn account_by_id(&self, id: &str) -> Result<StoredAccount, String> {
+        let store = self
+            .store
+            .lock()
+            .map_err(|_| "Account store lock is unavailable".to_string())?;
+        store
+            .accounts
+            .iter()
+            .find(|account| account.id == id)
+            .cloned()
+            .ok_or_else(|| "The selected account is no longer saved".to_string())
+    }
+
     pub fn account_by_identity(
         &self,
         identity: &AccountIdentity,
@@ -187,6 +200,8 @@ impl AppState {
                 email: draft.email,
                 plan_type: draft.plan_type,
                 identity: Some(draft.identity),
+                // Reauthentication invalidates a prior capacity snapshot.
+                quota: None,
                 credential: draft.credential,
             }
         } else {
@@ -197,6 +212,7 @@ impl AppState {
                 email: draft.email,
                 plan_type: draft.plan_type,
                 identity: Some(draft.identity),
+                quota: None,
                 credential: draft.credential,
             }
         };
@@ -263,6 +279,33 @@ impl AppState {
             .ok_or_else(|| "The selected account is no longer saved".to_string())?;
         let mut candidate = store.clone();
         candidate.accounts[index].credential = credential;
+        storage::save_atomic(&self.store_path, &candidate)?;
+        *store = candidate;
+        Ok(())
+    }
+
+    /// Store the complete refreshed credential and its accompanying quota in
+    /// one atomic account-store replacement. The caller has already verified
+    /// that the refreshed document still belongs to this profile.
+    pub fn update_credential_and_quota_under_operation(
+        &self,
+        _operation: &OperationGuard<'_>,
+        id: &str,
+        credential: Value,
+        quota: crate::types::QuotaSnapshot,
+    ) -> Result<(), String> {
+        let mut store = self
+            .store
+            .lock()
+            .map_err(|_| "Account store lock is unavailable".to_string())?;
+        let index = store
+            .accounts
+            .iter()
+            .position(|account| account.id == id)
+            .ok_or_else(|| "The selected account is no longer saved".to_string())?;
+        let mut candidate = store.clone();
+        candidate.accounts[index].credential = credential;
+        candidate.accounts[index].quota = Some(quota);
         storage::save_atomic(&self.store_path, &candidate)?;
         *store = candidate;
         Ok(())

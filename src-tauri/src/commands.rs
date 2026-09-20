@@ -2,9 +2,10 @@ use tauri::State;
 
 use crate::{
     accounts::AppState,
-    codex, intake, switching,
+    codex, intake, quota, switching,
     types::{
-        AccountView, LiveAccountView, OAuthLoginStart, OAuthLoginStatus, RuntimeInfo, SwitchOutcome,
+        AccountView, LiveAccountView, OAuthLoginStart, OAuthLoginStatus, QuotaView, RuntimeInfo,
+        SwitchOutcome,
     },
 };
 
@@ -80,4 +81,14 @@ pub fn recover_pending_switch(state: State<'_, AppState>) -> Result<(), String> 
 #[tauri::command]
 pub fn remove_saved_account(state: State<'_, AppState>, id: String) -> Result<(), String> {
     switching::remove_saved_account(state.inner(), &id)
+}
+
+#[tauri::command]
+pub fn get_account_quota(state: State<'_, AppState>, id: String) -> Result<QuotaView, String> {
+    quota::cached_quota(state.inner(), &id)
+}
+
+#[tauri::command]
+pub fn refresh_account_quota(state: State<'_, AppState>, id: String) -> Result<QuotaView, String> {
+    quota::refresh_quota(state.inner(), &id)
 }
