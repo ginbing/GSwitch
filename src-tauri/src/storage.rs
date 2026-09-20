@@ -1,10 +1,10 @@
 use std::{
-    fs::{self, File, OpenOptions},
+    fs,
     io::Write,
-    path::{Path, PathBuf},
-    time::{SystemTime, UNIX_EPOCH},
+    path::Path,
 };
 
+use atomic_write_file::OpenOptions;
 use serde::{Deserialize, Serialize};
 
 use crate::types::StoredAccount;
@@ -36,61 +36,26 @@ pub fn save_atomic(path: &Path, store: &AccountStore) -> Result<(), String> {
     let content = serde_json::to_vec_pretty(store)
         .map_err(|error| format!("Unable to serialize account store: {error}"))?;
 
-    let suffix = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|error| error.to_string())?
-        .as_nanos();
-    let temp_path = temp_path(path, suffix);
-
-    let mut temp = open_private_temp(&temp_path)?;
-    temp.write_all(&content)
-        .map_err(|error| format!("Unable to write {}: {error}", temp_path.display()))?;
-    temp.sync_all()
-        .map_err(|error| format!("Unable to sync {}: {error}", temp_path.display()))?;
-    drop(temp);
-
-    if let Err(error) = fs::rename(&temp_path, path) {
-        let _ = fs::remove_file(&temp_path);
-        return Err(format!("Unable to replace {}: {error}", path.display()));
-    }
-
-    sync_parent(parent)?;
-    Ok(())
-}
-
-fn open_private_temp(path: &Path) -> Result<File, String> {
     let mut options = OpenOptions::new();
-    options.write(true).create_new(true);
 
     #[cfg(unix)]
     {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
+        use atomic_write_file::unix::OpenOptionsExt as AtomicOpenOptionsExt;
+        use std::os::unix::fs::OpenOptionsExt as StdOpenOptionsExt;
+
+        AtomicOpenOptionsExt::preserve_mode(&mut options, false);
+        StdOpenOptionsExt::mode(&mut options, 0o600);
     }
 
-    options
+    let mut file = options
         .open(path)
-        .map_err(|error| format!("Unable to create {}: {error}", path.display()))
-}
+        .map_err(|error| format!("Unable to open {} for atomic write: {error}", path.display()))?;
 
-#[cfg(unix)]
-fn sync_parent(parent: &Path) -> Result<(), String> {
-    File::open(parent)
-        .and_then(|directory| directory.sync_all())
-        .map_err(|error| format!("Unable to sync {}: {error}", parent.display()))
-}
+    file.write_all(&content)
+        .map_err(|error| format!("Unable to write {}: {error}", path.display()))?;
 
-#[cfg(not(unix))]
-fn sync_parent(_parent: &Path) -> Result<(), String> {
-    Ok(())
-}
-
-fn temp_path(path: &Path, suffix: u128) -> PathBuf {
-    let file_name = path
-        .file_name()
-        .and_then(|value| value.to_str())
-        .unwrap_or("accounts.json");
-    path.with_file_name(format!(".{file_name}.{suffix}.tmp"))
+    file.commit()
+        .map_err(|error| format!("Unable to atomically replace {}: {error}", path.display()))
 }
 
 #[cfg(test)]
@@ -98,18 +63,25 @@ mod tests {
     use super::*;
     use crate::types::{AccountKind, StoredAccount};
     use serde_json::json;
-    use std::env;
+    use std::{
+        env,
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
-    #[test]
-    fn round_trips_complete_credential_document() {
+    fn temp_store_path(name: &str) -> std::path::PathBuf {
         let root = env::temp_dir().join(format!(
-            "gswitch-store-{}",
+            "gswitch-{name}-{}",
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .expect("clock")
                 .as_nanos()
         ));
-        let path = root.join("accounts.json");
+        root.join("accounts.json")
+    }
+
+    #[test]
+    fn round_trips_complete_credential_document() {
+        let path = temp_store_path("roundtrip");
         let credential = json!({
             "tokens": {"access_token": "secret", "refresh_token": "rotate-me"},
             "auth_mode": "chatgpt",
@@ -128,19 +100,12 @@ mod tests {
         let loaded = load(&path).expect("load");
         assert_eq!(loaded.accounts[0].credential, credential);
 
-        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_dir_all(path.parent().expect("parent"));
     }
 
     #[test]
     fn replaces_existing_store() {
-        let root = env::temp_dir().join(format!(
-            "gswitch-replace-{}",
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("clock")
-                .as_nanos()
-        ));
-        let path = root.join("accounts.json");
+        let path = temp_store_path("replace");
 
         save_atomic(&path, &AccountStore::default()).expect("first save");
 
@@ -158,6 +123,6 @@ mod tests {
         assert_eq!(loaded.accounts.len(), 1);
         assert_eq!(loaded.accounts[0].label, "Work");
 
-        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_dir_all(path.parent().expect("parent"));
     }
 }
