@@ -4,6 +4,7 @@ mod codex;
 mod commands;
 mod identity;
 mod intake;
+mod quota;
 mod runtime;
 mod storage;
 mod switching;
@@ -32,7 +33,9 @@ pub fn run() {
             commands::enable_account_switching,
             commands::switch_account,
             commands::recover_pending_switch,
-            commands::remove_saved_account
+            commands::remove_saved_account,
+            commands::get_account_quota,
+            commands::refresh_account_quota
         ])
         .run(tauri::generate_context!())
         .expect("error while running GSwitch");

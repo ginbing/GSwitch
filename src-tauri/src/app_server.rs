@@ -17,6 +17,23 @@ use crate::storage;
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(15);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
+#[derive(Debug)]
+enum CallError {
+    Transport(String),
+    Rejected { code: Option<i64> },
+    MissingResult,
+}
+
+impl CallError {
+    fn sanitized(self) -> String {
+        match self {
+            Self::Transport(message) => message,
+            Self::Rejected { .. } => "Codex App Server rejected the request".to_string(),
+            Self::MissingResult => "Codex App Server response is missing a result".to_string(),
+        }
+    }
+}
+
 pub struct AppServer {
     child: Child,
     stdin: ChildStdin,
@@ -72,8 +89,20 @@ impl AppServer {
         params: Value,
         timeout: Duration,
     ) -> Result<Value, String> {
-        self.send(json!({"method": method, "id": id, "params": params}))?;
-        self.read_response_with_timeout(id, timeout)
+        self.call_protocol(id, method, params, timeout)
+            .map_err(CallError::sanitized)
+    }
+
+    fn call_protocol(
+        &mut self,
+        id: i64,
+        method: &str,
+        params: Value,
+        timeout: Duration,
+    ) -> Result<Value, CallError> {
+        self.send(json!({"method": method, "id": id, "params": params}))
+            .map_err(CallError::Transport)?;
+        self.read_response_protocol(id, timeout)
     }
 
     pub fn send(&mut self, message: Value) -> Result<(), String> {
@@ -88,20 +117,24 @@ impl AppServer {
             .map_err(|_| "Unable to flush a Codex App Server request".to_string())
     }
 
-    pub fn read_response_with_timeout(
-        &mut self,
-        id: i64,
-        timeout: Duration,
-    ) -> Result<Value, String> {
+    fn read_response_protocol(&mut self, id: i64, timeout: Duration) -> Result<Value, CallError> {
         let deadline = Instant::now() + timeout;
         loop {
             if let Some(message) = self.take_pending(|message| response_id(message) == Some(id)) {
-                return response_result(message);
+                return response_result_protocol(message);
             }
 
-            let message = self.next_message(remaining(deadline)?)?;
+            let message = self
+                .next_message(remaining(deadline).map_err(CallError::Transport)?)
+                .map_err(CallError::Transport)?;
+            if self
+                .reject_unsupported_server_request(&message)
+                .map_err(CallError::Transport)?
+            {
+                continue;
+            }
             if response_id(&message) == Some(id) {
-                return response_result(message);
+                return response_result_protocol(message);
             }
             self.pending_messages.push_back(message);
         }
@@ -148,6 +181,23 @@ impl AppServer {
         self.call(id, "config/read", json!({}), REQUEST_TIMEOUT)
     }
 
+    /// Codex 0.144.5 accepts a null parameter payload. Newer servers that
+    /// explicitly reject that shape get one compatibility retry with `{}`.
+    pub fn rate_limits_read(&mut self, id: i64) -> Result<Value, String> {
+        match self.call_protocol(id, "account/rateLimits/read", Value::Null, REQUEST_TIMEOUT) {
+            Ok(value) => Ok(value),
+            Err(error) if should_retry_rate_limits_with_empty_object(&error) => self
+                .call_protocol(
+                    id + 1,
+                    "account/rateLimits/read",
+                    json!({}),
+                    REQUEST_TIMEOUT,
+                )
+                .map_err(CallError::sanitized),
+            Err(error) => Err(error.sanitized()),
+        }
+    }
+
     pub fn config_value_write(
         &mut self,
         id: i64,
@@ -176,6 +226,25 @@ impl AppServer {
 
     fn next_message(&mut self, timeout: Duration) -> Result<Value, String> {
         receive_message(&self.messages, timeout)
+    }
+
+    fn reject_unsupported_server_request(&mut self, message: &Value) -> Result<bool, String> {
+        if message.get("method").is_none()
+            || message.get("id").is_none()
+            || message.get("result").is_some()
+            || message.get("error").is_some()
+        {
+            return Ok(false);
+        }
+        let id = message.get("id").cloned().unwrap_or(Value::Null);
+        self.send(json!({
+            "id": id,
+            "error": {
+                "code": -32601,
+                "message": "GSwitch does not expose interactive App Server handlers"
+            }
+        }))?;
+        Ok(true)
     }
 }
 
@@ -377,14 +446,30 @@ fn response_id(message: &Value) -> Option<i64> {
     message.get("id").and_then(Value::as_i64)
 }
 
+fn should_retry_rate_limits_with_empty_object(error: &CallError) -> bool {
+    matches!(
+        error,
+        CallError::Rejected {
+            code: Some(-32600 | -32602)
+        }
+    )
+}
+
+#[cfg(test)]
 fn response_result(message: Value) -> Result<Value, String> {
-    if message.get("error").is_some() {
-        return Err("Codex App Server rejected the request".to_string());
+    response_result_protocol(message).map_err(CallError::sanitized)
+}
+
+fn response_result_protocol(message: Value) -> Result<Value, CallError> {
+    if let Some(error) = message.get("error") {
+        return Err(CallError::Rejected {
+            code: error.get("code").and_then(Value::as_i64),
+        });
     }
     message
         .get("result")
         .cloned()
-        .ok_or_else(|| "Codex App Server response is missing a result".to_string())
+        .ok_or(CallError::MissingResult)
 }
 
 pub struct TempCodexHome {
@@ -526,6 +611,22 @@ mod tests {
         .expect_err("error response");
         assert_eq!(error, "Codex App Server rejected the request");
         assert!(!error.contains("secret-token"));
+    }
+
+    #[test]
+    fn recognizes_only_parameter_validation_errors_for_rate_limit_fallback() {
+        assert!(should_retry_rate_limits_with_empty_object(
+            &CallError::Rejected { code: Some(-32600) }
+        ));
+        assert!(should_retry_rate_limits_with_empty_object(
+            &CallError::Rejected { code: Some(-32602) }
+        ));
+        assert!(!should_retry_rate_limits_with_empty_object(
+            &CallError::Rejected { code: Some(-32601) }
+        ));
+        assert!(!should_retry_rate_limits_with_empty_object(
+            &CallError::Transport("network".to_string(),)
+        ));
     }
 
     #[test]

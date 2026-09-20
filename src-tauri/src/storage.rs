@@ -141,6 +141,7 @@ mod tests {
                 user_id: "user".into(),
                 workspace_id: Some("workspace".into()),
             }),
+            quota: None,
             credential,
         }
     }
@@ -209,6 +210,7 @@ mod tests {
         assert_eq!(loaded.version, STORE_VERSION);
         assert_eq!(loaded.accounts.len(), 1);
         assert_eq!(loaded.accounts[0].identity, None);
+        assert_eq!(loaded.accounts[0].quota, None);
 
         let _ = fs::remove_dir_all(path.parent().expect("parent"));
     }

@@ -34,6 +34,8 @@ pub struct StoredAccount {
     pub plan_type: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub identity: Option<AccountIdentity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quota: Option<QuotaSnapshot>,
     pub credential: Value,
 }
 
@@ -101,6 +103,80 @@ pub struct LiveAccountView {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SwitchOutcome {
     pub account: AccountView,
+}
+
+/// A provider-reported capacity snapshot. It is operational state, not usage
+/// analytics: credentials and raw App Server payloads stay in Rust.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct QuotaSnapshot {
+    pub fetched_at_unix_ms: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ordinary_usage_allowed: Option<bool>,
+    #[serde(default)]
+    pub buckets: Vec<QuotaBucket>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct QuotaBucket {
+    pub limit_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rate_limit_reached_type: Option<String>,
+    pub kind: QuotaBucketKind,
+    #[serde(default)]
+    pub windows: Vec<QuotaWindow>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum QuotaBucketKind {
+    Codex,
+    Other,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct QuotaWindow {
+    pub kind: QuotaWindowKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub used_percent: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remaining_percent: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_duration_mins: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resets_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum QuotaWindowKind {
+    FiveHour,
+    Weekly,
+    Other,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum QuotaStatus {
+    Fresh,
+    Stale,
+    Unknown,
+    NotApplicable,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct QuotaView {
+    pub account_id: String,
+    pub status: QuotaStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot: Option<QuotaSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
