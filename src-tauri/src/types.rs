@@ -47,6 +47,22 @@ pub struct AccountView {
     pub active: bool,
 }
 
+#[derive(Clone, Serialize, Deserialize)]
+pub struct PendingSwitch {
+    pub target_id: String,
+    pub target_identity: AccountIdentity,
+    pub previous_active_id: Option<String>,
+    pub previous_auth: Option<Value>,
+    pub stage: PendingSwitchStage,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PendingSwitchStage {
+    Prepared,
+    Verified,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CredentialStoreMode {
@@ -62,6 +78,29 @@ pub struct RuntimeInfo {
     pub codex_home: String,
     pub auth_file_exists: bool,
     pub credential_store: CredentialStoreMode,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LiveAccountStatus {
+    Ready,
+    NotSignedIn,
+    UnknownAccount,
+    FileStoreRequired,
+    RecoveryRequired,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LiveAccountView {
+    pub status: LiveAccountStatus,
+    pub credential_store: CredentialStoreMode,
+    pub account: Option<AccountView>,
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SwitchOutcome {
+    pub account: AccountView,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

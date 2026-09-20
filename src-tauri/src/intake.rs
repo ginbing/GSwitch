@@ -12,7 +12,7 @@ use crate::{
 const OAUTH_COMPLETION_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
 pub fn start_oauth(state: AppState) -> Result<OAuthLoginStart, String> {
-    let profile = TempCodexHome::create()?;
+    let profile = TempCodexHome::create(&state.isolated_profile_root()?)?;
     let mut server = AppServer::start(&profile.path)?;
 
     let result = server.call(
@@ -105,7 +105,7 @@ pub fn import_json(
         return Ok(existing);
     }
 
-    let mut profile = TempCodexHome::create()?;
+    let mut profile = TempCodexHome::create(&state.isolated_profile_root()?)?;
     profile.write_auth(&credential)?;
     let mut server = AppServer::start(&profile.path)?;
     let result = server.account_read(1, true)?;
@@ -136,7 +136,7 @@ pub fn import_api_key(
     }
 
     let operation = state.acquire_operation()?;
-    let mut profile = TempCodexHome::create()?;
+    let mut profile = TempCodexHome::create(&state.isolated_profile_root()?)?;
     let mut server = AppServer::start(&profile.path)?;
     server.call(
         1,

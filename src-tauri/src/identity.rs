@@ -35,6 +35,12 @@ pub fn derive_identity(kind: &AccountKind, credential: &Value) -> Result<Account
     }
 }
 
+pub fn document_fingerprint(credential: &Value) -> Result<String, String> {
+    let bytes = serde_json::to_vec(credential)
+        .map_err(|_| "Unable to fingerprint Codex credentials".to_string())?;
+    Ok(format!("{:x}", Sha256::digest(bytes)))
+}
+
 fn chatgpt_identity(credential: &Value) -> Result<AccountIdentity, String> {
     let token = credential
         .pointer("/tokens/id_token")

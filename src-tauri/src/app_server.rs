@@ -138,6 +138,34 @@ impl AppServer {
         )
     }
 
+    /// The App Server process is started by GSwitch and may be excluded from
+    /// the external-Codex preflight that protects the user's live session.
+    pub fn pid(&self) -> u32 {
+        self.child.id()
+    }
+
+    pub fn config_read(&mut self, id: i64) -> Result<Value, String> {
+        self.call(id, "config/read", json!({}), REQUEST_TIMEOUT)
+    }
+
+    pub fn config_value_write(
+        &mut self,
+        id: i64,
+        key_path: &str,
+        value: Value,
+        expected_version: Option<&str>,
+    ) -> Result<Value, String> {
+        let mut params = json!({
+            "keyPath": key_path,
+            "value": value,
+            "mergeStrategy": "replace"
+        });
+        if let Some(expected_version) = expected_version {
+            params["expectedVersion"] = Value::String(expected_version.to_string());
+        }
+        self.call(id, "config/value/write", params, REQUEST_TIMEOUT)
+    }
+
     fn take_pending<F>(&mut self, matches: F) -> Option<Value>
     where
         F: FnMut(&Value) -> bool,
@@ -168,6 +196,19 @@ fn receive_message(
 
 impl Drop for AppServer {
     fn drop(&mut self) {
+        #[cfg(windows)]
+        {
+            // The Windows .cmd launcher starts a Node child. A plain Child::kill
+            // would leave that GSwitch-owned App Server behind to touch auth.
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            let _ = Command::new("taskkill")
+                .args(["/PID", &self.child.id().to_string(), "/T", "/F"])
+                .creation_flags(CREATE_NO_WINDOW)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
@@ -175,18 +216,15 @@ impl Drop for AppServer {
 
 fn app_server_command(codex_home: &Path) -> Command {
     #[cfg(windows)]
-    let mut command = {
-        let invocation = configured_codex_binary()
-            .map(|path| format!("\"\"{}\" app-server\"", path.display()))
-            .unwrap_or_else(|| "codex app-server".to_string());
-        let mut command = Command::new(env::var_os("COMSPEC").unwrap_or_else(|| "cmd.exe".into()));
-        command.args(["/D", "/S", "/C", &invocation]);
-        command
-    };
+    let mut command = windows_app_server_command();
 
     #[cfg(not(windows))]
-    let mut command =
-        Command::new(configured_codex_binary().unwrap_or_else(|| PathBuf::from("codex")));
+    let mut command = {
+        let mut command =
+            Command::new(configured_codex_binary().unwrap_or_else(|| PathBuf::from("codex")));
+        command.arg("app-server");
+        command
+    };
 
     command
         .current_dir(codex_home)
@@ -213,6 +251,47 @@ fn app_server_command(codex_home: &Path) -> Command {
         command.creation_flags(CREATE_NO_WINDOW);
     }
 
+    command
+}
+
+#[cfg(windows)]
+fn windows_app_server_command() -> Command {
+    if let Some(path) = configured_codex_binary() {
+        if path
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("cmd"))
+        {
+            if let Some(npm_dir) = path.parent() {
+                let script = npm_dir
+                    .join("node_modules")
+                    .join("@openai")
+                    .join("codex")
+                    .join("bin")
+                    .join("codex.js");
+                if script.is_file() {
+                    // Calling a batch shim through cmd makes its child process
+                    // lifecycle ambiguous and failed with redirected stdin in
+                    // the installed Codex 0.144.5 runtime. Invoke its actual
+                    // Node entrypoint instead.
+                    let bundled_node = npm_dir.join("node.exe");
+                    let mut command = if bundled_node.is_file() {
+                        Command::new(bundled_node)
+                    } else {
+                        Command::new("node.exe")
+                    };
+                    command.args([script, PathBuf::from("app-server")]);
+                    return command;
+                }
+            }
+        }
+
+        let mut command = Command::new(path);
+        command.arg("app-server");
+        return command;
+    }
+
+    let mut command = Command::new("codex");
+    command.arg("app-server");
     command
 }
 
@@ -314,8 +393,10 @@ pub struct TempCodexHome {
 }
 
 impl TempCodexHome {
-    pub fn create() -> Result<Self, String> {
-        let path = std::env::temp_dir().join(format!("gswitch-{}", Uuid::new_v4()));
+    pub fn create(root: &Path) -> Result<Self, String> {
+        fs::create_dir_all(root)
+            .map_err(|_| "Unable to prepare isolated Codex storage".to_string())?;
+        let path = root.join(format!("gswitch-{}", Uuid::new_v4()));
         create_private_directory(&path)?;
 
         let config_path = path.join("config.toml");
@@ -459,7 +540,8 @@ mod tests {
 
     #[test]
     fn temporary_profile_round_trips_complete_credential_document() {
-        let profile = TempCodexHome::create().expect("profile");
+        let root = test_profile_root();
+        let profile = TempCodexHome::create(&root).expect("profile");
         let credential = json!({
             "tokens": {"access_token": "secret", "refresh_token": "rotate-me"},
             "auth_mode": "chatgpt",
@@ -468,5 +550,51 @@ mod tests {
 
         profile.write_auth(&credential).expect("write auth");
         assert_eq!(profile.read_auth().expect("read auth"), credential);
+        drop(profile);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    #[ignore = "requires a locally installed Codex App Server"]
+    fn installed_app_server_reads_config_in_an_isolated_profile() {
+        let root = std::env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir)
+            .join(format!("gswitch-app-server-test-{}", Uuid::new_v4()));
+        {
+            let profile = TempCodexHome::create(&root).expect("profile");
+            let mut server = AppServer::start(&profile.path).expect("start app server");
+            let config = server.config_read(1).expect("read config");
+            let expected_version = config
+                .pointer("/origins/cli_auth_credentials_store/version")
+                .and_then(Value::as_str)
+                .expect("credential-store origin version");
+            assert_eq!(
+                config
+                    .pointer("/config/cli_auth_credentials_store")
+                    .and_then(Value::as_str),
+                Some("file")
+            );
+            server
+                .config_value_write(
+                    2,
+                    "cli_auth_credentials_store",
+                    json!("file"),
+                    Some(expected_version),
+                )
+                .expect("write config");
+            let verified = server.config_read(3).expect("verify config");
+            assert_eq!(
+                verified
+                    .pointer("/config/cli_auth_credentials_store")
+                    .and_then(Value::as_str),
+                Some("file")
+            );
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    fn test_profile_root() -> PathBuf {
+        std::env::temp_dir().join(format!("gswitch-profile-test-{}", Uuid::new_v4()))
     }
 }
