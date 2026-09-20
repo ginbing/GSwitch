@@ -17,6 +17,19 @@ export interface QuotaBucket {
   windows: QuotaWindow[];
 }
 
+export interface ResetCreditDetail {
+  expires_at?: number;
+}
+
+export interface ResetCreditsView {
+  available_count: number;
+  nearest_expiry?: number;
+  details_available: boolean;
+  can_redeem: boolean;
+  // Provider credit IDs deliberately never cross the Rust/WebView boundary.
+  usable_credits: ResetCreditDetail[];
+}
+
 export interface QuotaView {
   account_id: string;
   status: QuotaStatus;
@@ -25,6 +38,20 @@ export interface QuotaView {
     account_id?: string;
     ordinary_usage_allowed?: boolean;
     buckets: QuotaBucket[];
+    reset_credits?: ResetCreditsView;
   };
   message?: string;
+}
+
+export type ResetCreditOutcomeKind =
+  | "reset"
+  | "already_redeemed"
+  | "nothing_to_reset"
+  | "no_credit";
+
+export interface ResetCreditOutcome {
+  account_id: string;
+  outcome: ResetCreditOutcomeKind;
+  quota?: QuotaView;
+  refresh_warning?: string;
 }

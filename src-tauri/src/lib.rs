@@ -35,7 +35,9 @@ pub fn run() {
             commands::recover_pending_switch,
             commands::remove_saved_account,
             commands::get_account_quota,
-            commands::refresh_account_quota
+            commands::refresh_account_quota,
+            commands::redeem_earliest_reset_credit,
+            commands::recover_pending_reset_credit
         ])
         .run(tauri::generate_context!())
         .expect("error while running GSwitch");

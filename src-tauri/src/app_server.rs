@@ -198,6 +198,20 @@ impl AppServer {
         }
     }
 
+    pub fn consume_reset_credit(
+        &mut self,
+        id: i64,
+        idempotency_key: &str,
+        credit_id: &str,
+    ) -> Result<Value, String> {
+        self.call(
+            id,
+            "account/rateLimitResetCredit/consume",
+            json!({"idempotencyKey": idempotency_key, "creditId": credit_id}),
+            REQUEST_TIMEOUT,
+        )
+    }
+
     pub fn config_value_write(
         &mut self,
         id: i64,

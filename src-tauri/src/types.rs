@@ -36,6 +36,8 @@ pub struct StoredAccount {
     pub identity: Option<AccountIdentity>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quota: Option<QuotaSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reset_credits: Option<StoredResetCredits>,
     pub credential: Value,
 }
 
@@ -116,6 +118,72 @@ pub struct QuotaSnapshot {
     pub ordinary_usage_allowed: Option<bool>,
     #[serde(default)]
     pub buckets: Vec<QuotaBucket>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reset_credits: Option<ResetCreditsView>,
+}
+
+/// A display-only reset-credit summary. It intentionally excludes opaque
+/// provider credit IDs; Rust reselects the eligible credit immediately before
+/// a user-confirmed redemption.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResetCreditsView {
+    pub available_count: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nearest_expiry: Option<i64>,
+    pub details_available: bool,
+    pub can_redeem: bool,
+    #[serde(default)]
+    pub usable_credits: Vec<ResetCreditDetailView>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResetCreditDetailView {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<i64>,
+}
+
+/// Rust-owned reset-credit data. The opaque ID is never part of a Tauri
+/// command response or WebView state.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct StoredResetCredits {
+    pub available_count: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credits: Option<Vec<StoredResetCredit>>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct StoredResetCredit {
+    pub id: String,
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<i64>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct PendingResetCredit {
+    pub account_id: String,
+    pub credit_id: String,
+    pub idempotency_key: String,
+    pub created_at_unix_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ResetCreditOutcomeKind {
+    Reset,
+    AlreadyRedeemed,
+    NothingToReset,
+    NoCredit,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResetCreditOutcome {
+    pub account_id: String,
+    pub outcome: ResetCreditOutcomeKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quota: Option<QuotaView>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refresh_warning: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

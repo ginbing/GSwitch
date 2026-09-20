@@ -12,7 +12,8 @@ use uuid::Uuid;
 use crate::{
     storage::{self, AccountStore},
     types::{
-        AccountIdentity, AccountKind, AccountView, OAuthLoginStatus, PendingSwitch, StoredAccount,
+        AccountIdentity, AccountKind, AccountView, OAuthLoginStatus, PendingResetCredit,
+        PendingSwitch, StoredAccount, StoredResetCredits,
     },
 };
 
@@ -202,6 +203,7 @@ impl AppState {
                 identity: Some(draft.identity),
                 // Reauthentication invalidates a prior capacity snapshot.
                 quota: None,
+                reset_credits: None,
                 credential: draft.credential,
             }
         } else {
@@ -213,6 +215,7 @@ impl AppState {
                 plan_type: draft.plan_type,
                 identity: Some(draft.identity),
                 quota: None,
+                reset_credits: None,
                 credential: draft.credential,
             }
         };
@@ -293,6 +296,7 @@ impl AppState {
         id: &str,
         credential: Value,
         quota: crate::types::QuotaSnapshot,
+        reset_credits: Option<StoredResetCredits>,
     ) -> Result<(), String> {
         let mut store = self
             .store
@@ -306,6 +310,55 @@ impl AppState {
         let mut candidate = store.clone();
         candidate.accounts[index].credential = credential;
         candidate.accounts[index].quota = Some(quota);
+        candidate.accounts[index].reset_credits = reset_credits;
+        storage::save_atomic(&self.store_path, &candidate)?;
+        *store = candidate;
+        Ok(())
+    }
+
+    pub fn prepare_reset_credit_under_operation(
+        &self,
+        _operation: &OperationGuard<'_>,
+        pending: PendingResetCredit,
+    ) -> Result<(), String> {
+        let mut store = self
+            .store
+            .lock()
+            .map_err(|_| "Account store lock is unavailable".to_string())?;
+        if store.pending_reset_credit.is_some() {
+            return Err(
+                "GSwitch must recover a previous reset-credit operation before starting another"
+                    .to_string(),
+            );
+        }
+        let mut candidate = store.clone();
+        candidate.pending_reset_credit = Some(pending);
+        storage::save_atomic(&self.store_path, &candidate)?;
+        *store = candidate;
+        Ok(())
+    }
+
+    pub fn pending_reset_credit_under_operation(
+        &self,
+        _operation: &OperationGuard<'_>,
+    ) -> Result<Option<PendingResetCredit>, String> {
+        let store = self
+            .store
+            .lock()
+            .map_err(|_| "Account store lock is unavailable".to_string())?;
+        Ok(store.pending_reset_credit.clone())
+    }
+
+    pub fn clear_pending_reset_credit_under_operation(
+        &self,
+        _operation: &OperationGuard<'_>,
+    ) -> Result<(), String> {
+        let mut store = self
+            .store
+            .lock()
+            .map_err(|_| "Account store lock is unavailable".to_string())?;
+        let mut candidate = store.clone();
+        candidate.pending_reset_credit = None;
         storage::save_atomic(&self.store_path, &candidate)?;
         *store = candidate;
         Ok(())

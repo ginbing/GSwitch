@@ -1,6 +1,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
+use uuid::Uuid;
 
 use crate::{
     accounts::{AppState, OperationGuard},
@@ -8,8 +9,10 @@ use crate::{
     identity::{derive_identity, document_kind},
     runtime,
     types::{
-        AccountIdentity, AccountKind, QuotaBucket, QuotaBucketKind, QuotaSnapshot, QuotaStatus,
-        QuotaView, QuotaWindow, QuotaWindowKind, StoredAccount,
+        AccountIdentity, AccountKind, PendingResetCredit, QuotaBucket, QuotaBucketKind,
+        QuotaSnapshot, QuotaStatus, QuotaView, QuotaWindow, QuotaWindowKind, ResetCreditDetailView,
+        ResetCreditOutcome, ResetCreditOutcomeKind, ResetCreditsView, StoredAccount,
+        StoredResetCredit, StoredResetCredits,
     },
 };
 
@@ -45,16 +48,245 @@ pub fn refresh_quota(state: &AppState, account_id: &str) -> Result<QuotaView, St
         return Err("Codex did not confirm the quota account identity".to_string());
     }
 
-    let snapshot = normalize_rate_limits(&result, now_unix_ms());
+    let normalized = normalize_rate_limits_data(&result, now_unix_ms());
+    let snapshot = normalized.snapshot;
     persist_refreshed_credential_and_quota(
         state,
         &operation,
         &account.id,
         &refreshed_credential,
         snapshot.clone(),
+        normalized.reset_credits,
         &mut temporary,
     )?;
     Ok(view_from_snapshot(&account.id, snapshot, now_unix_ms()))
+}
+
+/// Redeems one user-confirmed reset credit through the official App Server.
+/// The durable idempotency record is written before the provider call so an
+/// interrupted request can only ever be retried with the same credit and key.
+pub fn redeem_earliest_reset_credit(
+    state: &AppState,
+    account_id: &str,
+) -> Result<ResetCreditOutcome, String> {
+    let operation = state.acquire_operation()?;
+    runtime::ensure_no_external_codex(&[])?;
+    let account = state.account_by_id_under_operation(&operation, account_id)?;
+    if account.kind == AccountKind::ApiKey {
+        return Err("Reset credits are not available for API-key accounts".to_string());
+    }
+    let identity = verified_chatgpt_identity(&account)?;
+
+    let mut temporary = TempCodexHome::create(&state.isolated_profile_root()?)?;
+    temporary.write_auth(&account.credential)?;
+    let mut server = AppServer::start(&temporary.path)?;
+
+    // This read both proves the provider is reachable and gives GSwitch the
+    // complete current credential document before it attempts an irreversible
+    // operation.
+    let preflight = server.rate_limits_read(1)?;
+    let preflight_credential = temporary.read_auth()?;
+    ensure_reset_credential_identity(&preflight_credential, &identity)?;
+    let normalized = normalize_rate_limits_data(&preflight, now_unix_ms());
+    persist_refreshed_credential_and_quota(
+        state,
+        &operation,
+        &account.id,
+        &preflight_credential,
+        normalized.snapshot.clone(),
+        normalized.reset_credits.clone(),
+        &mut temporary,
+    )?;
+
+    let pending = match state.pending_reset_credit_under_operation(&operation)? {
+        Some(pending) if pending.account_id == account.id => pending,
+        Some(_) => {
+            return Err(
+                "A reset-credit operation for another account must be recovered first".to_string(),
+            )
+        }
+        None => {
+            let credit_id =
+                earliest_available_credit(normalized.reset_credits.as_ref(), now_unix_ms() / 1000)?
+                    .id
+                    .clone();
+            let pending = PendingResetCredit {
+                account_id: account.id.clone(),
+                credit_id,
+                idempotency_key: Uuid::new_v4().to_string(),
+                created_at_unix_ms: now_unix_ms(),
+            };
+            state.prepare_reset_credit_under_operation(&operation, pending.clone())?;
+            pending
+        }
+    };
+
+    let response = server.consume_reset_credit(3, &pending.idempotency_key, &pending.credit_id)?;
+    let outcome = parse_reset_outcome(&response)?;
+    let mut result = ResetCreditOutcome {
+        account_id: account.id.clone(),
+        outcome: outcome.clone(),
+        quota: None,
+        refresh_warning: None,
+    };
+
+    // An authoritative provider result must not be hidden just because the
+    // follow-up persistence or refresh has a local problem. Keep the pending
+    // idempotency record in those cases so recovery can safely reconcile it.
+    let refreshed_credential = match temporary.read_auth() {
+        Ok(credential) => credential,
+        Err(_) => {
+            result.refresh_warning = Some(
+                "The reset result was confirmed, but GSwitch could not read refreshed credentials. Retry recovery before another reset."
+                    .to_string(),
+            );
+            return Ok(result);
+        }
+    };
+    if ensure_reset_credential_identity(&refreshed_credential, &identity).is_err() {
+        temporary.retain_for_recovery();
+        result.refresh_warning = Some(
+            "The reset result was confirmed, but GSwitch could not confirm refreshed credentials. A protected recovery copy was retained."
+                .to_string(),
+        );
+        return Ok(result);
+    }
+
+    // A confirmed capacity-changing result makes the preflight cache stale
+    // until the post-action provider read succeeds.
+    let mut snapshot_after_result = normalized.snapshot;
+    if matches!(
+        outcome,
+        ResetCreditOutcomeKind::Reset | ResetCreditOutcomeKind::AlreadyRedeemed
+    ) {
+        snapshot_after_result.fetched_at_unix_ms = 0;
+    }
+    if let Err(error) = persist_refreshed_credential_and_quota(
+        state,
+        &operation,
+        &account.id,
+        &refreshed_credential,
+        snapshot_after_result,
+        normalized.reset_credits,
+        &mut temporary,
+    ) {
+        result.refresh_warning = Some(format!(
+            "The reset result was confirmed, but {error} Retry recovery before another reset."
+        ));
+        return Ok(result);
+    }
+    if state
+        .clear_pending_reset_credit_under_operation(&operation)
+        .is_err()
+    {
+        result.refresh_warning = Some(
+            "The reset result was confirmed, but GSwitch could not finalize its local transaction. Retry recovery before another reset."
+                .to_string(),
+        );
+        return Ok(result);
+    }
+
+    let (quota, warning) = refresh_after_confirmed_reset(
+        state,
+        &operation,
+        &account,
+        &identity,
+        &mut server,
+        &mut temporary,
+    );
+    result.quota = quota;
+    result.refresh_warning = warning;
+    Ok(result)
+}
+
+/// Replays a pending request with its original credit and idempotency key.
+/// This never selects a new credit during recovery.
+pub fn recover_pending_reset_credit(state: &AppState) -> Result<ResetCreditOutcome, String> {
+    let account_id = {
+        let operation = state.acquire_operation()?;
+        state
+            .pending_reset_credit_under_operation(&operation)?
+            .ok_or_else(|| "No reset-credit operation needs recovery".to_string())?
+            .account_id
+    };
+    redeem_earliest_reset_credit(state, &account_id)
+}
+
+fn refresh_after_confirmed_reset(
+    state: &AppState,
+    operation: &OperationGuard<'_>,
+    account: &StoredAccount,
+    identity: &AccountIdentity,
+    server: &mut AppServer,
+    temporary: &mut TempCodexHome,
+) -> (Option<QuotaView>, Option<String>) {
+    let provider_state = match server.rate_limits_read(4) {
+        Ok(value) => value,
+        Err(_) => {
+            return (
+                None,
+                Some(
+                    "The reset result was confirmed, but the refreshed quota is not available yet"
+                        .to_string(),
+                ),
+            );
+        }
+    };
+    let credential = match temporary.read_auth() {
+        Ok(credential) => credential,
+        Err(_) => {
+            return (
+                None,
+                Some(
+                    "The reset result was confirmed, but GSwitch could not read refreshed credentials"
+                        .to_string(),
+                ),
+            );
+        }
+    };
+    if ensure_reset_credential_identity(&credential, identity).is_err() {
+        temporary.retain_for_recovery();
+        return (
+            None,
+            Some(
+                "The reset result was confirmed, but GSwitch could not confirm refreshed credentials. A protected recovery copy was retained."
+                    .to_string(),
+            ),
+        );
+    }
+
+    let normalized = normalize_rate_limits_data(&provider_state, now_unix_ms());
+    let snapshot = normalized.snapshot;
+    match persist_refreshed_credential_and_quota(
+        state,
+        operation,
+        &account.id,
+        &credential,
+        snapshot.clone(),
+        normalized.reset_credits,
+        temporary,
+    ) {
+        Ok(()) => (
+            Some(view_from_snapshot(&account.id, snapshot, now_unix_ms())),
+            None,
+        ),
+        Err(error) => (
+            None,
+            Some(format!("The reset result was confirmed, but {error}")),
+        ),
+    }
+}
+
+fn ensure_reset_credential_identity(
+    credential: &Value,
+    identity: &AccountIdentity,
+) -> Result<(), String> {
+    if document_kind(credential)? != AccountKind::ChatGpt
+        || derive_identity(&AccountKind::ChatGpt, credential)? != *identity
+    {
+        return Err("Codex did not confirm the reset-credit account identity".to_string());
+    }
+    Ok(())
 }
 
 fn persist_refreshed_credential_and_quota(
@@ -63,6 +295,7 @@ fn persist_refreshed_credential_and_quota(
     account_id: &str,
     credential: &Value,
     snapshot: QuotaSnapshot,
+    reset_credits: Option<StoredResetCredits>,
     temporary: &mut TempCodexHome,
 ) -> Result<(), String> {
     if state
@@ -71,6 +304,7 @@ fn persist_refreshed_credential_and_quota(
             account_id,
             credential.clone(),
             snapshot,
+            reset_credits,
         )
         .is_ok()
     {
@@ -156,16 +390,129 @@ fn view_from_snapshot(account_id: &str, snapshot: QuotaSnapshot, now: i64) -> Qu
 /// Normalize the backwards-compatible single bucket and the optional
 /// multi-bucket response without interpreting absent fields as zero or
 /// unlimited capacity.
+#[cfg(test)]
 pub(crate) fn normalize_rate_limits(result: &Value, fetched_at_unix_ms: i64) -> QuotaSnapshot {
+    normalize_rate_limits_data(result, fetched_at_unix_ms).snapshot
+}
+
+pub(crate) struct NormalizedRateLimits {
+    pub snapshot: QuotaSnapshot,
+    pub reset_credits: Option<StoredResetCredits>,
+}
+
+pub(crate) fn normalize_rate_limits_data(
+    result: &Value,
+    fetched_at_unix_ms: i64,
+) -> NormalizedRateLimits {
     let buckets = rate_limit_sources(result)
         .into_iter()
         .map(|(fallback_id, bucket)| normalize_bucket(fallback_id, bucket))
         .collect();
-    QuotaSnapshot {
-        fetched_at_unix_ms,
-        account_id: string_at(result.get("accountId")),
-        ordinary_usage_allowed: result.get("ordinaryUsageAllowed").and_then(Value::as_bool),
-        buckets,
+    let reset_credits = normalize_stored_reset_credits(result);
+    let reset_credits_view = reset_credits
+        .as_ref()
+        .map(|credits| reset_credits_view(credits, fetched_at_unix_ms / 1000));
+    NormalizedRateLimits {
+        snapshot: QuotaSnapshot {
+            fetched_at_unix_ms,
+            account_id: string_at(result.get("accountId")),
+            ordinary_usage_allowed: result.get("ordinaryUsageAllowed").and_then(Value::as_bool),
+            buckets,
+            reset_credits: reset_credits_view,
+        },
+        reset_credits,
+    }
+}
+
+fn normalize_stored_reset_credits(result: &Value) -> Option<StoredResetCredits> {
+    let summary = result.get("rateLimitResetCredits")?.as_object()?;
+    let available_count = summary
+        .get("availableCount")
+        .and_then(Value::as_i64)
+        .and_then(|count| u64::try_from(count).ok())
+        .unwrap_or(0);
+    let credits = match summary.get("credits") {
+        Some(Value::Array(values)) => Some(
+            values
+                .iter()
+                .filter_map(|value| {
+                    let id = value.get("id")?.as_str()?.to_string();
+                    let status = value.get("status")?.as_str()?.to_string();
+                    Some(StoredResetCredit {
+                        id,
+                        status,
+                        expires_at: value.get("expiresAt").and_then(Value::as_i64),
+                    })
+                })
+                .collect(),
+        ),
+        _ => None,
+    };
+    Some(StoredResetCredits {
+        available_count,
+        credits,
+    })
+}
+
+fn reset_credits_view(credits: &StoredResetCredits, now_seconds: i64) -> ResetCreditsView {
+    let mut usable_credits = credits
+        .credits
+        .as_ref()
+        .map(|items| {
+            items
+                .iter()
+                .filter(|credit| is_redeemable_credit(credit, now_seconds))
+                .map(|credit| ResetCreditDetailView {
+                    expires_at: credit.expires_at,
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    usable_credits.sort_by_key(|credit| credit.expires_at.unwrap_or(i64::MAX));
+    let nearest_expiry = usable_credits
+        .iter()
+        .filter_map(|credit| credit.expires_at)
+        .min();
+    ResetCreditsView {
+        available_count: credits.available_count,
+        nearest_expiry,
+        details_available: credits.credits.is_some(),
+        can_redeem: !usable_credits.is_empty(),
+        usable_credits,
+    }
+}
+
+fn earliest_available_credit(
+    credits: Option<&StoredResetCredits>,
+    now_seconds: i64,
+) -> Result<&StoredResetCredit, String> {
+    let credits =
+        credits.ok_or_else(|| "Codex did not return reset-credit information".to_string())?;
+    let details = credits.credits.as_ref().ok_or_else(|| {
+        "Reset-credit details are unavailable, so GSwitch cannot safely choose the earliest credit"
+            .to_string()
+    })?;
+    details
+        .iter()
+        .filter(|credit| is_redeemable_credit(credit, now_seconds))
+        .min_by_key(|credit| credit.expires_at.unwrap_or(i64::MAX))
+        .ok_or_else(|| "No available reset credit can be redeemed".to_string())
+}
+
+fn is_redeemable_credit(credit: &StoredResetCredit, now_seconds: i64) -> bool {
+    credit.status == "available"
+        && credit
+            .expires_at
+            .is_none_or(|expires_at| expires_at > now_seconds)
+}
+
+fn parse_reset_outcome(value: &Value) -> Result<ResetCreditOutcomeKind, String> {
+    match value.get("outcome").and_then(Value::as_str) {
+        Some("reset") => Ok(ResetCreditOutcomeKind::Reset),
+        Some("alreadyRedeemed") => Ok(ResetCreditOutcomeKind::AlreadyRedeemed),
+        Some("nothingToReset") => Ok(ResetCreditOutcomeKind::NothingToReset),
+        Some("noCredit") => Ok(ResetCreditOutcomeKind::NoCredit),
+        _ => Err("Codex returned an unknown reset-credit result".to_string()),
     }
 }
 
@@ -388,8 +735,113 @@ mod tests {
                 kind: QuotaBucketKind::Codex,
                 windows: vec![],
             }],
+            reset_credits: None,
         };
         let view = view_from_snapshot("account", snapshot, CACHE_FRESH_FOR_MS + 2);
         assert_eq!(view.status, QuotaStatus::Stale);
+    }
+
+    #[test]
+    fn reset_credit_count_is_authoritative_and_ids_do_not_enter_the_view() {
+        let normalized = normalize_rate_limits_data(
+            &json!({
+                "rateLimits": {"limitId": "codex"},
+                "rateLimitResetCredits": {
+                    "availableCount": 4,
+                    "credits": [{
+                        "id": "opaque-provider-credit-id",
+                        "status": "available",
+                        "expiresAt": 900
+                    }]
+                }
+            }),
+            100_000,
+        );
+        let view = normalized
+            .snapshot
+            .reset_credits
+            .expect("reset-credit view");
+
+        assert_eq!(view.available_count, 4);
+        assert_eq!(view.nearest_expiry, Some(900));
+        assert!(view.details_available);
+        assert!(view.can_redeem);
+        assert_eq!(view.usable_credits.len(), 1);
+        let serialized = serde_json::to_string(&view).expect("serialize view");
+        assert!(!serialized.contains("opaque-provider-credit-id"));
+    }
+
+    #[test]
+    fn reset_credit_without_details_cannot_be_redeemed() {
+        let normalized = normalize_rate_limits_data(
+            &json!({
+                "rateLimits": {"limitId": "codex"},
+                "rateLimitResetCredits": {"availableCount": 2, "credits": null}
+            }),
+            100_000,
+        );
+        let view = normalized
+            .snapshot
+            .reset_credits
+            .expect("reset-credit view");
+
+        assert_eq!(view.available_count, 2);
+        assert!(!view.details_available);
+        assert!(!view.can_redeem);
+        assert!(view.usable_credits.is_empty());
+        assert!(earliest_available_credit(normalized.reset_credits.as_ref(), 100).is_err());
+    }
+
+    #[test]
+    fn reset_credit_selection_uses_the_earliest_unexpired_available_credit() {
+        let credits = StoredResetCredits {
+            available_count: 4,
+            credits: Some(vec![
+                StoredResetCredit {
+                    id: "expired".into(),
+                    status: "available".into(),
+                    expires_at: Some(99),
+                },
+                StoredResetCredit {
+                    id: "later".into(),
+                    status: "available".into(),
+                    expires_at: Some(300),
+                },
+                StoredResetCredit {
+                    id: "without-expiry".into(),
+                    status: "available".into(),
+                    expires_at: None,
+                },
+                StoredResetCredit {
+                    id: "first".into(),
+                    status: "available".into(),
+                    expires_at: Some(200),
+                },
+            ]),
+        };
+
+        assert_eq!(
+            earliest_available_credit(Some(&credits), 100)
+                .expect("eligible credit")
+                .id,
+            "first"
+        );
+        let view = reset_credits_view(&credits, 100);
+        assert_eq!(view.nearest_expiry, Some(200));
+        assert_eq!(view.usable_credits[0].expires_at, Some(200));
+        assert_eq!(view.usable_credits[2].expires_at, None);
+    }
+
+    #[test]
+    fn reset_outcomes_keep_idempotent_success_distinct_from_no_consumption() {
+        assert_eq!(
+            parse_reset_outcome(&json!({"outcome": "alreadyRedeemed"})).expect("outcome"),
+            ResetCreditOutcomeKind::AlreadyRedeemed
+        );
+        assert_eq!(
+            parse_reset_outcome(&json!({"outcome": "noCredit"})).expect("outcome"),
+            ResetCreditOutcomeKind::NoCredit
+        );
+        assert!(parse_reset_outcome(&json!({"outcome": "unexpected"})).is_err());
     }
 }
