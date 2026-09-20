@@ -289,7 +289,7 @@ fn ensure_reset_credential_identity(
     Ok(())
 }
 
-fn persist_refreshed_credential_and_quota(
+pub(crate) fn persist_refreshed_credential_and_quota(
     state: &AppState,
     operation: &OperationGuard<'_>,
     account_id: &str,
@@ -325,7 +325,9 @@ fn persist_refreshed_credential_and_quota(
     )
 }
 
-fn verified_chatgpt_identity(account: &StoredAccount) -> Result<AccountIdentity, String> {
+pub(crate) fn verified_chatgpt_identity(
+    account: &StoredAccount,
+) -> Result<AccountIdentity, String> {
     let identity = account.identity.clone().ok_or_else(|| {
         "The saved account needs to be added again before its quota can be read".to_string()
     })?;

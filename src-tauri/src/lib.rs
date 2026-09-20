@@ -9,6 +9,7 @@ mod runtime;
 mod storage;
 mod switching;
 mod types;
+mod wake;
 
 use tauri::Manager;
 
@@ -37,7 +38,11 @@ pub fn run() {
             commands::get_account_quota,
             commands::refresh_account_quota,
             commands::redeem_earliest_reset_credit,
-            commands::recover_pending_reset_credit
+            commands::recover_pending_reset_credit,
+            commands::start_wake,
+            commands::start_wake_all,
+            commands::get_wake_operation,
+            commands::cancel_wake
         ])
         .run(tauri::generate_context!())
         .expect("error while running GSwitch");

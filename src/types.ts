@@ -55,3 +55,31 @@ export interface ResetCreditOutcome {
   quota?: QuotaView;
   refresh_warning?: string;
 }
+
+export type WakeResultKind =
+  | "already_active"
+  | "window_started"
+  | "request_completed_unconfirmed"
+  | "needs_model_selection"
+  | "failed"
+  | "skipped"
+  | "cancelled";
+
+export interface WakeAccountResult {
+  account_id: string;
+  label: string;
+  result: WakeResultKind;
+  message: string;
+  available_models?: string[];
+}
+
+export interface WakeOperationView {
+  id: string;
+  status: "running" | "completed" | "cancelled" | "failed";
+  current_account_id?: string;
+  results: WakeAccountResult[];
+}
+
+export interface WakeStart {
+  operation_id: string;
+}

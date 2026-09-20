@@ -135,16 +135,23 @@ MCP servers, Skills, or normal Codex settings. The operation:
 
 - refreshes quota first and skips a window already active;
 - refuses to spend reset credits or Reserve when ordinary quota is exhausted;
-- selects only an approved low-cost text model advertised for that account;
-- uses the lowest supported reasoning effort and standard service tier when
-  available;
-- creates one ephemeral read-only thread with a minimal prompt, no tool use,
-  no approval, and no retry;
+- skips an account when an external Codex process is using that same identity,
+  or when that identity cannot be checked safely;
+- automatically selects only `gpt-5.6-luna` or `gpt-5.4-mini` when that
+  account advertises a visible text model with the normal (`standard`) service
+  tier; otherwise it asks the user to choose from eligible models;
+- uses the lowest supported reasoning effort and the normal service tier;
+- creates one ephemeral read-only thread with a minimal prompt, no approval,
+  and no retry; the isolated profile has no user MCP servers, Skills, or
+  project configuration, and the instruction asks Codex not to inspect files
+  or use tools;
 - confirms the result from refreshed quota when possible;
 - preserves refreshed credentials only if the identity still matches.
 
 Wake All is sequential, cancellable, and returns one result per account. A
 single account failure does not corrupt or silently relabel another account.
+After a turn begins, an uncertain result is reported without retrying and any
+refreshed credential is persisted before the isolated profile is cleaned up.
 Wake is user-triggered; there is no cron, background schedule, automatic
 rotation, history dashboard, or job-management surface.
 

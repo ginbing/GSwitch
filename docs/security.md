@@ -77,9 +77,10 @@ that its account kind and identity are unchanged. Delete the isolated profile
 after success unless it must be retained as a last-resort protected recovery
 copy.
 
-Wake also uses an empty workspace, read-only sandbox, no approvals, no tools,
-and an ephemeral thread. It does not load the user's project or normal Codex
-configuration and never spends a reset credit or Reserve.
+Wake also uses an empty workspace, read-only sandbox, no approvals, and an
+ephemeral thread. It does not load the user's project, MCP servers, Skills, or
+normal Codex configuration. Its minimal instruction asks Codex not to inspect
+files or use tools; it never spends a reset credit or Reserve.
 
 ## Recovery invariants
 

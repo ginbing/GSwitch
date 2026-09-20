@@ -9,6 +9,17 @@ use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 /// second preflight immediately before changing the live auth file because a
 /// process can start after this snapshot.
 pub fn ensure_no_external_codex(excluded_pids: &[u32]) -> Result<(), String> {
+    if external_codex_running(excluded_pids)? {
+        return Err("Quit Codex before changing the active account".to_string());
+    }
+    Ok(())
+}
+
+/// Returns whether a known external Codex runtime is active. An
+/// uninspectable Node process remains an error rather than being mistaken for
+/// a safe absence. Wake uses this to skip only an account that matches the
+/// externally active identity.
+pub fn external_codex_running(excluded_pids: &[u32]) -> Result<bool, String> {
     let mut excluded = excluded_pids.iter().copied().collect::<HashSet<_>>();
     let mut system = System::new();
     system.refresh_processes_specifics(
@@ -47,9 +58,6 @@ pub fn ensure_no_external_codex(excluded_pids: &[u32]) -> Result<(), String> {
             && !excluded.contains(&pid)
             && is_codex_process(process.name(), process.cmd())
     });
-    if found {
-        return Err("Quit Codex before changing the active account".to_string());
-    }
     let uncertain_node = system.processes().iter().any(|(pid, process)| {
         let pid = pid.as_u32();
         pid != std::process::id()
@@ -62,7 +70,7 @@ pub fn ensure_no_external_codex(excluded_pids: &[u32]) -> Result<(), String> {
                 .to_string(),
         );
     }
-    Ok(())
+    Ok(found)
 }
 
 fn is_codex_process(name: &OsStr, command: &[OsString]) -> bool {

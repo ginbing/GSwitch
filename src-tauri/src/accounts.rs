@@ -2,7 +2,10 @@ use std::{
     collections::HashMap,
     fs::{self, File, OpenOptions},
     path::PathBuf,
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex, MutexGuard,
+    },
 };
 
 use fs2::FileExt;
@@ -13,7 +16,7 @@ use crate::{
     storage::{self, AccountStore},
     types::{
         AccountIdentity, AccountKind, AccountView, OAuthLoginStatus, PendingResetCredit,
-        PendingSwitch, StoredAccount, StoredResetCredits,
+        PendingSwitch, StoredAccount, StoredResetCredits, WakeOperationStatus, WakeOperationView,
     },
 };
 
@@ -24,6 +27,13 @@ pub struct AppState {
     store: Arc<Mutex<AccountStore>>,
     operation_lock: Arc<Mutex<()>>,
     oauth_logins: Arc<Mutex<HashMap<String, OAuthLoginStatus>>>,
+    wake_operations: Arc<Mutex<HashMap<String, WakeControl>>>,
+}
+
+#[derive(Clone)]
+struct WakeControl {
+    view: WakeOperationView,
+    cancelled: Arc<AtomicBool>,
 }
 
 pub struct OperationGuard<'a> {
@@ -61,6 +71,7 @@ impl AppState {
             store: Arc::new(Mutex::new(store)),
             operation_lock: Arc::new(Mutex::new(())),
             oauth_logins: Arc::new(Mutex::new(HashMap::new())),
+            wake_operations: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -530,6 +541,65 @@ impl AppState {
             .ok_or_else(|| "Unknown OAuth login session".to_string())
     }
 
+    /// Wake state is deliberately process-local. It exists only to let the
+    /// current window render progress and request cancellation; it is not a
+    /// durable queue or history surface.
+    pub fn insert_wake_operation(
+        &self,
+        view: WakeOperationView,
+        cancelled: Arc<AtomicBool>,
+    ) -> Result<(), String> {
+        let mut operations = self
+            .wake_operations
+            .lock()
+            .map_err(|_| "Wake operation lock is unavailable".to_string())?;
+        if operations
+            .values()
+            .any(|operation| matches!(&operation.view.status, WakeOperationStatus::Running))
+        {
+            return Err("A Wake operation is already running".to_string());
+        }
+        operations
+            .retain(|_, operation| matches!(&operation.view.status, WakeOperationStatus::Running));
+        operations.insert(view.id.clone(), WakeControl { view, cancelled });
+        Ok(())
+    }
+
+    pub fn update_wake_operation(&self, view: WakeOperationView) -> Result<(), String> {
+        let mut operations = self
+            .wake_operations
+            .lock()
+            .map_err(|_| "Wake operation lock is unavailable".to_string())?;
+        let operation = operations
+            .get_mut(&view.id)
+            .ok_or_else(|| "Unknown Wake operation".to_string())?;
+        operation.view = view;
+        Ok(())
+    }
+
+    pub fn wake_operation(&self, id: &str) -> Result<WakeOperationView, String> {
+        self.wake_operations
+            .lock()
+            .map_err(|_| "Wake operation lock is unavailable".to_string())?
+            .get(id)
+            .map(|operation| operation.view.clone())
+            .ok_or_else(|| "Unknown Wake operation".to_string())
+    }
+
+    pub fn cancel_wake(&self, id: &str) -> Result<(), String> {
+        let operations = self
+            .wake_operations
+            .lock()
+            .map_err(|_| "Wake operation lock is unavailable".to_string())?;
+        let operation = operations
+            .get(id)
+            .ok_or_else(|| "Unknown Wake operation".to_string())?;
+        if matches!(&operation.view.status, WakeOperationStatus::Running) {
+            operation.cancelled.store(true, Ordering::SeqCst);
+        }
+        Ok(())
+    }
+
     fn view(account: &StoredAccount, active_account_id: Option<&str>) -> AccountView {
         AccountView {
             id: account.id.clone(),
@@ -679,6 +749,47 @@ mod tests {
             "The active Codex account cannot be removed"
         );
         drop(operation);
+        let _ = fs::remove_dir_all(path.parent().expect("parent"));
+    }
+
+    #[test]
+    fn wake_operations_are_singleton_and_cancellable() {
+        let path = temp_path("wake-operation");
+        let state = AppState::new(path.clone()).expect("state");
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let first = WakeOperationView {
+            id: "first".to_string(),
+            status: WakeOperationStatus::Running,
+            current_account_id: None,
+            results: Vec::new(),
+        };
+        state
+            .insert_wake_operation(first.clone(), cancelled.clone())
+            .expect("first wake");
+
+        let second = WakeOperationView {
+            id: "second".to_string(),
+            status: WakeOperationStatus::Running,
+            current_account_id: None,
+            results: Vec::new(),
+        };
+        assert_eq!(
+            state
+                .insert_wake_operation(second.clone(), Arc::new(AtomicBool::new(false)))
+                .expect_err("overlapping wake"),
+            "A Wake operation is already running"
+        );
+        state.cancel_wake("first").expect("cancel wake");
+        assert!(cancelled.load(Ordering::SeqCst));
+
+        let mut completed = first;
+        completed.status = WakeOperationStatus::Completed;
+        state
+            .update_wake_operation(completed)
+            .expect("complete first wake");
+        state
+            .insert_wake_operation(second, Arc::new(AtomicBool::new(false)))
+            .expect("later wake");
         let _ = fs::remove_dir_all(path.parent().expect("parent"));
     }
 }

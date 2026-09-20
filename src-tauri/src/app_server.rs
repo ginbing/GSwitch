@@ -162,6 +162,42 @@ impl AppServer {
         }
     }
 
+    /// Waits in short slices so a user-triggered Wake cancellation can
+    /// interrupt the current turn without leaving the GSwitch-owned server
+    /// running. Other messages remain queued for their matching request.
+    pub fn wait_for_notification_cancelled<F, C>(
+        &mut self,
+        timeout: Duration,
+        mut matches: F,
+        mut cancelled: C,
+    ) -> Result<Value, String>
+    where
+        F: FnMut(&Value) -> bool,
+        C: FnMut() -> bool,
+    {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if cancelled() {
+                return Err("The operation was cancelled".to_string());
+            }
+            if let Some(message) = self.take_pending(|message| matches(message)) {
+                return Ok(message);
+            }
+
+            let slice = remaining(deadline)?.min(Duration::from_millis(250));
+            match self.messages.recv_timeout(slice) {
+                Ok(Ok(message)) if self.reject_unsupported_server_request(&message)? => continue,
+                Ok(Ok(message)) if matches(&message) => return Ok(message),
+                Ok(Ok(message)) => self.pending_messages.push_back(message),
+                Ok(Err(error)) => return Err(error),
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err("Codex App Server exited unexpectedly".to_string())
+                }
+            }
+        }
+    }
+
     pub fn account_read(&mut self, id: i64, refresh_token: bool) -> Result<Value, String> {
         self.call(
             id,
@@ -208,6 +244,37 @@ impl AppServer {
             id,
             "account/rateLimitResetCredit/consume",
             json!({"idempotencyKey": idempotency_key, "creditId": credit_id}),
+            REQUEST_TIMEOUT,
+        )
+    }
+
+    pub fn model_list(&mut self, id: i64, cursor: Option<&str>) -> Result<Value, String> {
+        self.call(
+            id,
+            "model/list",
+            json!({"cursor": cursor, "limit": 100, "includeHidden": false}),
+            REQUEST_TIMEOUT,
+        )
+    }
+
+    pub fn thread_start(&mut self, id: i64, params: Value) -> Result<Value, String> {
+        self.call(id, "thread/start", params, REQUEST_TIMEOUT)
+    }
+
+    pub fn turn_start(&mut self, id: i64, params: Value) -> Result<Value, String> {
+        self.call(id, "turn/start", params, REQUEST_TIMEOUT)
+    }
+
+    pub fn turn_interrupt(
+        &mut self,
+        id: i64,
+        thread_id: &str,
+        turn_id: &str,
+    ) -> Result<Value, String> {
+        self.call(
+            id,
+            "turn/interrupt",
+            json!({"threadId": thread_id, "turnId": turn_id}),
             REQUEST_TIMEOUT,
         )
     }

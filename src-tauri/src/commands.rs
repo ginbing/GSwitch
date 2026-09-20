@@ -5,8 +5,9 @@ use crate::{
     codex, intake, quota, switching,
     types::{
         AccountView, LiveAccountView, OAuthLoginStart, OAuthLoginStatus, QuotaView,
-        ResetCreditOutcome, RuntimeInfo, SwitchOutcome,
+        ResetCreditOutcome, RuntimeInfo, SwitchOutcome, WakeOperationView, WakeStart,
     },
+    wake,
 };
 
 #[tauri::command]
@@ -106,4 +107,31 @@ pub fn recover_pending_reset_credit(
     state: State<'_, AppState>,
 ) -> Result<ResetCreditOutcome, String> {
     quota::recover_pending_reset_credit(state.inner())
+}
+
+#[tauri::command]
+pub fn start_wake(
+    state: State<'_, AppState>,
+    id: String,
+    model: Option<String>,
+) -> Result<WakeStart, String> {
+    wake::start_one(state.inner().clone(), id, model)
+}
+
+#[tauri::command]
+pub fn start_wake_all(state: State<'_, AppState>) -> Result<WakeStart, String> {
+    wake::start_all(state.inner().clone())
+}
+
+#[tauri::command]
+pub fn get_wake_operation(
+    state: State<'_, AppState>,
+    operation_id: String,
+) -> Result<WakeOperationView, String> {
+    wake::operation(state.inner(), &operation_id)
+}
+
+#[tauri::command]
+pub fn cancel_wake(state: State<'_, AppState>, operation_id: String) -> Result<(), String> {
+    wake::cancel(state.inner(), &operation_id)
 }
