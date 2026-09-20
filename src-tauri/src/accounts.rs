@@ -63,7 +63,11 @@ impl AppState {
         Ok(Self::view(&account))
     }
 
-    pub fn set_oauth_status(&self, login_id: String, status: OAuthLoginStatus) -> Result<(), String> {
+    pub fn set_oauth_status(
+        &self,
+        login_id: String,
+        status: OAuthLoginStatus,
+    ) -> Result<(), String> {
         let mut sessions = self
             .oauth_logins
             .lock()
