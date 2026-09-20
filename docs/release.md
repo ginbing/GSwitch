@@ -14,6 +14,10 @@ Use standard Tauri 2 bundles:
 - Windows: NSIS installer;
 - macOS: application bundle distributed through a DMG.
 
+Production Windows builds use the GUI subsystem. Launching GSwitch must open
+only its application window; GSwitch-owned Codex helper processes also run
+without creating visible console windows.
+
 The repository's current Tauri configuration is authoritative for which bundles
 and architectures a particular revision actually produces.
 
