@@ -116,6 +116,11 @@ redeem safely. A confirmed redemption remains confirmed if the post-action
 refresh fails; the UI reports the refresh warning separately. An interrupted
 request reuses the durable idempotency key during recovery.
 
+`reset` and `alreadyRedeemed` are confirmed outcomes. `nothingToReset` and
+`noCredit` explicitly mean no credit was consumed. Recovery is a user-directed
+retry of the exact recorded credit and key; it never selects a replacement
+credit automatically.
+
 There is no automatic redemption, expiry watcher, or scheduler.
 
 ## Wake

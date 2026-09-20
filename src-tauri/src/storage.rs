@@ -8,9 +8,9 @@ use atomic_write_file::OpenOptions;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::types::{PendingSwitch, StoredAccount};
+use crate::types::{PendingResetCredit, PendingSwitch, StoredAccount};
 
-const STORE_VERSION: u32 = 2;
+const STORE_VERSION: u32 = 3;
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct AccountStore {
@@ -22,6 +22,8 @@ pub struct AccountStore {
     pub active_account_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_switch: Option<PendingSwitch>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_reset_credit: Option<PendingResetCredit>,
 }
 
 impl Default for AccountStore {
@@ -31,6 +33,7 @@ impl Default for AccountStore {
             accounts: Vec::new(),
             active_account_id: None,
             pending_switch: None,
+            pending_reset_credit: None,
         }
     }
 }
@@ -112,7 +115,7 @@ fn deserialize<T: DeserializeOwned>(content: &str, label: &str) -> Result<T, Str
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{AccountIdentity, AccountKind, StoredAccount};
+    use crate::types::{AccountIdentity, AccountKind, PendingResetCredit, StoredAccount};
     use serde_json::json;
     use std::{
         env,
@@ -142,6 +145,7 @@ mod tests {
                 workspace_id: Some("workspace".into()),
             }),
             quota: None,
+            reset_credits: None,
             credential,
         }
     }
@@ -159,6 +163,7 @@ mod tests {
             accounts: vec![account("one", credential.clone())],
             active_account_id: None,
             pending_switch: None,
+            pending_reset_credit: None,
         };
 
         save_atomic(&path, &store).expect("save");
@@ -179,6 +184,7 @@ mod tests {
             accounts: vec![account("two", json!({"tokens": {"access_token": "new"}}))],
             active_account_id: None,
             pending_switch: None,
+            pending_reset_credit: None,
         };
         save_atomic(&path, &replacement).expect("replacement save");
 
@@ -219,14 +225,46 @@ mod tests {
     fn a_compatible_old_store_is_upgraded_on_the_next_atomic_write() {
         let path = temp_store_path("upgrade-on-write");
         let store = AccountStore {
-            version: 1,
+            version: 2,
             accounts: vec![account("one", json!({"token": "old"}))],
             active_account_id: None,
             pending_switch: None,
+            pending_reset_credit: None,
         };
 
         save_atomic(&path, &store).expect("save");
         assert_eq!(load(&path).expect("load").version, STORE_VERSION);
+        let _ = fs::remove_dir_all(path.parent().expect("parent"));
+    }
+
+    #[test]
+    fn preserves_a_pending_reset_credit_for_idempotent_recovery() {
+        let path = temp_store_path("pending-reset-credit");
+        let store = AccountStore {
+            version: STORE_VERSION,
+            accounts: vec![account("one", json!({"token": "current"}))],
+            active_account_id: None,
+            pending_switch: None,
+            pending_reset_credit: Some(PendingResetCredit {
+                account_id: "one".into(),
+                credit_id: "provider-private-id".into(),
+                idempotency_key: "7e6dff14-928a-4593-846a-5cae9cf0f9c9".into(),
+                created_at_unix_ms: 123,
+            }),
+        };
+
+        save_atomic(&path, &store).expect("save");
+        let pending = load(&path)
+            .expect("load")
+            .pending_reset_credit
+            .expect("pending reset credit");
+        assert_eq!(pending.account_id, "one");
+        assert_eq!(pending.credit_id, "provider-private-id");
+        assert_eq!(
+            pending.idempotency_key,
+            "7e6dff14-928a-4593-846a-5cae9cf0f9c9"
+        );
+
         let _ = fs::remove_dir_all(path.parent().expect("parent"));
     }
 
