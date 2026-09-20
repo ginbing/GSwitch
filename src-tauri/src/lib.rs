@@ -4,7 +4,9 @@ mod codex;
 mod commands;
 mod identity;
 mod intake;
+mod runtime;
 mod storage;
+mod switching;
 mod types;
 
 use tauri::Manager;
@@ -24,7 +26,13 @@ pub fn run() {
             commands::start_oauth_login,
             commands::get_oauth_login_status,
             commands::import_auth_json,
-            commands::import_api_key
+            commands::import_api_key,
+            commands::get_live_account_state,
+            commands::save_current_account,
+            commands::enable_account_switching,
+            commands::switch_account,
+            commands::recover_pending_switch,
+            commands::remove_saved_account
         ])
         .run(tauri::generate_context!())
         .expect("error while running GSwitch");

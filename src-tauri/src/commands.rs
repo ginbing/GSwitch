@@ -2,8 +2,10 @@ use tauri::State;
 
 use crate::{
     accounts::AppState,
-    codex, intake,
-    types::{AccountView, OAuthLoginStart, OAuthLoginStatus, RuntimeInfo},
+    codex, intake, switching,
+    types::{
+        AccountView, LiveAccountView, OAuthLoginStart, OAuthLoginStatus, RuntimeInfo, SwitchOutcome,
+    },
 };
 
 #[tauri::command]
@@ -45,4 +47,37 @@ pub fn import_api_key(
     label: Option<String>,
 ) -> Result<AccountView, String> {
     intake::import_api_key(state.inner(), &api_key, label)
+}
+
+#[tauri::command]
+pub fn get_live_account_state(state: State<'_, AppState>) -> Result<LiveAccountView, String> {
+    switching::live_account(state.inner())
+}
+
+#[tauri::command]
+pub fn save_current_account(state: State<'_, AppState>) -> Result<AccountView, String> {
+    switching::save_current_account(state.inner())
+}
+
+#[tauri::command]
+pub fn enable_account_switching(state: State<'_, AppState>) -> Result<bool, String> {
+    switching::enable_file_store(state.inner())
+}
+
+#[tauri::command]
+pub fn switch_account(
+    state: State<'_, AppState>,
+    target_id: String,
+) -> Result<SwitchOutcome, String> {
+    switching::switch_account(state.inner(), &target_id)
+}
+
+#[tauri::command]
+pub fn recover_pending_switch(state: State<'_, AppState>) -> Result<(), String> {
+    switching::recover_pending_switch(state.inner())
+}
+
+#[tauri::command]
+pub fn remove_saved_account(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    switching::remove_saved_account(state.inner(), &id)
 }

@@ -8,9 +8,9 @@ use atomic_write_file::OpenOptions;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::types::StoredAccount;
+use crate::types::{PendingSwitch, StoredAccount};
 
-const STORE_VERSION: u32 = 1;
+const STORE_VERSION: u32 = 2;
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct AccountStore {
@@ -18,6 +18,10 @@ pub struct AccountStore {
     pub version: u32,
     #[serde(default)]
     pub accounts: Vec<StoredAccount>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_account_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_switch: Option<PendingSwitch>,
 }
 
 impl Default for AccountStore {
@@ -25,6 +29,8 @@ impl Default for AccountStore {
         Self {
             version: STORE_VERSION,
             accounts: Vec::new(),
+            active_account_id: None,
+            pending_switch: None,
         }
     }
 }
@@ -48,7 +54,12 @@ pub fn load(path: &Path) -> Result<AccountStore, String> {
 }
 
 pub fn save_atomic(path: &Path, store: &AccountStore) -> Result<(), String> {
-    let content = serde_json::to_vec_pretty(store)
+    // Every successful write upgrades an older compatible store. This keeps
+    // migrations explicit without treating an old, valid account library as
+    // disposable data.
+    let mut current = store.clone();
+    current.version = STORE_VERSION;
+    let content = serde_json::to_vec_pretty(&current)
         .map_err(|_| "Unable to serialize the GSwitch account store".to_string())?;
     write_private_bytes_atomic(path, &content, "GSwitch account store")
 }
@@ -145,6 +156,8 @@ mod tests {
         let store = AccountStore {
             version: STORE_VERSION,
             accounts: vec![account("one", credential.clone())],
+            active_account_id: None,
+            pending_switch: None,
         };
 
         save_atomic(&path, &store).expect("save");
@@ -163,6 +176,8 @@ mod tests {
         let replacement = AccountStore {
             version: STORE_VERSION,
             accounts: vec![account("two", json!({"tokens": {"access_token": "new"}}))],
+            active_account_id: None,
+            pending_switch: None,
         };
         save_atomic(&path, &replacement).expect("replacement save");
 
@@ -195,6 +210,21 @@ mod tests {
         assert_eq!(loaded.accounts.len(), 1);
         assert_eq!(loaded.accounts[0].identity, None);
 
+        let _ = fs::remove_dir_all(path.parent().expect("parent"));
+    }
+
+    #[test]
+    fn a_compatible_old_store_is_upgraded_on_the_next_atomic_write() {
+        let path = temp_store_path("upgrade-on-write");
+        let store = AccountStore {
+            version: 1,
+            accounts: vec![account("one", json!({"token": "old"}))],
+            active_account_id: None,
+            pending_switch: None,
+        };
+
+        save_atomic(&path, &store).expect("save");
+        assert_eq!(load(&path).expect("load").version, STORE_VERSION);
         let _ = fs::remove_dir_all(path.parent().expect("parent"));
     }
 

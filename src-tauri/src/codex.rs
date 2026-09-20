@@ -62,6 +62,34 @@ pub fn runtime_info() -> Result<RuntimeInfo, String> {
     })
 }
 
+pub fn auth_path(codex_home: &Path) -> PathBuf {
+    codex_home.join("auth.json")
+}
+
+pub fn read_auth_document(codex_home: &Path) -> Result<serde_json::Value, String> {
+    crate::storage::read_json(&auth_path(codex_home), "Codex credentials")
+}
+
+/// Distinguishes a missing file (a normal signed-out state) from an unreadable
+/// or malformed credential document. Callers must not overwrite the latter.
+pub fn read_optional_auth_document(codex_home: &Path) -> Result<Option<serde_json::Value>, String> {
+    let path = auth_path(codex_home);
+    match fs::read_to_string(&path) {
+        Ok(content) => serde_json::from_str(&content)
+            .map(Some)
+            .map_err(|_| "Unable to parse Codex credentials".to_string()),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+        Err(_) => Err("Unable to read Codex credentials".to_string()),
+    }
+}
+
+pub fn write_auth_document(
+    codex_home: &Path,
+    credential: &serde_json::Value,
+) -> Result<(), String> {
+    crate::storage::write_json_atomic(&auth_path(codex_home), credential, "Codex credentials")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -112,6 +140,22 @@ mod tests {
         assert_eq!(
             credential_store_mode(&path).expect_err("invalid config"),
             "Unable to parse Codex configuration"
+        );
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn distinguishes_signed_out_from_invalid_credentials() {
+        let path = temp_dir("optional-auth");
+        assert_eq!(
+            read_optional_auth_document(&path).expect("signed out"),
+            None
+        );
+
+        fs::write(path.join("auth.json"), "{").expect("write invalid auth");
+        assert_eq!(
+            read_optional_auth_document(&path).expect_err("invalid auth"),
+            "Unable to parse Codex credentials"
         );
         let _ = fs::remove_dir_all(path);
     }

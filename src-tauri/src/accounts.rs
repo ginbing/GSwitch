@@ -11,7 +11,9 @@ use uuid::Uuid;
 
 use crate::{
     storage::{self, AccountStore},
-    types::{AccountIdentity, AccountKind, AccountView, OAuthLoginStatus, StoredAccount},
+    types::{
+        AccountIdentity, AccountKind, AccountView, OAuthLoginStatus, PendingSwitch, StoredAccount,
+    },
 };
 
 #[derive(Clone)]
@@ -66,7 +68,44 @@ impl AppState {
             .store
             .lock()
             .map_err(|_| "Account store lock is unavailable".to_string())?;
-        Ok(store.accounts.iter().map(Self::view).collect())
+        Ok(store
+            .accounts
+            .iter()
+            .map(|account| Self::view(account, store.active_account_id.as_deref()))
+            .collect())
+    }
+
+    pub fn account_by_identity(
+        &self,
+        identity: &AccountIdentity,
+    ) -> Result<Option<AccountView>, String> {
+        let store = self
+            .store
+            .lock()
+            .map_err(|_| "Account store lock is unavailable".to_string())?;
+        Ok(store
+            .accounts
+            .iter()
+            .find(|account| account.identity.as_ref() == Some(identity))
+            .map(|account| Self::view(account, store.active_account_id.as_deref())))
+    }
+
+    pub fn has_pending_switch(&self) -> Result<bool, String> {
+        let store = self
+            .store
+            .lock()
+            .map_err(|_| "Account store lock is unavailable".to_string())?;
+        Ok(store.pending_switch.is_some())
+    }
+
+    /// Codex 0.144.5 refuses a CODEX_HOME under the system temporary folder.
+    /// Keep short-lived isolated profiles in GSwitch-owned application storage
+    /// instead; each profile is still independently deleted after its task.
+    pub fn isolated_profile_root(&self) -> Result<PathBuf, String> {
+        self.store_path
+            .parent()
+            .map(|path| path.join("isolated-codex"))
+            .ok_or_else(|| "Invalid GSwitch storage path".to_string())
     }
 
     /// Serializes any operation that can touch credentials across both GSwitch
@@ -120,7 +159,7 @@ impl AppState {
                     && account.identity.as_ref() == Some(identity)
                     && account.credential == *credential
             })
-            .map(Self::view))
+            .map(|account| Self::view(account, store.active_account_id.as_deref())))
     }
 
     pub fn upsert_under_operation(
@@ -169,8 +208,189 @@ impl AppState {
             candidate.accounts.push(account.clone());
         }
         storage::save_atomic(&self.store_path, &candidate)?;
+        let active_account_id = candidate.active_account_id.clone();
         *store = candidate;
-        Ok(Self::view(&account))
+        Ok(Self::view(&account, active_account_id.as_deref()))
+    }
+
+    pub fn account_by_id_under_operation(
+        &self,
+        _operation: &OperationGuard<'_>,
+        id: &str,
+    ) -> Result<StoredAccount, String> {
+        let store = self
+            .store
+            .lock()
+            .map_err(|_| "Account store lock is unavailable".to_string())?;
+        store
+            .accounts
+            .iter()
+            .find(|account| account.id == id)
+            .cloned()
+            .ok_or_else(|| "The selected account is no longer saved".to_string())
+    }
+
+    pub fn account_by_identity_under_operation(
+        &self,
+        _operation: &OperationGuard<'_>,
+        identity: &AccountIdentity,
+    ) -> Result<Option<StoredAccount>, String> {
+        let store = self
+            .store
+            .lock()
+            .map_err(|_| "Account store lock is unavailable".to_string())?;
+        Ok(store
+            .accounts
+            .iter()
+            .find(|account| account.identity.as_ref() == Some(identity))
+            .cloned())
+    }
+
+    pub fn update_credential_under_operation(
+        &self,
+        _operation: &OperationGuard<'_>,
+        id: &str,
+        credential: Value,
+    ) -> Result<(), String> {
+        let mut store = self
+            .store
+            .lock()
+            .map_err(|_| "Account store lock is unavailable".to_string())?;
+        let index = store
+            .accounts
+            .iter()
+            .position(|account| account.id == id)
+            .ok_or_else(|| "The selected account is no longer saved".to_string())?;
+        let mut candidate = store.clone();
+        candidate.accounts[index].credential = credential;
+        storage::save_atomic(&self.store_path, &candidate)?;
+        *store = candidate;
+        Ok(())
+    }
+
+    pub fn prepare_switch_under_operation(
+        &self,
+        _operation: &OperationGuard<'_>,
+        pending_switch: PendingSwitch,
+    ) -> Result<(), String> {
+        let mut store = self
+            .store
+            .lock()
+            .map_err(|_| "Account store lock is unavailable".to_string())?;
+        if store.pending_switch.is_some() {
+            return Err(
+                "GSwitch must recover a previous switch before starting another".to_string(),
+            );
+        }
+        let mut candidate = store.clone();
+        candidate.pending_switch = Some(pending_switch);
+        storage::save_atomic(&self.store_path, &candidate)?;
+        *store = candidate;
+        Ok(())
+    }
+
+    pub fn pending_switch_under_operation(
+        &self,
+        _operation: &OperationGuard<'_>,
+    ) -> Result<Option<PendingSwitch>, String> {
+        let store = self
+            .store
+            .lock()
+            .map_err(|_| "Account store lock is unavailable".to_string())?;
+        Ok(store.pending_switch.clone())
+    }
+
+    pub fn active_account_id_under_operation(
+        &self,
+        _operation: &OperationGuard<'_>,
+    ) -> Result<Option<String>, String> {
+        let store = self
+            .store
+            .lock()
+            .map_err(|_| "Account store lock is unavailable".to_string())?;
+        Ok(store.active_account_id.clone())
+    }
+
+    pub fn mark_switch_verified_under_operation(
+        &self,
+        _operation: &OperationGuard<'_>,
+    ) -> Result<(), String> {
+        let mut store = self
+            .store
+            .lock()
+            .map_err(|_| "Account store lock is unavailable".to_string())?;
+        let mut candidate = store.clone();
+        let pending = candidate
+            .pending_switch
+            .as_mut()
+            .ok_or_else(|| "No GSwitch switch transaction is pending".to_string())?;
+        pending.stage = crate::types::PendingSwitchStage::Verified;
+        storage::save_atomic(&self.store_path, &candidate)?;
+        *store = candidate;
+        Ok(())
+    }
+
+    pub fn complete_switch_under_operation(
+        &self,
+        _operation: &OperationGuard<'_>,
+        id: &str,
+    ) -> Result<AccountView, String> {
+        let mut store = self
+            .store
+            .lock()
+            .map_err(|_| "Account store lock is unavailable".to_string())?;
+        let account = store
+            .accounts
+            .iter()
+            .find(|account| account.id == id)
+            .cloned()
+            .ok_or_else(|| "The selected account is no longer saved".to_string())?;
+        let mut candidate = store.clone();
+        candidate.active_account_id = Some(id.to_string());
+        candidate.pending_switch = None;
+        storage::save_atomic(&self.store_path, &candidate)?;
+        *store = candidate;
+        Ok(Self::view(&account, Some(id)))
+    }
+
+    pub fn clear_pending_switch_under_operation(
+        &self,
+        _operation: &OperationGuard<'_>,
+        active_account_id: Option<String>,
+    ) -> Result<(), String> {
+        let mut store = self
+            .store
+            .lock()
+            .map_err(|_| "Account store lock is unavailable".to_string())?;
+        let mut candidate = store.clone();
+        candidate.active_account_id = active_account_id;
+        candidate.pending_switch = None;
+        storage::save_atomic(&self.store_path, &candidate)?;
+        *store = candidate;
+        Ok(())
+    }
+
+    pub fn remove_under_operation(
+        &self,
+        _operation: &OperationGuard<'_>,
+        id: &str,
+    ) -> Result<(), String> {
+        let mut store = self
+            .store
+            .lock()
+            .map_err(|_| "Account store lock is unavailable".to_string())?;
+        if store.active_account_id.as_deref() == Some(id) {
+            return Err("The active Codex account cannot be removed".to_string());
+        }
+        let mut candidate = store.clone();
+        let before = candidate.accounts.len();
+        candidate.accounts.retain(|account| account.id != id);
+        if candidate.accounts.len() == before {
+            return Err("The selected account is no longer saved".to_string());
+        }
+        storage::save_atomic(&self.store_path, &candidate)?;
+        *store = candidate;
+        Ok(())
     }
 
     /// Persists a refreshed credential independently of the main account store
@@ -214,14 +434,14 @@ impl AppState {
             .ok_or_else(|| "Unknown OAuth login session".to_string())
     }
 
-    fn view(account: &StoredAccount) -> AccountView {
+    fn view(account: &StoredAccount, active_account_id: Option<&str>) -> AccountView {
         AccountView {
             id: account.id.clone(),
             label: account.label.clone(),
             kind: account.kind.clone(),
             email: account.email.clone(),
             plan_type: account.plan_type.clone(),
-            active: false,
+            active: active_account_id == Some(account.id.as_str()),
         }
     }
 }
@@ -318,5 +538,51 @@ mod tests {
         assert!(operation.is_err());
         assert!(state.list().expect("list").is_empty());
         let _ = fs::remove_file(parent);
+    }
+
+    #[test]
+    fn completing_a_switch_marks_only_the_verified_target_active() {
+        let path = temp_path("complete-switch");
+        let state = AppState::new(path.clone()).expect("state");
+        let first = save(&state, draft("workspace-a", json!({"token": "first"})));
+        let second = save(&state, draft("workspace-b", json!({"token": "second"})));
+
+        let operation = state.acquire_operation().expect("operation");
+        state
+            .prepare_switch_under_operation(
+                &operation,
+                PendingSwitch {
+                    target_id: second.id.clone(),
+                    target_identity: AccountIdentity::ChatGpt {
+                        user_id: "user".into(),
+                        workspace_id: Some("workspace-b".into()),
+                    },
+                    previous_active_id: Some(first.id.clone()),
+                    previous_auth: Some(json!({"token": "first"})),
+                    stage: crate::types::PendingSwitchStage::Prepared,
+                },
+            )
+            .expect("prepare switch");
+        let completed = state
+            .complete_switch_under_operation(&operation, &second.id)
+            .expect("complete switch");
+
+        assert!(completed.active);
+        assert!(!state.has_pending_switch().expect("pending"));
+        let accounts = state.list().expect("accounts");
+        assert!(accounts
+            .iter()
+            .any(|account| account.id == second.id && account.active));
+        assert!(accounts
+            .iter()
+            .any(|account| account.id == first.id && !account.active));
+        assert_eq!(
+            state
+                .remove_under_operation(&operation, &second.id)
+                .expect_err("active account"),
+            "The active Codex account cannot be removed"
+        );
+        drop(operation);
+        let _ = fs::remove_dir_all(path.parent().expect("parent"));
     }
 }
