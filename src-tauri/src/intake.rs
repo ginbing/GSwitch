@@ -1,44 +1,47 @@
-use std::thread;
+use std::{thread, time::Duration};
 
 use serde_json::{json, Value};
 
 use crate::{
-    accounts::AppState,
-    app_server::{account_metadata, AppServer, TempCodexHome},
-    types::{AccountView, OAuthLoginStart, OAuthLoginStatus},
+    accounts::{AccountDraft, AppState, OperationGuard},
+    app_server::{account_metadata, AccountMetadata, AppServer, TempCodexHome},
+    identity,
+    types::{AccountIdentity, AccountView, OAuthLoginStart, OAuthLoginStatus},
 };
+
+const OAUTH_COMPLETION_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
 pub fn start_oauth(state: AppState) -> Result<OAuthLoginStart, String> {
     let profile = TempCodexHome::create()?;
     let mut server = AppServer::start(&profile.path)?;
 
-    server.send(json!({
-        "method": "account/login/start",
-        "id": 1,
-        "params": {
+    let result = server.call(
+        1,
+        "account/login/start",
+        json!({
             "type": "chatgpt",
             "useHostedLoginSuccessPage": true,
             "appBrand": "chatgpt"
-        }
-    }))?;
-
-    let result = server.read_response(1)?;
+        }),
+        Duration::from_secs(30),
+    )?;
     let login_id = result
         .get("loginId")
         .and_then(Value::as_str)
-        .ok_or_else(|| "Codex did not return a login id".to_string())?
+        .ok_or_else(|| "Codex did not return a login session".to_string())?
         .to_string();
     let auth_url = result
         .get("authUrl")
         .and_then(Value::as_str)
-        .ok_or_else(|| "Codex did not return an authorization URL".to_string())?
+        .filter(|url| url.starts_with("https://"))
+        .ok_or_else(|| "Codex returned an unsupported authorization URL".to_string())?
         .to_string();
 
     state.set_oauth_status(login_id.clone(), OAuthLoginStatus::Pending)?;
 
     let monitor_id = login_id.clone();
     thread::spawn(move || {
-        if let Err(message) = monitor_oauth(&mut server, &profile, &state, &monitor_id) {
+        if let Err(message) = monitor_oauth(&mut server, profile, &state, &monitor_id) {
             let _ = state.set_oauth_status(monitor_id, OAuthLoginStatus::Failed { message });
         }
     });
@@ -48,54 +51,35 @@ pub fn start_oauth(state: AppState) -> Result<OAuthLoginStart, String> {
 
 fn monitor_oauth(
     server: &mut AppServer,
-    profile: &TempCodexHome,
+    mut profile: TempCodexHome,
     state: &AppState,
     login_id: &str,
 ) -> Result<(), String> {
-    loop {
-        let message = server.read_message()?;
-        if message.get("method").and_then(Value::as_str) != Some("account/login/completed") {
-            continue;
-        }
-
-        let params = message
-            .get("params")
-            .ok_or_else(|| "OAuth completion notification is missing params".to_string())?;
-        if params.get("loginId").and_then(Value::as_str) != Some(login_id) {
-            continue;
-        }
-
-        if !params
-            .get("success")
-            .and_then(Value::as_bool)
-            .unwrap_or(false)
-        {
-            let error = params
-                .get("error")
-                .and_then(Value::as_str)
-                .unwrap_or("OAuth login failed")
-                .to_string();
-            return Err(error);
-        }
-
-        let account_result = server.account_read(2, false)?;
-        let metadata = account_metadata(&account_result)?;
-        let credential = profile.read_auth()?;
-        let label = metadata
-            .email
-            .clone()
-            .unwrap_or_else(|| "ChatGPT account".to_string());
-
-        let account = state.add(
-            label,
-            metadata.kind,
-            metadata.email,
-            metadata.plan_type,
-            credential,
-        )?;
-        state.set_oauth_status(login_id.to_string(), OAuthLoginStatus::Complete { account })?;
-        return Ok(());
+    let notification = server.wait_for_notification(OAUTH_COMPLETION_TIMEOUT, |message| {
+        message.get("method").and_then(Value::as_str) == Some("account/login/completed")
+            && message.pointer("/params/loginId").and_then(Value::as_str) == Some(login_id)
+    })?;
+    let success = notification
+        .pointer("/params/success")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if !success {
+        return Err("OAuth sign-in did not complete".to_string());
     }
+
+    let operation = state.acquire_operation()?;
+    let result = server.account_read(2, false)?;
+    let metadata = account_metadata(&result)?;
+    let account = persist_validated(
+        state,
+        &operation,
+        &mut profile,
+        metadata,
+        None,
+        None,
+        "ChatGPT account".to_string(),
+    )?;
+    state.set_oauth_status(login_id.to_string(), OAuthLoginStatus::Complete { account })
 }
 
 pub fn import_json(
@@ -104,28 +88,40 @@ pub fn import_json(
     label: Option<String>,
 ) -> Result<AccountView, String> {
     let credential: Value =
-        serde_json::from_str(raw_json).map_err(|error| format!("Invalid auth JSON: {error}"))?;
+        serde_json::from_str(raw_json).map_err(|_| "Invalid auth JSON".to_string())?;
     if !credential.is_object() {
         return Err("Invalid auth JSON: expected a JSON object".to_string());
     }
 
-    let profile = TempCodexHome::create()?;
-    profile.write_auth(&credential)?;
+    let expected_kind = identity::document_kind(&credential)?;
+    let expected_identity = identity::derive_identity(&expected_kind, &credential)?;
+    let operation = state.acquire_operation()?;
+    if let Some(existing) = state.find_exact_document_under_operation(
+        &operation,
+        &expected_kind,
+        &expected_identity,
+        &credential,
+    )? {
+        return Ok(existing);
+    }
 
+    let mut profile = TempCodexHome::create()?;
+    profile.write_auth(&credential)?;
     let mut server = AppServer::start(&profile.path)?;
     let result = server.account_read(1, true)?;
     let metadata = account_metadata(&result)?;
-    let credential = profile.read_auth()?;
-    let label = clean_label(label)
-        .or_else(|| metadata.email.clone())
-        .unwrap_or_else(|| "Imported account".to_string());
+    if metadata.kind != expected_kind {
+        return Err("The imported credential changed account type during validation".to_string());
+    }
 
-    state.add(
-        label,
-        metadata.kind,
-        metadata.email,
-        metadata.plan_type,
-        credential,
+    persist_validated(
+        state,
+        &operation,
+        &mut profile,
+        metadata,
+        Some(expected_identity),
+        clean_label(label),
+        "Imported account".to_string(),
     )
 }
 
@@ -134,30 +130,84 @@ pub fn import_api_key(
     api_key: &str,
     label: Option<String>,
 ) -> Result<AccountView, String> {
-    if api_key.trim().is_empty() {
+    let api_key = api_key.trim();
+    if api_key.is_empty() {
         return Err("API key is empty".to_string());
     }
 
-    let profile = TempCodexHome::create()?;
+    let operation = state.acquire_operation()?;
+    let mut profile = TempCodexHome::create()?;
     let mut server = AppServer::start(&profile.path)?;
-    server.send(json!({
-        "method": "account/login/start",
-        "id": 1,
-        "params": { "type": "apiKey", "apiKey": api_key.trim() }
-    }))?;
-    server.read_response(1)?;
+    server.call(
+        1,
+        "account/login/start",
+        json!({"type": "apiKey", "apiKey": api_key}),
+        Duration::from_secs(30),
+    )?;
 
     let result = server.account_read(2, false)?;
     let metadata = account_metadata(&result)?;
-    let credential = profile.read_auth()?;
+    if metadata.kind != crate::types::AccountKind::ApiKey {
+        return Err("Codex did not create an API-key account".to_string());
+    }
 
-    state.add(
-        clean_label(label).unwrap_or_else(|| "API key".to_string()),
-        metadata.kind,
-        metadata.email,
-        metadata.plan_type,
-        credential,
+    persist_validated(
+        state,
+        &operation,
+        &mut profile,
+        metadata,
+        None,
+        clean_label(label),
+        "API key".to_string(),
     )
+}
+
+fn persist_validated(
+    state: &AppState,
+    operation: &OperationGuard<'_>,
+    profile: &mut TempCodexHome,
+    metadata: AccountMetadata,
+    expected_identity: Option<AccountIdentity>,
+    label: Option<String>,
+    fallback_label: String,
+) -> Result<AccountView, String> {
+    let credential = profile.read_auth()?;
+    let identity = identity::derive_identity(&metadata.kind, &credential)?;
+    if expected_identity
+        .as_ref()
+        .is_some_and(|expected| expected != &identity)
+    {
+        return Err("The validated credentials do not match the imported account".to_string());
+    }
+
+    let default_label = metadata.email.clone().unwrap_or(fallback_label);
+    let result = state.upsert_under_operation(
+        operation,
+        AccountDraft {
+            label,
+            default_label,
+            kind: metadata.kind,
+            email: metadata.email,
+            plan_type: metadata.plan_type,
+            identity,
+            credential: credential.clone(),
+        },
+    );
+
+    if result.is_err() {
+        if state
+            .record_pending_credential(operation, &credential)
+            .is_err()
+        {
+            profile.retain_for_recovery();
+        }
+        return Err(
+            "GSwitch could not save validated credentials. A protected recovery copy was retained."
+                .to_string(),
+        );
+    }
+
+    result
 }
 
 fn clean_label(label: Option<String>) -> Option<String> {
@@ -177,7 +227,7 @@ mod tests {
         let state = AppState::new(path).expect("state");
 
         let error = import_json(&state, "{not valid", None).expect_err("invalid JSON");
-        assert!(error.starts_with("Invalid auth JSON:"));
+        assert_eq!(error, "Invalid auth JSON");
     }
 
     #[test]

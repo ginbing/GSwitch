@@ -1,112 +1,168 @@
 use std::{
-    fs,
+    collections::VecDeque,
+    env, fs,
     io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
+    sync::mpsc::{self, Receiver},
+    thread,
+    time::{Duration, Instant},
 };
 
 use serde_json::{json, Value};
 use uuid::Uuid;
 
+use crate::storage;
+
+const STARTUP_TIMEOUT: Duration = Duration::from_secs(15);
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
 pub struct AppServer {
     child: Child,
     stdin: ChildStdin,
-    stdout: BufReader<ChildStdout>,
+    messages: Receiver<Result<Value, String>>,
+    pending_messages: VecDeque<Value>,
 }
 
 impl AppServer {
     pub fn start(codex_home: &Path) -> Result<Self, String> {
-        let mut child = Command::new("codex")
-            .arg("app-server")
-            .env("CODEX_HOME", codex_home)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|error| format!("Unable to start Codex App Server: {error}"))?;
+        let mut command = app_server_command(codex_home);
+        let mut child = command.spawn().map_err(|_| {
+            "Unable to start Codex App Server. Check that Codex is installed.".to_string()
+        })?;
 
         let stdin = child
             .stdin
             .take()
-            .ok_or_else(|| "Codex App Server stdin is unavailable".to_string())?;
+            .ok_or_else(|| "Codex App Server did not provide standard input".to_string())?;
         let stdout = child
             .stdout
             .take()
-            .ok_or_else(|| "Codex App Server stdout is unavailable".to_string())?;
+            .ok_or_else(|| "Codex App Server did not provide standard output".to_string())?;
+        let messages = spawn_reader(stdout, &mut child)?;
 
         let mut server = Self {
             child,
             stdin,
-            stdout: BufReader::new(stdout),
+            messages,
+            pending_messages: VecDeque::new(),
         };
 
-        server.send(json!({
-            "method": "initialize",
-            "id": 0,
-            "params": {
+        server.call(
+            0,
+            "initialize",
+            json!({
                 "clientInfo": {
                     "name": "gswitch",
                     "title": "GSwitch",
                     "version": env!("CARGO_PKG_VERSION")
                 }
-            }
-        }))?;
-        server.read_response(0)?;
+            }),
+            STARTUP_TIMEOUT,
+        )?;
         server.send(json!({"method": "initialized", "params": {}}))?;
 
         Ok(server)
     }
 
+    pub fn call(
+        &mut self,
+        id: i64,
+        method: &str,
+        params: Value,
+        timeout: Duration,
+    ) -> Result<Value, String> {
+        self.send(json!({"method": method, "id": id, "params": params}))?;
+        self.read_response_with_timeout(id, timeout)
+    }
+
     pub fn send(&mut self, message: Value) -> Result<(), String> {
+        ensure_child_is_running(&mut self.child)?;
         serde_json::to_writer(&mut self.stdin, &message)
-            .map_err(|error| format!("Unable to encode Codex App Server request: {error}"))?;
+            .map_err(|_| "Unable to encode a Codex App Server request".to_string())?;
         self.stdin
             .write_all(b"\n")
-            .map_err(|error| format!("Unable to write Codex App Server request: {error}"))?;
+            .map_err(|_| "Unable to write to Codex App Server".to_string())?;
         self.stdin
             .flush()
-            .map_err(|error| format!("Unable to flush Codex App Server request: {error}"))
+            .map_err(|_| "Unable to flush a Codex App Server request".to_string())
     }
 
-    pub fn read_message(&mut self) -> Result<Value, String> {
-        let mut line = String::new();
-        let bytes = self
-            .stdout
-            .read_line(&mut line)
-            .map_err(|error| format!("Unable to read Codex App Server response: {error}"))?;
-        if bytes == 0 {
-            return Err("Codex App Server exited unexpectedly".to_string());
-        }
-
-        serde_json::from_str(&line)
-            .map_err(|error| format!("Invalid Codex App Server response: {error}"))
-    }
-
-    pub fn read_response(&mut self, id: i64) -> Result<Value, String> {
+    pub fn read_response_with_timeout(
+        &mut self,
+        id: i64,
+        timeout: Duration,
+    ) -> Result<Value, String> {
+        let deadline = Instant::now() + timeout;
         loop {
-            let message = self.read_message()?;
-            if message.get("id").and_then(Value::as_i64) != Some(id) {
-                continue;
+            if let Some(message) = self.take_pending(|message| response_id(message) == Some(id)) {
+                return response_result(message);
             }
 
-            if let Some(error) = message.get("error") {
-                return Err(format!("Codex App Server request failed: {error}"));
+            let message = self.next_message(remaining(deadline)?)?;
+            if response_id(&message) == Some(id) {
+                return response_result(message);
+            }
+            self.pending_messages.push_back(message);
+        }
+    }
+
+    pub fn wait_for_notification<F>(
+        &mut self,
+        timeout: Duration,
+        mut matches: F,
+    ) -> Result<Value, String>
+    where
+        F: FnMut(&Value) -> bool,
+    {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if let Some(message) = self.take_pending(|message| matches(message)) {
+                return Ok(message);
             }
 
-            return message
-                .get("result")
-                .cloned()
-                .ok_or_else(|| "Codex App Server response is missing result".to_string());
+            let message = self.next_message(remaining(deadline)?)?;
+            if matches(&message) {
+                return Ok(message);
+            }
+            self.pending_messages.push_back(message);
         }
     }
 
     pub fn account_read(&mut self, id: i64, refresh_token: bool) -> Result<Value, String> {
-        self.send(json!({
-            "method": "account/read",
-            "id": id,
-            "params": { "refreshToken": refresh_token }
-        }))?;
-        self.read_response(id)
+        self.call(
+            id,
+            "account/read",
+            json!({"refreshToken": refresh_token}),
+            REQUEST_TIMEOUT,
+        )
+    }
+
+    fn take_pending<F>(&mut self, matches: F) -> Option<Value>
+    where
+        F: FnMut(&Value) -> bool,
+    {
+        let index = self.pending_messages.iter().position(matches)?;
+        self.pending_messages.remove(index)
+    }
+
+    fn next_message(&mut self, timeout: Duration) -> Result<Value, String> {
+        receive_message(&self.messages, timeout)
+    }
+}
+
+fn receive_message(
+    messages: &Receiver<Result<Value, String>>,
+    timeout: Duration,
+) -> Result<Value, String> {
+    match messages.recv_timeout(timeout) {
+        Ok(message) => message,
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            Err("Codex App Server did not respond before the operation timed out".to_string())
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            Err("Codex App Server exited unexpectedly".to_string())
+        }
     }
 }
 
@@ -117,71 +173,211 @@ impl Drop for AppServer {
     }
 }
 
+fn app_server_command(codex_home: &Path) -> Command {
+    #[cfg(windows)]
+    let mut command = {
+        let invocation = configured_codex_binary()
+            .map(|path| format!("\"\"{}\" app-server\"", path.display()))
+            .unwrap_or_else(|| "codex app-server".to_string());
+        let mut command = Command::new(env::var_os("COMSPEC").unwrap_or_else(|| "cmd.exe".into()));
+        command.args(["/D", "/S", "/C", &invocation]);
+        command
+    };
+
+    #[cfg(not(windows))]
+    let mut command =
+        Command::new(configured_codex_binary().unwrap_or_else(|| PathBuf::from("codex")));
+
+    command
+        .current_dir(codex_home)
+        .env("CODEX_HOME", codex_home)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    for name in [
+        "OPENAI_API_KEY",
+        "CODEX_API_KEY",
+        "OPENAI_BASE_URL",
+        "OPENAI_API_BASE",
+        "OPENAI_ORG_ID",
+        "OPENAI_ORGANIZATION",
+        "OPENAI_PROJECT",
+    ] {
+        command.env_remove(name);
+    }
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    command
+}
+
+fn configured_codex_binary() -> Option<PathBuf> {
+    let explicit = env::var_os("GSWITCH_CODEX_BIN")
+        .map(PathBuf::from)
+        .filter(|path| path.is_file());
+    if explicit.is_some() {
+        return explicit;
+    }
+
+    #[cfg(windows)]
+    {
+        env::var_os("APPDATA")
+            .map(PathBuf::from)
+            .map(|path| path.join("npm").join("codex.cmd"))
+            .filter(|path| path.is_file())
+    }
+
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
+fn spawn_reader(
+    stdout: ChildStdout,
+    child: &mut Child,
+) -> Result<Receiver<Result<Value, String>>, String> {
+    let (sender, receiver) = mpsc::channel();
+    let reader = thread::Builder::new()
+        .name("gswitch-app-server-reader".to_string())
+        .spawn(move || read_messages(stdout, sender));
+
+    if reader.is_err() {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err("Unable to monitor Codex App Server responses".to_string());
+    }
+    Ok(receiver)
+}
+
+fn read_messages(stdout: ChildStdout, sender: mpsc::Sender<Result<Value, String>>) {
+    let mut stdout = BufReader::new(stdout);
+    loop {
+        let mut line = String::new();
+        match stdout.read_line(&mut line) {
+            Ok(0) => break,
+            Ok(_) => {
+                let message = serde_json::from_str(&line)
+                    .map_err(|_| "Codex App Server returned an invalid message".to_string());
+                if sender.send(message).is_err() {
+                    break;
+                }
+            }
+            Err(_) => {
+                let _ = sender.send(Err("Unable to read from Codex App Server".to_string()));
+                break;
+            }
+        }
+    }
+}
+
+fn ensure_child_is_running(child: &mut Child) -> Result<(), String> {
+    match child
+        .try_wait()
+        .map_err(|_| "Unable to inspect Codex App Server".to_string())?
+    {
+        Some(_) => Err("Codex App Server exited unexpectedly".to_string()),
+        None => Ok(()),
+    }
+}
+
+fn remaining(deadline: Instant) -> Result<Duration, String> {
+    deadline
+        .checked_duration_since(Instant::now())
+        .ok_or_else(|| {
+            "Codex App Server did not respond before the operation timed out".to_string()
+        })
+}
+
+fn response_id(message: &Value) -> Option<i64> {
+    message.get("id").and_then(Value::as_i64)
+}
+
+fn response_result(message: Value) -> Result<Value, String> {
+    if message.get("error").is_some() {
+        return Err("Codex App Server rejected the request".to_string());
+    }
+    message
+        .get("result")
+        .cloned()
+        .ok_or_else(|| "Codex App Server response is missing a result".to_string())
+}
+
 pub struct TempCodexHome {
     pub path: PathBuf,
+    cleanup: bool,
 }
 
 impl TempCodexHome {
     pub fn create() -> Result<Self, String> {
         let path = std::env::temp_dir().join(format!("gswitch-{}", Uuid::new_v4()));
-        fs::create_dir(&path)
-            .map_err(|error| format!("Unable to create temporary Codex profile: {error}"))?;
+        create_private_directory(&path)?;
 
-        let configure = || -> Result<(), String> {
-            set_private_permissions(&path, 0o700)?;
-            let config_path = path.join("config.toml");
-            fs::write(&config_path, "cli_auth_credentials_store = \"file\"\n")
-                .map_err(|error| format!("Unable to configure temporary Codex profile: {error}"))?;
-            set_private_permissions(&config_path, 0o600)
-        };
-
-        if let Err(error) = configure() {
+        let config_path = path.join("config.toml");
+        if let Err(error) = storage::write_private_bytes_atomic(
+            &config_path,
+            b"cli_auth_credentials_store = \"file\"\n",
+            "temporary Codex configuration",
+        ) {
             let _ = fs::remove_dir_all(&path);
             return Err(error);
         }
 
-        Ok(Self { path })
+        Ok(Self {
+            path,
+            cleanup: true,
+        })
     }
 
     pub fn write_auth(&self, credential: &Value) -> Result<(), String> {
-        let bytes = serde_json::to_vec_pretty(credential)
-            .map_err(|error| format!("Unable to serialize imported credentials: {error}"))?;
-        let path = self.path.join("auth.json");
-        fs::write(&path, bytes)
-            .map_err(|error| format!("Unable to write temporary auth file: {error}"))?;
-        set_private_permissions(&path, 0o600)
+        storage::write_json_atomic(
+            &self.path.join("auth.json"),
+            credential,
+            "temporary Codex credentials",
+        )
     }
 
     pub fn read_auth(&self) -> Result<Value, String> {
-        let path = self.path.join("auth.json");
-        let content = fs::read_to_string(&path)
-            .map_err(|error| format!("Unable to read {}: {error}", path.display()))?;
-        serde_json::from_str(&content)
-            .map_err(|error| format!("Invalid Codex auth JSON at {}: {error}", path.display()))
+        storage::read_json(&self.path.join("auth.json"), "temporary Codex credentials")
     }
-}
 
-#[cfg(unix)]
-fn set_private_permissions(path: &Path, mode: u32) -> Result<(), String> {
-    use std::os::unix::fs::PermissionsExt;
-
-    let mut permissions = fs::metadata(path)
-        .map_err(|error| format!("Unable to inspect temporary credential path: {error}"))?
-        .permissions();
-    permissions.set_mode(mode);
-    fs::set_permissions(path, permissions)
-        .map_err(|error| format!("Unable to protect temporary credential path: {error}"))
-}
-
-#[cfg(not(unix))]
-fn set_private_permissions(_path: &Path, _mode: u32) -> Result<(), String> {
-    Ok(())
+    pub fn retain_for_recovery(&mut self) {
+        self.cleanup = false;
+    }
 }
 
 impl Drop for TempCodexHome {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
+        if self.cleanup {
+            let _ = fs::remove_dir_all(&self.path);
+        }
     }
+}
+
+fn create_private_directory(path: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+
+        let mut builder = fs::DirBuilder::new();
+        builder.mode(0o700);
+        builder
+            .create(path)
+            .map_err(|_| "Unable to create a temporary Codex profile".to_string())?;
+    }
+
+    #[cfg(not(unix))]
+    {
+        fs::create_dir(path)
+            .map_err(|_| "Unable to create a temporary Codex profile".to_string())?;
+    }
+
+    Ok(())
 }
 
 pub struct AccountMetadata {
@@ -199,12 +395,12 @@ pub fn account_metadata(result: &Value) -> Result<AccountMetadata, String> {
     let account_type = account
         .get("type")
         .and_then(Value::as_str)
-        .ok_or_else(|| "Codex account response is missing type".to_string())?;
+        .ok_or_else(|| "Codex account response is missing an account type".to_string())?;
 
     let kind = match account_type {
         "chatgpt" => crate::types::AccountKind::ChatGpt,
         "apiKey" | "apikey" => crate::types::AccountKind::ApiKey,
-        other => return Err(format!("Unsupported Codex account type: {other}")),
+        _ => return Err("This Codex account type is not supported by GSwitch".to_string()),
     };
 
     Ok(AccountMetadata {
@@ -241,9 +437,24 @@ mod tests {
     }
 
     #[test]
-    fn rejects_missing_account() {
-        let value = json!({"account": null, "requiresOpenaiAuth": true});
-        assert!(account_metadata(&value).is_err());
+    fn app_server_errors_are_sanitized() {
+        let error = response_result(json!({
+            "id": 1,
+            "error": {"message": "Bearer secret-token must never leak"}
+        }))
+        .expect_err("error response");
+        assert_eq!(error, "Codex App Server rejected the request");
+        assert!(!error.contains("secret-token"));
+    }
+
+    #[test]
+    fn waiting_for_a_message_times_out() {
+        let (_sender, receiver) = mpsc::channel();
+        let error = receive_message(&receiver, Duration::from_millis(1)).expect_err("timeout");
+        assert_eq!(
+            error,
+            "Codex App Server did not respond before the operation timed out"
+        );
     }
 
     #[test]
