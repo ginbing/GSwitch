@@ -1,22 +1,28 @@
 # GSwitch
 
-GSwitch is a focused local desktop utility for people who use multiple Codex accounts.
+GSwitch is a compact, local-first desktop utility for people who personally use
+multiple Codex accounts. Its core job is to make account state understandable,
+account switching safe, and a small number of capacity actions explicit.
 
 > **GSwitch is a Codex switcher that stays a switcher.**
 
-It exists to make local account state understandable and account changes reliable without becoming a proxy, router, account pool, or AI infrastructure platform.
+It is not a proxy, request router, account pool, or AI infrastructure platform.
+The durable product boundary is in [PRODUCT.md](./PRODUCT.md).
 
 ## Documentation
 
-Durable product and engineering knowledge lives in committed repository documentation, not in long-lived planning Issues.
+Long-lived product and engineering facts live in this repository, not in
+planning Issues. Start with [docs/README.md](./docs/README.md), which routes each
+kind of change to its single documentation owner.
 
-Start with [`docs/README.md`](./docs/README.md).
+GitHub Issues are for current bugs, features, and bounded tasks. Exact behavior
+of a particular build is established by its source, configuration, tests, and
+the Codex runtime it uses.
 
 ## Development
 
-The application uses Tauri 2, Rust, React, TypeScript, Vite, and Tailwind CSS.
-
-Common validation:
+GSwitch uses Tauri 2 and Rust for the trusted desktop boundary, with React,
+TypeScript, Vite, and Tailwind CSS for the WebView UI.
 
 ```bash
 pnpm install --frozen-lockfile
@@ -27,4 +33,5 @@ cargo test --manifest-path src-tauri/Cargo.toml --locked
 pnpm tauri build --no-bundle
 ```
 
-The executable repository state is authoritative for what a particular build currently supports.
+See [docs/testing.md](./docs/testing.md) for what these checks do and do not
+prove, and [docs/release.md](./docs/release.md) before producing a public build.

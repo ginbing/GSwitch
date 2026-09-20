@@ -1,0 +1,81 @@
+# Testing
+
+Tests prove specific behavior at a specific revision. They do not replace the
+product boundary, architecture ownership, real provider behavior, or release
+acceptance.
+
+## Local validation
+
+Frontend feedback:
+
+```bash
+pnpm test
+pnpm build
+```
+
+Rust feedback:
+
+```bash
+cargo fmt --manifest-path src-tauri/Cargo.toml --check
+cargo test --manifest-path src-tauri/Cargo.toml --locked
+```
+
+Desktop compilation without producing an installer:
+
+```bash
+pnpm tauri build --no-bundle
+```
+
+Run focused tests while editing, then the full relevant path before handoff.
+
+## CI coverage
+
+GitHub Actions runs:
+
+- frontend tests and a production frontend build on Linux;
+- Rust formatting and tests on Windows and macOS;
+- a no-bundle Tauri build on Windows and macOS.
+
+The CI workflow has read-only repository permissions. A passing CI run proves
+that the checked-in revision passed those commands on those runners; it does
+not publish or release anything.
+
+## Required regression areas
+
+Credential and state work should cover the exact affected boundary, including
+as applicable:
+
+- complete credential-document preservation, including unknown fields;
+- stable identity matching and workspace separation;
+- reauthentication replacing the correct saved profile;
+- single-operation and cross-process serialization;
+- failed persistence leaving the in-memory owner unchanged;
+- malformed or unreadable state failing closed without leaking contents;
+- external or uninspectable Codex runtimes blocking sensitive mutation;
+- current live credentials being reconciled before replacement;
+- target identity confirmation before switch success;
+- interrupted-switch and protected-credential recovery;
+- quota bucket normalization, zero remaining, and stale-cache labeling;
+- provider refresh before reset-credit selection;
+- earliest eligible unexpired reset-credit selection and idempotent outcomes;
+- Wake model allowlisting, low reasoning effort, quota guards, and confirmation;
+- frontend clearing secret inputs, confirming reset consumption, and disabling
+  conflicting actions.
+
+Prefer behavior assertions over broad snapshots. Mock protocol payloads prove
+normalization and local policy; they do not prove the current remote provider.
+
+## What CI does not prove
+
+Standard CI does not by itself prove:
+
+- a real OAuth login, installed Codex App Server, or live provider response;
+- process detection against every Codex/IDE version;
+- a signed or notarized installer;
+- clean install, upgrade, uninstall, or OS security-dialog behavior;
+- the exact permissions of a packaged artifact;
+- public-release readiness.
+
+Those claims require the matching integration or release check. Never report a
+platform, provider, installer, or recovery path as validated unless that exact
+proof ran.

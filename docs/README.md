@@ -1,26 +1,27 @@
 # GSwitch documentation
 
-This is the sole router for durable GSwitch documentation.
+This is the sole router for durable GSwitch documentation. Read only the
+smallest owner needed for the task.
 
-Read only the smallest owner needed for the task:
-
-| Need | Owner |
+| Need | Canonical owner |
 | --- | --- |
 | Product purpose and anti-expansion boundary | [`PRODUCT.md`](../PRODUCT.md) |
-| Runtime and state ownership | [`OWNERSHIP.md`](../OWNERSHIP.md) |
-| User-visible account workflows | [`product/workflows.md`](./product/workflows.md) |
-| Code structure and runtime architecture | [`engineering/architecture.md`](./engineering/architecture.md) |
-| Desktop UI rules | [`engineering/frontend.md`](./engineering/frontend.md) |
-| Credential and recovery safety | [`engineering/security.md`](./engineering/security.md) |
-| Validation commands and proof boundaries | [`engineering/testing.md`](./engineering/testing.md) |
-| Packaging and public-release gates | [`operations/release.md`](./operations/release.md) |
+| Runtime architecture, module boundaries, and state ownership | [`architecture.md`](./architecture.md) |
+| OAuth, import, switching, quota, reset-credit, and Wake semantics | [`workflows.md`](./workflows.md) |
+| Single-window UI and anti-overdesign rules | [`design.md`](./design.md) |
+| Credential, process, mutation, and recovery invariants | [`security.md`](./security.md) |
+| Test commands, CI, and proof boundaries | [`testing.md`](./testing.md) |
+| Windows/macOS packaging, signing, and release gates | [`release.md`](./release.md) |
 
 ## Documentation model
 
-Repository Markdown owns durable product and architecture meaning.
+- Repository Markdown owns durable product and architecture meaning.
+- Source, configuration, tests, generated artifacts, and observed Codex behavior
+  own exact executable facts for a particular revision.
+- Live provider and operating-system state stays with its provider. Do not turn
+  a dynamic observation into an undated repository claim.
+- Issues own current bugs, features, and bounded tasks only.
 
-Code, configuration, tests, and Codex runtime behavior own exact executable facts.
-
-Issues own current work only. They should not become a second source of truth for product scope, architecture, release policy, or engineering process. Closed Issues are historical context.
-
-When a durable decision changes, edit the smallest existing owner. Delete obsolete prose instead of creating another strategy, roadmap, status, or documentation index.
+When a durable decision changes, edit the smallest existing owner. Delete
+obsolete prose because Git retains history. Do not create another roadmap,
+strategy document, status ledger, or documentation index.
