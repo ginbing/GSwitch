@@ -140,28 +140,6 @@ impl AppServer {
         }
     }
 
-    pub fn wait_for_notification<F>(
-        &mut self,
-        timeout: Duration,
-        mut matches: F,
-    ) -> Result<Value, String>
-    where
-        F: FnMut(&Value) -> bool,
-    {
-        let deadline = Instant::now() + timeout;
-        loop {
-            if let Some(message) = self.take_pending(|message| matches(message)) {
-                return Ok(message);
-            }
-
-            let message = self.next_message(remaining(deadline)?)?;
-            if matches(&message) {
-                return Ok(message);
-            }
-            self.pending_messages.push_back(message);
-        }
-    }
-
     /// Waits in short slices so a user-triggered Wake cancellation can
     /// interrupt the current turn without leaving the GSwitch-owned server
     /// running. Other messages remain queued for their matching request.
@@ -203,6 +181,15 @@ impl AppServer {
             id,
             "account/read",
             json!({"refreshToken": refresh_token}),
+            REQUEST_TIMEOUT,
+        )
+    }
+
+    pub fn account_login_cancel(&mut self, id: i64, login_id: &str) -> Result<Value, String> {
+        self.call(
+            id,
+            "account/login/cancel",
+            json!({"loginId": login_id}),
             REQUEST_TIMEOUT,
         )
     }

@@ -10,7 +10,7 @@ smaller than a general account-management platform.
   safety-critical state transitions.
 - React and TypeScript own presentation, transient form state, and direct user
   interaction.
-- Vite builds the frontend; Tailwind CSS supplies styling.
+- Vite builds the frontend; local CSS defines the small desktop design system.
 - The WebView calls explicit Tauri commands. GSwitch has no local HTTP API,
   listening port, daemon, or remote-control surface.
 
@@ -70,6 +70,11 @@ Use React's normal state model: one owner for each state value, derived data
 instead of copies, props for controlled child views, and local state for dialogs
 and forms. A global store, router, component framework, or generic API client
 requires a demonstrated current need.
+
+The native dialog is used only to choose an account-export path. Rust reads that
+path and returns a sanitized import result; raw file bytes and credential
+documents do not cross the WebView boundary. OAuth links are short-lived,
+user-visible links associated with an in-memory login session.
 
 ## Isolated Codex profiles
 

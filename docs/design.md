@@ -11,12 +11,19 @@ The interface does not need to advertise feature depth.
 
 ## Window and hierarchy
 
-Keep one main window and one primary information hierarchy. The main surface is
-a compact account list with global actions close to it. Focused dialogs may
-handle add-account, explicit confirmation, progress/results, or recovery; they
-do not create a second navigation system.
+Keep one native-titlebar main window and one primary information hierarchy.
+The default desktop canvas is 1100 by 700, with a 900 by 580 minimum. The
+main surface is an account workspace: a quiet toolbar, a narrow safety notice
+when needed, and a responsive grid of small account cards. Three cards fit on a
+wide desktop, then collapse to two and one card without introducing navigation.
+Focused dialogs may handle add-account, explicit confirmation, progress/results,
+or recovery; they do not create a second navigation system.
 
-An account row should show only the state needed for a decision:
+The toolbar contains the current Codex account, Refresh, Wake all, Add account,
+and a lightweight Settings button. It is a command bar, not a dashboard header
+or a custom window chrome.
+
+An account card should show only the state needed for a decision:
 
 - label and useful identity;
 - active, ready, needs-login, unsupported, or busy state;
@@ -24,13 +31,19 @@ An account row should show only the state needed for a decision:
 - reset-credit count and nearest expiry when available;
 - direct actions such as Switch, Wake, refresh, reset, or remove when eligible.
 
-The active account must be obvious at a glance. Actions stay next to the account
-they affect. Global actions such as **Add account** and **Wake All** stay near the
-list rather than behind a sidebar.
+The active account must be obvious at a glance through a clear border and
+status badge. Actions stay next to the account they affect. Global actions such
+as **Add account** and **Wake All** stay near the cards rather than behind a
+sidebar.
 
 Reset credits remain compact in the row. Details and the destructive
 **Use reset** confirmation appear only on demand, with the earliest-expiring
 eligible credit presented first.
+
+The empty state is two deliberate choices: import an export the user selects,
+or add an account manually. It states plainly that GSwitch does not read
+Cockpit Tools private storage. The add dialog offers official browser sign-in,
+pasted auth JSON, selected export file, and API key without a separate page.
 
 ## Interaction states
 
@@ -49,10 +62,11 @@ filesystem, protocol, or token details do not belong in the primary UI.
 
 ## Visual rules
 
-Use system typography, natural information density, clear light/dark behavior,
-restrained status color, simple borders, and consistent spacing. Controls should
-look native to a desktop utility without imitating macOS chrome on every
-platform.
+Use Segoe UI Variable or the system UI font, natural information density, clear
+light/dark behavior, restrained purple action color, quiet status color, simple
+borders, and an eight-pixel spacing rhythm. Surfaces use modest 10 to 15 pixel
+corner radii and short response transitions. Controls should look native to a
+desktop utility without imitating macOS chrome on every platform.
 
 ## Anti-overdesign
 
@@ -62,7 +76,8 @@ larger:
 - no sidebar for a one-screen utility;
 - no multi-page dashboard without a real workflow need;
 - no marketing hero inside the app;
-- no heavy card grid or decorative quota charts;
+- no oversized card deck, decorative quota charts, or Cockpit-style operations
+  dashboard;
 - no analytics or account-history dashboard;
 - no large preference center;
 - no excessive glass, gradients, motion, floating layers, or custom chrome.

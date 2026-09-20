@@ -51,6 +51,17 @@ pub struct AccountView {
     pub active: bool,
 }
 
+/// A display-only outcome for a user-selected account export. Parsed
+/// credentials stay in Rust; the WebView receives only the saved profiles and
+/// a count of entries that were incomplete or outside GSwitch's supported
+/// Codex formats.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ImportResult {
+    #[serde(default)]
+    pub imported: Vec<AccountView>,
+    pub skipped_count: u32,
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 pub struct PendingSwitch {
     pub target_id: String,
@@ -309,5 +320,6 @@ pub struct OAuthLoginStart {
 pub enum OAuthLoginStatus {
     Pending,
     Complete { account: AccountView },
+    Cancelled,
     Failed { message: String },
 }

@@ -26,8 +26,15 @@ pub struct AppState {
     recovery_dir: Arc<PathBuf>,
     store: Arc<Mutex<AccountStore>>,
     operation_lock: Arc<Mutex<()>>,
-    oauth_logins: Arc<Mutex<HashMap<String, OAuthLoginStatus>>>,
+    oauth_logins: Arc<Mutex<HashMap<String, OAuthLoginControl>>>,
     wake_operations: Arc<Mutex<HashMap<String, WakeControl>>>,
+}
+
+#[derive(Clone)]
+struct OAuthLoginControl {
+    status: OAuthLoginStatus,
+    auth_url: String,
+    cancelled: Arc<AtomicBool>,
 }
 
 #[derive(Clone)]
@@ -516,6 +523,33 @@ impl AppState {
         )
     }
 
+    pub fn start_oauth_login(
+        &self,
+        login_id: String,
+        auth_url: String,
+        cancelled: Arc<AtomicBool>,
+    ) -> Result<(), String> {
+        let mut sessions = self
+            .oauth_logins
+            .lock()
+            .map_err(|_| "OAuth state lock is unavailable".to_string())?;
+        if sessions
+            .values()
+            .any(|session| matches!(session.status, OAuthLoginStatus::Pending))
+        {
+            return Err("Another OAuth sign-in is already waiting for completion".to_string());
+        }
+        sessions.insert(
+            login_id,
+            OAuthLoginControl {
+                status: OAuthLoginStatus::Pending,
+                auth_url,
+                cancelled,
+            },
+        );
+        Ok(())
+    }
+
     pub fn set_oauth_status(
         &self,
         login_id: String,
@@ -525,7 +559,10 @@ impl AppState {
             .oauth_logins
             .lock()
             .map_err(|_| "OAuth state lock is unavailable".to_string())?;
-        sessions.insert(login_id, status);
+        let session = sessions
+            .get_mut(&login_id)
+            .ok_or_else(|| "Unknown OAuth login session".to_string())?;
+        session.status = status;
         Ok(())
     }
 
@@ -537,8 +574,31 @@ impl AppState {
 
         sessions
             .get(login_id)
-            .cloned()
+            .map(|session| session.status.clone())
             .ok_or_else(|| "Unknown OAuth login session".to_string())
+    }
+
+    pub fn oauth_url(&self, login_id: &str) -> Result<String, String> {
+        self.oauth_logins
+            .lock()
+            .map_err(|_| "OAuth state lock is unavailable".to_string())?
+            .get(login_id)
+            .map(|session| session.auth_url.clone())
+            .ok_or_else(|| "Unknown OAuth login session".to_string())
+    }
+
+    pub fn cancel_oauth(&self, login_id: &str) -> Result<(), String> {
+        let sessions = self
+            .oauth_logins
+            .lock()
+            .map_err(|_| "OAuth state lock is unavailable".to_string())?;
+        let session = sessions
+            .get(login_id)
+            .ok_or_else(|| "Unknown OAuth login session".to_string())?;
+        if matches!(session.status, OAuthLoginStatus::Pending) {
+            session.cancelled.store(true, Ordering::SeqCst);
+        }
+        Ok(())
     }
 
     /// Wake state is deliberately process-local. It exists only to let the
@@ -790,6 +850,35 @@ mod tests {
         state
             .insert_wake_operation(second, Arc::new(AtomicBool::new(false)))
             .expect("later wake");
+        let _ = fs::remove_dir_all(path.parent().expect("parent"));
+    }
+
+    #[test]
+    fn oauth_cancellation_is_scoped_to_the_pending_login() {
+        let path = temp_path("oauth-cancel");
+        let state = AppState::new(path.clone()).expect("state");
+        let cancelled = Arc::new(AtomicBool::new(false));
+        state
+            .start_oauth_login(
+                "login-one".to_string(),
+                "https://auth.openai.com/example".to_string(),
+                cancelled.clone(),
+            )
+            .expect("start oauth");
+
+        state.cancel_oauth("login-one").expect("cancel oauth");
+        assert!(cancelled.load(Ordering::SeqCst));
+        assert_eq!(
+            state.oauth_url("login-one").expect("url"),
+            "https://auth.openai.com/example"
+        );
+        state
+            .set_oauth_status("login-one".to_string(), OAuthLoginStatus::Cancelled)
+            .expect("complete cancel");
+        assert!(matches!(
+            state.oauth_status("login-one").expect("status"),
+            OAuthLoginStatus::Cancelled
+        ));
         let _ = fs::remove_dir_all(path.parent().expect("parent"));
     }
 }

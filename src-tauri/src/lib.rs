@@ -16,6 +16,8 @@ use tauri::Manager;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let store_path = app.path().app_config_dir()?.join("accounts.json");
             let state = accounts::AppState::new(store_path).map_err(std::io::Error::other)?;
@@ -27,7 +29,10 @@ pub fn run() {
             commands::list_accounts,
             commands::start_oauth_login,
             commands::get_oauth_login_status,
+            commands::cancel_oauth_login,
+            commands::open_oauth_login,
             commands::import_auth_json,
+            commands::import_auth_file,
             commands::import_api_key,
             commands::get_live_account_state,
             commands::save_current_account,

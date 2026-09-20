@@ -1,3 +1,61 @@
+export type AccountKind = "chat_gpt" | "api_key";
+
+export interface AccountView {
+  id: string;
+  label: string;
+  kind: AccountKind;
+  email?: string;
+  plan_type?: string;
+  active: boolean;
+}
+
+export type CredentialStoreMode =
+  | "file"
+  | "keyring"
+  | "auto"
+  | "ephemeral"
+  | "unknown";
+
+export interface RuntimeInfo {
+  codex_home: string;
+  auth_file_exists: boolean;
+  credential_store: CredentialStoreMode;
+}
+
+export type LiveAccountStatus =
+  | "ready"
+  | "not_signed_in"
+  | "unknown_account"
+  | "file_store_required"
+  | "recovery_required";
+
+export interface LiveAccountView {
+  status: LiveAccountStatus;
+  credential_store: CredentialStoreMode;
+  account?: AccountView;
+  message?: string;
+}
+
+export interface SwitchOutcome {
+  account: AccountView;
+}
+
+export interface OAuthLoginStart {
+  login_id: string;
+  auth_url: string;
+}
+
+export type OAuthLoginStatus =
+  | { status: "pending" }
+  | { status: "complete"; account: AccountView }
+  | { status: "cancelled" }
+  | { status: "failed"; message: string };
+
+export interface ImportResult {
+  imported: AccountView[];
+  skipped_count: number;
+}
+
 export type QuotaStatus = "fresh" | "stale" | "unknown" | "not_applicable";
 
 export interface QuotaWindow {
