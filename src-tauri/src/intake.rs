@@ -109,6 +109,13 @@ fn monitor_oauth(
         }
         Err(error) => return Err(error),
     };
+    // A completion notification can race the cancellation flag after the
+    // transport delivers it. Cancellation wins: do not persist credentials
+    // after the user has closed or cancelled the sign-in flow.
+    if cancelled.load(Ordering::SeqCst) {
+        let _ = server.account_login_cancel(2, login_id);
+        return Ok(None);
+    }
     let success = notification
         .pointer("/params/success")
         .and_then(Value::as_bool)
