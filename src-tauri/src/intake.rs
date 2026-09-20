@@ -43,10 +43,7 @@ pub fn start_oauth(state: AppState) -> Result<OAuthLoginStart, String> {
         }
     });
 
-    Ok(OAuthLoginStart {
-        login_id,
-        auth_url,
-    })
+    Ok(OAuthLoginStart { login_id, auth_url })
 }
 
 fn monitor_oauth(
@@ -96,10 +93,7 @@ fn monitor_oauth(
             metadata.plan_type,
             credential,
         )?;
-        state.set_oauth_status(
-            login_id.to_string(),
-            OAuthLoginStatus::Complete { account },
-        )?;
+        state.set_oauth_status(login_id.to_string(), OAuthLoginStatus::Complete { account })?;
         return Ok(());
     }
 }
