@@ -1,6 +1,8 @@
 mod accounts;
+mod app_server;
 mod codex;
 mod commands;
+mod intake;
 mod storage;
 mod types;
 
@@ -18,7 +20,11 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_runtime_info,
-            commands::list_accounts
+            commands::list_accounts,
+            commands::start_oauth_login,
+            commands::get_oauth_login_status,
+            commands::import_auth_json,
+            commands::import_api_key
         ])
         .run(tauri::generate_context!())
         .expect("error while running GSwitch");
