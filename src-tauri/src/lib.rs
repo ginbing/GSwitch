@@ -2,6 +2,7 @@ mod accounts;
 mod app_server;
 mod codex;
 mod commands;
+mod identity;
 mod intake;
 mod storage;
 mod types;
@@ -13,8 +14,7 @@ pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
             let store_path = app.path().app_config_dir()?.join("accounts.json");
-            let state = accounts::AppState::new(store_path)
-                .map_err(|error| std::io::Error::other(error))?;
+            let state = accounts::AppState::new(store_path).map_err(std::io::Error::other)?;
             app.manage(state);
             Ok(())
         })

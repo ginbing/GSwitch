@@ -1,5 +1,6 @@
 use std::{
     env, fs,
+    io::ErrorKind,
     path::{Path, PathBuf},
 };
 
@@ -22,50 +23,43 @@ pub fn codex_home() -> Result<PathBuf, String> {
         .ok_or_else(|| "Unable to resolve the user home directory".to_string())
 }
 
-pub fn credential_store_mode(codex_home: &Path) -> CredentialStoreMode {
+pub fn credential_store_mode(codex_home: &Path) -> Result<CredentialStoreMode, String> {
     let config_path = codex_home.join("config.toml");
-    let Ok(content) = fs::read_to_string(config_path) else {
-        return CredentialStoreMode::File;
+    let content = match fs::read_to_string(config_path) {
+        Ok(content) => content,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(CredentialStoreMode::File),
+        Err(_) => return Err("Unable to inspect Codex configuration".to_string()),
     };
 
-    for raw_line in content.lines() {
-        let line = raw_line.split('#').next().unwrap_or_default().trim();
-        let Some((key, value)) = line.split_once('=') else {
-            continue;
-        };
+    let config: toml_edit::DocumentMut = content
+        .parse()
+        .map_err(|_| "Unable to parse Codex configuration".to_string())?;
+    let value = config
+        .get("cli_auth_credentials_store")
+        .and_then(|item| item.as_str());
 
-        if key.trim() != "cli_auth_credentials_store" {
-            continue;
-        }
-
-        let value = value.trim().trim_matches('"');
-        return match value {
-            "file" => CredentialStoreMode::File,
-            "keyring" => CredentialStoreMode::Keyring,
-            "auto" => CredentialStoreMode::Auto,
-            "ephemeral" => CredentialStoreMode::Ephemeral,
-            _ => CredentialStoreMode::Unknown,
-        };
-    }
-
-    CredentialStoreMode::File
+    Ok(match value {
+        None | Some("file") => CredentialStoreMode::File,
+        Some("keyring") => CredentialStoreMode::Keyring,
+        Some("auto") => CredentialStoreMode::Auto,
+        Some("ephemeral") => CredentialStoreMode::Ephemeral,
+        Some(_) => CredentialStoreMode::Unknown,
+    })
 }
 
 pub fn runtime_info() -> Result<RuntimeInfo, String> {
     let home = codex_home()?;
+    let auth_file_exists = match fs::metadata(home.join("auth.json")) {
+        Ok(metadata) => metadata.is_file(),
+        Err(error) if error.kind() == ErrorKind::NotFound => false,
+        Err(_) => return Err("Unable to inspect Codex credentials".to_string()),
+    };
+
     Ok(RuntimeInfo {
         codex_home: home.display().to_string(),
-        auth_file_exists: home.join("auth.json").is_file(),
-        credential_store: credential_store_mode(&home),
+        auth_file_exists,
+        credential_store: credential_store_mode(&home)?,
     })
-}
-
-pub fn read_auth_document(codex_home: &Path) -> Result<serde_json::Value, String> {
-    let path = codex_home.join("auth.json");
-    let content = fs::read_to_string(&path)
-        .map_err(|error| format!("Unable to read {}: {error}", path.display()))?;
-    serde_json::from_str(&content)
-        .map_err(|error| format!("Invalid Codex auth JSON at {}: {error}", path.display()))
 }
 
 #[cfg(test)]
@@ -84,22 +78,41 @@ mod tests {
     }
 
     #[test]
-    fn missing_config_defaults_to_file_store() {
+    fn missing_config_uses_the_official_file_default() {
         let path = temp_dir("default-store");
-        assert_eq!(credential_store_mode(&path), CredentialStoreMode::File);
+        assert_eq!(
+            credential_store_mode(&path).expect("store mode"),
+            CredentialStoreMode::File
+        );
         let _ = fs::remove_dir_all(path);
     }
 
     #[test]
-    fn reads_explicit_store_mode() {
+    fn parses_toml_without_being_confused_by_comments() {
         let path = temp_dir("explicit-store");
         fs::write(
             path.join("config.toml"),
-            "model = \"gpt-5\"\ncli_auth_credentials_store = \"keyring\"\n",
+            "model = \"gpt-5\"\n# cli_auth_credentials_store = \"auto\"\ncli_auth_credentials_store = \"keyring\"\n",
         )
         .expect("write config");
 
-        assert_eq!(credential_store_mode(&path), CredentialStoreMode::Keyring);
+        assert_eq!(
+            credential_store_mode(&path).expect("store mode"),
+            CredentialStoreMode::Keyring
+        );
+        let _ = fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn malformed_config_is_not_mistaken_for_file_mode() {
+        let path = temp_dir("invalid-store");
+        fs::write(path.join("config.toml"), "cli_auth_credentials_store = [")
+            .expect("write config");
+
+        assert_eq!(
+            credential_store_mode(&path).expect_err("invalid config"),
+            "Unable to parse Codex configuration"
+        );
         let _ = fs::remove_dir_all(path);
     }
 }

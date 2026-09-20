@@ -1,30 +1,62 @@
 use std::{
     collections::HashMap,
+    fs::{self, File, OpenOptions},
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, MutexGuard},
 };
 
-use serde_json::Value;
+use fs2::FileExt;
+use serde_json::{json, Value};
 use uuid::Uuid;
 
 use crate::{
     storage::{self, AccountStore},
-    types::{AccountKind, AccountView, OAuthLoginStatus, StoredAccount},
+    types::{AccountIdentity, AccountKind, AccountView, OAuthLoginStatus, StoredAccount},
 };
 
 #[derive(Clone)]
 pub struct AppState {
     store_path: Arc<PathBuf>,
+    recovery_dir: Arc<PathBuf>,
     store: Arc<Mutex<AccountStore>>,
+    operation_lock: Arc<Mutex<()>>,
     oauth_logins: Arc<Mutex<HashMap<String, OAuthLoginStatus>>>,
+}
+
+pub struct OperationGuard<'a> {
+    _in_process: MutexGuard<'a, ()>,
+    lock_file: File,
+}
+
+impl Drop for OperationGuard<'_> {
+    fn drop(&mut self) {
+        let _ = FileExt::unlock(&self.lock_file);
+    }
+}
+
+pub struct AccountDraft {
+    pub label: Option<String>,
+    pub default_label: String,
+    pub kind: AccountKind,
+    pub email: Option<String>,
+    pub plan_type: Option<String>,
+    pub identity: AccountIdentity,
+    pub credential: Value,
 }
 
 impl AppState {
     pub fn new(store_path: PathBuf) -> Result<Self, String> {
         let store = storage::load(&store_path)?;
+        let recovery_dir = store_path
+            .parent()
+            .ok_or_else(|| "Invalid GSwitch storage path".to_string())?
+            .join("pending-credentials");
+
         Ok(Self {
             store_path: Arc::new(store_path),
+            recovery_dir: Arc::new(recovery_dir),
             store: Arc::new(Mutex::new(store)),
+            operation_lock: Arc::new(Mutex::new(())),
             oauth_logins: Arc::new(Mutex::new(HashMap::new())),
         })
     }
@@ -33,51 +65,128 @@ impl AppState {
         let store = self
             .store
             .lock()
-            .map_err(|_| "Account store lock is poisoned".to_string())?;
+            .map_err(|_| "Account store lock is unavailable".to_string())?;
         Ok(store.accounts.iter().map(Self::view).collect())
     }
 
-    pub fn add(
-        &self,
-        label: String,
-        kind: AccountKind,
-        email: Option<String>,
-        plan_type: Option<String>,
-        credential: Value,
-    ) -> Result<AccountView, String> {
-        let account = StoredAccount {
-            id: Uuid::new_v4().to_string(),
-            label,
-            kind,
-            email,
-            plan_type,
-            credential,
-        };
+    /// Serializes any operation that can touch credentials across both GSwitch
+    /// windows/processes. The file lock has no authority over Codex itself;
+    /// switching performs its own external-runtime checks.
+    pub fn acquire_operation(&self) -> Result<OperationGuard<'_>, String> {
+        let in_process = self
+            .operation_lock
+            .try_lock()
+            .map_err(|_| "Another GSwitch operation is already in progress".to_string())?;
+        let parent = self
+            .store_path
+            .parent()
+            .ok_or_else(|| "Invalid GSwitch storage path".to_string())?;
+        fs::create_dir_all(parent)
+            .map_err(|_| "Unable to prepare GSwitch operation storage".to_string())?;
 
+        let lock_file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(parent.join("operations.lock"))
+            .map_err(|_| "Unable to lock GSwitch operations".to_string())?;
+        lock_file
+            .try_lock_exclusive()
+            .map_err(|_| "Another GSwitch operation is already in progress".to_string())?;
+
+        Ok(OperationGuard {
+            _in_process: in_process,
+            lock_file,
+        })
+    }
+
+    pub fn find_exact_document_under_operation(
+        &self,
+        _operation: &OperationGuard<'_>,
+        kind: &AccountKind,
+        identity: &AccountIdentity,
+        credential: &Value,
+    ) -> Result<Option<AccountView>, String> {
+        let store = self
+            .store
+            .lock()
+            .map_err(|_| "Account store lock is unavailable".to_string())?;
+        Ok(store
+            .accounts
+            .iter()
+            .find(|account| {
+                account.kind == *kind
+                    && account.identity.as_ref() == Some(identity)
+                    && account.credential == *credential
+            })
+            .map(Self::view))
+    }
+
+    pub fn upsert_under_operation(
+        &self,
+        _operation: &OperationGuard<'_>,
+        draft: AccountDraft,
+    ) -> Result<AccountView, String> {
         let mut store = self
             .store
             .lock()
-            .map_err(|_| "Account store lock is poisoned".to_string())?;
+            .map_err(|_| "Account store lock is unavailable".to_string())?;
 
-        if store.accounts.iter().any(|existing| {
-            existing.kind == account.kind
-                && (existing.credential == account.credential
-                    || (account.kind == AccountKind::ChatGpt
-                        && existing.email.as_deref().is_some_and(|email| {
-                            account
-                                .email
-                                .as_deref()
-                                .is_some_and(|new_email| email.eq_ignore_ascii_case(new_email))
-                        })))
-        }) {
-            return Err("This account is already saved".to_string());
-        }
+        let existing_index = store.accounts.iter().position(|existing| {
+            existing.kind == draft.kind
+                && (existing.identity.as_ref() == Some(&draft.identity)
+                    || (existing.identity.is_none() && existing.credential == draft.credential))
+        });
+
+        let account = if let Some(index) = existing_index {
+            let existing = &store.accounts[index];
+            StoredAccount {
+                id: existing.id.clone(),
+                label: draft.label.unwrap_or_else(|| existing.label.clone()),
+                kind: draft.kind,
+                email: draft.email,
+                plan_type: draft.plan_type,
+                identity: Some(draft.identity),
+                credential: draft.credential,
+            }
+        } else {
+            StoredAccount {
+                id: Uuid::new_v4().to_string(),
+                label: draft.label.unwrap_or(draft.default_label),
+                kind: draft.kind,
+                email: draft.email,
+                plan_type: draft.plan_type,
+                identity: Some(draft.identity),
+                credential: draft.credential,
+            }
+        };
 
         let mut candidate = store.clone();
-        candidate.accounts.push(account.clone());
+        if let Some(index) = existing_index {
+            candidate.accounts[index] = account.clone();
+        } else {
+            candidate.accounts.push(account.clone());
+        }
         storage::save_atomic(&self.store_path, &candidate)?;
         *store = candidate;
         Ok(Self::view(&account))
+    }
+
+    /// Persists a refreshed credential independently of the main account store
+    /// when the latter cannot be updated. This is deliberately a small recovery
+    /// queue, not a general backup service.
+    pub fn record_pending_credential(
+        &self,
+        _operation: &OperationGuard<'_>,
+        credential: &Value,
+    ) -> Result<(), String> {
+        let path = self.recovery_dir.join(format!("{}.json", Uuid::new_v4()));
+        storage::write_json_atomic(
+            &path,
+            &json!({"version": 1, "credential": credential}),
+            "pending credential recovery",
+        )
     }
 
     pub fn set_oauth_status(
@@ -88,7 +197,7 @@ impl AppState {
         let mut sessions = self
             .oauth_logins
             .lock()
-            .map_err(|_| "OAuth state lock is poisoned".to_string())?;
+            .map_err(|_| "OAuth state lock is unavailable".to_string())?;
         sessions.insert(login_id, status);
         Ok(())
     }
@@ -97,7 +206,7 @@ impl AppState {
         let sessions = self
             .oauth_logins
             .lock()
-            .map_err(|_| "OAuth state lock is poisoned".to_string())?;
+            .map_err(|_| "OAuth state lock is unavailable".to_string())?;
 
         sessions
             .get(login_id)
@@ -137,34 +246,64 @@ mod tests {
             .join("accounts.json")
     }
 
+    fn draft(workspace: &str, credential: Value) -> AccountDraft {
+        AccountDraft {
+            label: None,
+            default_label: "User@example.com".into(),
+            kind: AccountKind::ChatGpt,
+            email: Some("User@example.com".into()),
+            plan_type: Some("plus".into()),
+            identity: AccountIdentity::ChatGpt {
+                user_id: "user".into(),
+                workspace_id: Some(workspace.into()),
+            },
+            credential,
+        }
+    }
+
+    fn save(state: &AppState, draft: AccountDraft) -> AccountView {
+        let operation = state.acquire_operation().expect("operation");
+        state
+            .upsert_under_operation(&operation, draft)
+            .expect("save account")
+    }
+
     #[test]
-    fn rejects_duplicate_chatgpt_email_case_insensitively() {
-        let path = temp_path("duplicate");
+    fn allows_the_same_email_in_different_workspaces() {
+        let path = temp_path("different-workspaces");
         let state = AppState::new(path.clone()).expect("state");
 
-        state
-            .add(
-                "Personal".into(),
-                AccountKind::ChatGpt,
-                Some("User@example.com".into()),
-                Some("plus".into()),
-                serde_json::json!({"tokens": {"access_token": "first"}}),
-            )
-            .expect("first account");
+        save(&state, draft("workspace-a", json!({"token": "first"})));
+        save(&state, draft("workspace-b", json!({"token": "second"})));
 
-        let result = state.add(
-            "Duplicate".into(),
-            AccountKind::ChatGpt,
-            Some("user@example.com".into()),
-            Some("plus".into()),
-            serde_json::json!({"tokens": {"access_token": "second"}}),
-        );
+        assert_eq!(state.list().expect("list").len(), 2);
+        let _ = fs::remove_dir_all(path.parent().expect("parent"));
+    }
 
-        assert_eq!(
-            result.expect_err("duplicate must fail"),
-            "This account is already saved"
-        );
+    #[test]
+    fn reauthentication_updates_the_existing_profile() {
+        let path = temp_path("reauthentication");
+        let state = AppState::new(path.clone()).expect("state");
+
+        let first = save(&state, draft("workspace", json!({"token": "old"})));
+        let second = save(&state, draft("workspace", json!({"token": "rotated"})));
+
+        assert_eq!(first.id, second.id);
         assert_eq!(state.list().expect("list").len(), 1);
+        let _ = fs::remove_dir_all(path.parent().expect("parent"));
+    }
+
+    #[test]
+    fn a_second_operation_is_rejected() {
+        let path = temp_path("operation-lock");
+        let state = AppState::new(path.clone()).expect("state");
+        let first = state.acquire_operation().expect("first operation");
+
+        match state.acquire_operation() {
+            Ok(_) => panic!("must reject overlap"),
+            Err(error) => assert_eq!(error, "Another GSwitch operation is already in progress"),
+        }
+        drop(first);
         let _ = fs::remove_dir_all(path.parent().expect("parent"));
     }
 
@@ -172,19 +311,11 @@ mod tests {
     fn failed_persistence_does_not_change_in_memory_store() {
         let path = temp_path("failed-save");
         let parent = path.parent().expect("parent");
-        fs::create_dir_all(parent.parent().expect("root")).expect("create root");
-        fs::write(parent, b"blocks directory creation").expect("write blocking file");
         let state = AppState::new(path.clone()).expect("state");
+        fs::write(parent, b"blocks directory creation").expect("write blocking file");
 
-        let result = state.add(
-            "Personal".into(),
-            AccountKind::ChatGpt,
-            Some("user@example.com".into()),
-            Some("plus".into()),
-            serde_json::json!({"tokens": {"access_token": "secret"}}),
-        );
-
-        assert!(result.is_err());
+        let operation = state.acquire_operation();
+        assert!(operation.is_err());
         assert!(state.list().expect("list").is_empty());
         let _ = fs::remove_file(parent);
     }

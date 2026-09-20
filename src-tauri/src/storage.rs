@@ -1,36 +1,74 @@
-use std::{fs, io::Write, path::Path};
+use std::{
+    fs,
+    io::{ErrorKind, Write},
+    path::Path,
+};
 
 use atomic_write_file::OpenOptions;
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::types::StoredAccount;
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+const STORE_VERSION: u32 = 1;
+
+#[derive(Clone, Serialize, Deserialize)]
 pub struct AccountStore {
+    #[serde(default = "default_store_version")]
+    pub version: u32,
     #[serde(default)]
     pub accounts: Vec<StoredAccount>,
 }
 
-pub fn load(path: &Path) -> Result<AccountStore, String> {
-    if !path.exists() {
-        return Ok(AccountStore::default());
+impl Default for AccountStore {
+    fn default() -> Self {
+        Self {
+            version: STORE_VERSION,
+            accounts: Vec::new(),
+        }
     }
+}
 
-    let content = fs::read_to_string(path)
-        .map_err(|error| format!("Unable to read {}: {error}", path.display()))?;
-    serde_json::from_str(&content)
-        .map_err(|error| format!("Unable to parse {}: {error}", path.display()))
+fn default_store_version() -> u32 {
+    STORE_VERSION
+}
+
+pub fn load(path: &Path) -> Result<AccountStore, String> {
+    let content = match fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(AccountStore::default()),
+        Err(_) => return Err("Unable to read the GSwitch account store".to_string()),
+    };
+
+    let store: AccountStore = deserialize(&content, "GSwitch account store")?;
+    if store.version > STORE_VERSION {
+        return Err("This GSwitch account store was created by a newer version".to_string());
+    }
+    Ok(store)
 }
 
 pub fn save_atomic(path: &Path, store: &AccountStore) -> Result<(), String> {
+    let content = serde_json::to_vec_pretty(store)
+        .map_err(|_| "Unable to serialize the GSwitch account store".to_string())?;
+    write_private_bytes_atomic(path, &content, "GSwitch account store")
+}
+
+pub fn read_json(path: &Path, label: &str) -> Result<Value, String> {
+    let content = fs::read_to_string(path).map_err(|_| format!("Unable to read {label}"))?;
+    deserialize(&content, label)
+}
+
+pub fn write_json_atomic(path: &Path, value: &Value, label: &str) -> Result<(), String> {
+    let content =
+        serde_json::to_vec_pretty(value).map_err(|_| format!("Unable to serialize {label}"))?;
+    write_private_bytes_atomic(path, &content, label)
+}
+
+pub fn write_private_bytes_atomic(path: &Path, content: &[u8], label: &str) -> Result<(), String> {
     let parent = path
         .parent()
-        .ok_or_else(|| format!("Invalid storage path: {}", path.display()))?;
-    fs::create_dir_all(parent)
-        .map_err(|error| format!("Unable to create {}: {error}", parent.display()))?;
-
-    let content = serde_json::to_vec_pretty(store)
-        .map_err(|error| format!("Unable to serialize account store: {error}"))?;
+        .ok_or_else(|| format!("Invalid {label} path"))?;
+    fs::create_dir_all(parent).map_err(|_| format!("Unable to create storage for {label}"))?;
 
     #[cfg(unix)]
     let mut options = OpenOptions::new();
@@ -47,24 +85,23 @@ pub fn save_atomic(path: &Path, store: &AccountStore) -> Result<(), String> {
         StdOpenOptionsExt::mode(&mut options, 0o600);
     }
 
-    let mut file = options.open(path).map_err(|error| {
-        format!(
-            "Unable to open {} for atomic write: {error}",
-            path.display()
-        )
-    })?;
-
-    file.write_all(&content)
-        .map_err(|error| format!("Unable to write {}: {error}", path.display()))?;
-
+    let mut file = options
+        .open(path)
+        .map_err(|_| format!("Unable to prepare {label} for an atomic write"))?;
+    file.write_all(content)
+        .map_err(|_| format!("Unable to write {label}"))?;
     file.commit()
-        .map_err(|error| format!("Unable to atomically replace {}: {error}", path.display()))
+        .map_err(|_| format!("Unable to atomically replace {label}"))
+}
+
+fn deserialize<T: DeserializeOwned>(content: &str, label: &str) -> Result<T, String> {
+    serde_json::from_str(content).map_err(|_| format!("Unable to parse {label}"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{AccountKind, StoredAccount};
+    use crate::types::{AccountIdentity, AccountKind, StoredAccount};
     use serde_json::json;
     use std::{
         env,
@@ -82,6 +119,21 @@ mod tests {
         root.join("accounts.json")
     }
 
+    fn account(id: &str, credential: Value) -> StoredAccount {
+        StoredAccount {
+            id: id.into(),
+            label: "Personal".into(),
+            kind: AccountKind::ChatGpt,
+            email: Some("user@example.com".into()),
+            plan_type: Some("pro".into()),
+            identity: Some(AccountIdentity::ChatGpt {
+                user_id: "user".into(),
+                workspace_id: Some("workspace".into()),
+            }),
+            credential,
+        }
+    }
+
     #[test]
     fn round_trips_complete_credential_document() {
         let path = temp_store_path("roundtrip");
@@ -91,14 +143,8 @@ mod tests {
             "future_field": {"preserve": true}
         });
         let store = AccountStore {
-            accounts: vec![StoredAccount {
-                id: "one".into(),
-                label: "Personal".into(),
-                kind: AccountKind::ChatGpt,
-                email: Some("user@example.com".into()),
-                plan_type: Some("pro".into()),
-                credential: credential.clone(),
-            }],
+            version: STORE_VERSION,
+            accounts: vec![account("one", credential.clone())],
         };
 
         save_atomic(&path, &store).expect("save");
@@ -115,26 +161,20 @@ mod tests {
         save_atomic(&path, &AccountStore::default()).expect("first save");
 
         let replacement = AccountStore {
-            accounts: vec![StoredAccount {
-                id: "two".into(),
-                label: "Work".into(),
-                kind: AccountKind::ChatGpt,
-                email: Some("work@example.com".into()),
-                plan_type: Some("plus".into()),
-                credential: json!({"tokens": {"access_token": "new"}}),
-            }],
+            version: STORE_VERSION,
+            accounts: vec![account("two", json!({"tokens": {"access_token": "new"}}))],
         };
         save_atomic(&path, &replacement).expect("replacement save");
 
         let loaded = load(&path).expect("load replacement");
         assert_eq!(loaded.accounts.len(), 1);
-        assert_eq!(loaded.accounts[0].label, "Work");
+        assert_eq!(loaded.accounts[0].id, "two");
 
         let _ = fs::remove_dir_all(path.parent().expect("parent"));
     }
 
     #[test]
-    fn loads_accounts_saved_before_optional_metadata_existed() {
+    fn loads_accounts_saved_before_identity_and_version_existed() {
         let path = temp_store_path("legacy-metadata");
         fs::create_dir_all(path.parent().expect("parent")).expect("create parent");
         fs::write(
@@ -151,9 +191,25 @@ mod tests {
         .expect("write legacy store");
 
         let loaded = load(&path).expect("load legacy store");
+        assert_eq!(loaded.version, STORE_VERSION);
         assert_eq!(loaded.accounts.len(), 1);
-        assert_eq!(loaded.accounts[0].email, None);
-        assert_eq!(loaded.accounts[0].plan_type, None);
+        assert_eq!(loaded.accounts[0].identity, None);
+
+        let _ = fs::remove_dir_all(path.parent().expect("parent"));
+    }
+
+    #[test]
+    fn parse_errors_do_not_include_credential_contents() {
+        let path = temp_store_path("parse-error");
+        fs::create_dir_all(path.parent().expect("parent")).expect("create parent");
+        fs::write(&path, "{ secret-token").expect("write malformed store");
+
+        let error = match load(&path) {
+            Ok(_) => panic!("must reject malformed store"),
+            Err(error) => error,
+        };
+        assert_eq!(error, "Unable to parse GSwitch account store");
+        assert!(!error.contains("secret-token"));
 
         let _ = fs::remove_dir_all(path.parent().expect("parent"));
     }
