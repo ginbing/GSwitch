@@ -1,6 +1,5 @@
 use std::{
-    env,
-    fs,
+    env, fs,
     path::{Path, PathBuf},
 };
 
@@ -100,10 +99,7 @@ mod tests {
         )
         .expect("write config");
 
-        assert_eq!(
-            credential_store_mode(&path),
-            CredentialStoreMode::Keyring
-        );
+        assert_eq!(credential_store_mode(&path), CredentialStoreMode::Keyring);
         let _ = fs::remove_dir_all(path);
     }
 }
