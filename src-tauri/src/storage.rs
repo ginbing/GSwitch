@@ -1,5 +1,6 @@
 use std::{
-    fs,
+    fs::{self, File, OpenOptions},
+    io::Write,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -41,14 +42,46 @@ pub fn save_atomic(path: &Path, store: &AccountStore) -> Result<(), String> {
         .as_nanos();
     let temp_path = temp_path(path, suffix);
 
-    fs::write(&temp_path, content)
+    let mut temp = open_private_temp(&temp_path)?;
+    temp.write_all(&content)
         .map_err(|error| format!("Unable to write {}: {error}", temp_path.display()))?;
+    temp.sync_all()
+        .map_err(|error| format!("Unable to sync {}: {error}", temp_path.display()))?;
+    drop(temp);
 
     if let Err(error) = fs::rename(&temp_path, path) {
         let _ = fs::remove_file(&temp_path);
         return Err(format!("Unable to replace {}: {error}", path.display()));
     }
 
+    sync_parent(parent)?;
+    Ok(())
+}
+
+fn open_private_temp(path: &Path) -> Result<File, String> {
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+
+    options
+        .open(path)
+        .map_err(|error| format!("Unable to create {}: {error}", path.display()))
+}
+
+#[cfg(unix)]
+fn sync_parent(parent: &Path) -> Result<(), String> {
+    File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| format!("Unable to sync {}: {error}", parent.display()))
+}
+
+#[cfg(not(unix))]
+fn sync_parent(_parent: &Path) -> Result<(), String> {
     Ok(())
 }
 
@@ -94,6 +127,36 @@ mod tests {
         save_atomic(&path, &store).expect("save");
         let loaded = load(&path).expect("load");
         assert_eq!(loaded.accounts[0].credential, credential);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn replaces_existing_store() {
+        let root = env::temp_dir().join(format!(
+            "gswitch-replace-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let path = root.join("accounts.json");
+
+        save_atomic(&path, &AccountStore::default()).expect("first save");
+
+        let replacement = AccountStore {
+            accounts: vec![StoredAccount {
+                id: "two".into(),
+                label: "Work".into(),
+                kind: AccountKind::ChatGpt,
+                credential: json!({"tokens": {"access_token": "new"}}),
+            }],
+        };
+        save_atomic(&path, &replacement).expect("replacement save");
+
+        let loaded = load(&path).expect("load replacement");
+        assert_eq!(loaded.accounts.len(), 1);
+        assert_eq!(loaded.accounts[0].label, "Work");
 
         let _ = fs::remove_dir_all(root);
     }
