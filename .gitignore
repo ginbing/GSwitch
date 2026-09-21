@@ -22,3 +22,6 @@ src-tauri/icons/*
 !*.key.pub
 *.pfx
 *.p12
+
+# Generated only by the signed-release workflow from the public updater key.
+src-tauri/tauri.updater.conf.json

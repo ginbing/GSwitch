@@ -6,7 +6,7 @@ use crate::{
     codex, intake, quota, switching,
     types::{
         AccountView, AppSnapshot, ImportResult, LiveAccountView, OAuthLoginStart, OAuthLoginStatus,
-        QuotaView, ResetCreditOutcome, RuntimeInfo, StorageStatus, SwitchOutcome,
+        QuotaView, ResetCreditOutcome, RuntimeInfo, StorageStatus, SwitchOutcome, UpdateDelivery,
         WakeOperationView, WakeStart,
     },
     wake,
@@ -81,6 +81,31 @@ pub fn open_oauth_login(
     app.opener()
         .open_url(&url, None::<&str>)
         .map_err(|_| "Unable to open the OAuth URL in your browser".to_string())
+}
+
+#[tauri::command]
+pub fn get_update_delivery() -> UpdateDelivery {
+    update_delivery_for(std::env::consts::OS, std::env::var_os("APPIMAGE").is_some())
+}
+
+#[tauri::command]
+pub fn open_latest_release(app: AppHandle) -> Result<(), String> {
+    app.opener()
+        .open_url(
+            "https://github.com/ginbing/GSwitch/releases/latest",
+            None::<&str>,
+        )
+        .map_err(|_| "Unable to open the GSwitch release page in your browser".to_string())
+}
+
+fn update_delivery_for(os: &str, appimage: bool) -> UpdateDelivery {
+    match os {
+        "windows" => UpdateDelivery::InstallerExits,
+        "macos" => UpdateDelivery::RelaunchRequired,
+        "linux" if appimage => UpdateDelivery::RelaunchRequired,
+        "linux" => UpdateDelivery::ReleaseDownload,
+        _ => UpdateDelivery::ReleaseDownload,
+    }
 }
 
 #[tauri::command]
@@ -189,4 +214,29 @@ pub fn get_wake_operation(
 #[tauri::command]
 pub fn cancel_wake(state: State<'_, AppState>, operation_id: String) -> Result<(), String> {
     wake::cancel(state.inner(), &operation_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn update_delivery_requires_a_manual_download_for_debian_packages() {
+        assert_eq!(
+            update_delivery_for("linux", false),
+            UpdateDelivery::ReleaseDownload
+        );
+        assert_eq!(
+            update_delivery_for("linux", true),
+            UpdateDelivery::RelaunchRequired
+        );
+        assert_eq!(
+            update_delivery_for("windows", false),
+            UpdateDelivery::InstallerExits
+        );
+        assert_eq!(
+            update_delivery_for("macos", false),
+            UpdateDelivery::RelaunchRequired
+        );
+    }
 }
