@@ -5,6 +5,7 @@ mod codex;
 mod commands;
 mod identity;
 mod intake;
+mod migration;
 mod quota;
 mod runtime;
 mod storage;
@@ -41,6 +42,8 @@ pub fn run() {
             commands::import_auth_json,
             commands::import_auth_file,
             commands::import_auth_files,
+            commands::discover_local_accounts,
+            commands::import_local_accounts,
             commands::import_api_key,
             commands::get_live_account_state,
             commands::save_current_account,

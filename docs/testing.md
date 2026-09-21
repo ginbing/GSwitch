@@ -88,6 +88,11 @@ as applicable:
   conflicting actions;
 - browser-login cancellation, selected-file import boundaries, account-space
   empty state, quota stale state, and visible Wake progress;
+- local migration allowlisting, no startup scan, plaintext and supported
+  encrypted Cockpit records, missing/bad key and envelope fail-closed behavior,
+  source immutability, sanitized previews, existing-identity suppression,
+  preview-confirm identity revalidation, bounded custom roots, mixed source
+  states, and handoff through normal intake;
 - multi-file import picker and drop paths, one-file compatibility, cross-file
   identity deduplication, saved-identity duplicates, mixed parse outcomes,
   batch file/byte limits, sequential validation, sanitized aggregate results,

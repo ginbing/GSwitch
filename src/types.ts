@@ -74,6 +74,22 @@ export interface ImportResult {
   failed_count: number;
 }
 
+export type MigrationSource = "official_codex" | "cockpit_tools";
+export type MigrationCandidateState = "new" | "already_present" | "unsupported";
+
+export interface MigrationCandidate {
+  id: string;
+  source: MigrationSource;
+  email?: string;
+  workspace_name?: string;
+  plan_type?: string;
+  state: MigrationCandidateState;
+}
+
+export interface MigrationPreview {
+  candidates: MigrationCandidate[];
+}
+
 export type QuotaStatus = "fresh" | "stale" | "unknown" | "not_applicable";
 
 export interface QuotaWindow {

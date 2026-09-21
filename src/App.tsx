@@ -47,6 +47,8 @@ import {
 import type {
   AccountView,
   LiveAccountView,
+  MigrationCandidate,
+  MigrationPreview,
   OAuthLoginStart,
   OAuthLoginStatus,
   QuotaView,
@@ -69,7 +71,7 @@ type Dialog =
   | "wake"
   | null;
 
-type AddMethod = "start" | "oauth" | "json" | "api-key";
+type AddMethod = "start" | "oauth" | "json" | "api-key" | "migration";
 
 interface Notice {
   kind: "success" | "error" | "info";
@@ -105,6 +107,12 @@ function friendlyError(t: Translator, error: unknown, fallback = t("error.action
   if (/No account files were selected/i.test(message)) {
     return t("error.importNoFiles");
   }
+  if (/migration preview is stale|preview is no longer importable|scan again/i.test(message)) {
+    return t("error.migrationStale");
+  }
+  if (/selected Cockpit folder could not be read|selected Cockpit folder is empty/i.test(message)) {
+    return t("error.migrationFolder");
+  }
   if (/no more than 64|64 MiB batch limit/i.test(message)) {
     return t("error.importBatchLimit");
   }
@@ -130,6 +138,18 @@ function primaryWindow(quota: QuotaView | undefined, kind: "five_hour" | "weekly
 
 function accountPlan(account: AccountView, t: Translator) {
   return account.kind === "api_key" ? t("account.apiKey") : account.plan_type || t("account.chatGpt");
+}
+
+function migrationSourceLabel(candidate: MigrationCandidate, t: Translator) {
+  return candidate.source === "official_codex"
+    ? t("migration.sourceOfficial")
+    : t("migration.sourceCockpit");
+}
+
+function migrationStateLabel(candidate: MigrationCandidate, t: Translator) {
+  if (candidate.state === "new") return t("migration.stateNew");
+  if (candidate.state === "already_present") return t("migration.stateAlready");
+  return t("migration.stateUnsupported");
 }
 
 function accountPrimaryName(account: AccountView) {
@@ -520,6 +540,10 @@ export default function App() {
   const [busy, setBusy] = useState<string | null>(null);
   const [dialog, setDialog] = useState<Dialog>(null);
   const [addMethod, setAddMethod] = useState<AddMethod>("start");
+  const [migrationPreview, setMigrationPreview] = useState<MigrationPreview | null>(null);
+  const [migrationRoot, setMigrationRoot] = useState<string | undefined>();
+  const [migrationSelection, setMigrationSelection] = useState<string[]>([]);
+  const [migrationScanned, setMigrationScanned] = useState(false);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [oauth, setOauth] = useState<OAuthFlow | null>(null);
   const [wake, setWake] = useState<WakeOperationView | null>(null);
@@ -724,6 +748,43 @@ export default function App() {
     }
   }, [importPaths, t]);
 
+  const scanMigration = useCallback(
+    async (customRoot?: string) => {
+      const result = await runTask(
+        "migration-scan",
+        () => api.discoverLocalAccounts(customRoot),
+        false,
+      );
+      if (result) {
+        setMigrationRoot(customRoot);
+        setMigrationPreview(result);
+        setMigrationScanned(true);
+        setMigrationSelection(
+          result.candidates
+            .filter((candidate) => candidate.state === "new")
+            .map((candidate) => candidate.id),
+        );
+      }
+    },
+    [runTask],
+  );
+
+  const chooseMigrationFolder = useCallback(async () => {
+    try {
+      const selected = await open({
+        title: t("migration.chooseFolder"),
+        directory: true,
+        multiple: false,
+      });
+      const selectedPath = Array.isArray(selected) ? selected[0] : selected;
+      if (selectedPath) {
+        await scanMigration(selectedPath);
+      }
+    } catch (error) {
+      setNotice({ kind: "error", text: friendlyError(t, error, t("error.migrationFolder")) });
+    }
+  }, [scanMigration, t]);
+
   useEffect(() => {
     if (!("__TAURI_INTERNALS__" in window)) {
       return;
@@ -912,6 +973,42 @@ export default function App() {
       void api.cancelOAuth(oauth.login_id);
     }
     setDialog(null);
+  };
+
+  const openAddDialog = () => {
+    setOauth(null);
+    setAddMethod("start");
+    setMigrationPreview(null);
+    setMigrationRoot(undefined);
+    setMigrationSelection([]);
+    setMigrationScanned(false);
+    setDialog("add");
+  };
+
+  const confirmMigration = async () => {
+    if (!migrationSelection.length) {
+      return;
+    }
+    const result = await runTask(
+      "migration-import",
+      () => api.importLocalAccounts(migrationRoot, migrationSelection),
+    );
+    if (result) {
+      const skippedCount = result.unsupported_count + result.failed_count;
+      setNotice({
+        kind: result.imported.length ? "success" : "info",
+        text: t("notice.migration", {
+          imported: formatNumber(result.imported.length, locale.formatLocale),
+          duplicates: formatNumber(result.duplicate_count, locale.formatLocale),
+          skipped: formatNumber(skippedCount, locale.formatLocale),
+        }),
+      });
+      setMigrationPreview(null);
+      setMigrationSelection([]);
+      setMigrationRoot(undefined);
+      setMigrationScanned(false);
+      setDialog(null);
+    }
   };
 
   const copyOAuthUrl = async () => {
@@ -1183,11 +1280,7 @@ export default function App() {
           <button
             className="button button-primary"
             disabled={loading || busy !== null || storageRecovery}
-            onClick={() => {
-              setOauth(null);
-              setAddMethod("start");
-              setDialog("add");
-            }}
+            onClick={openAddDialog}
             type="button"
           >
             <Plus size={16} />
@@ -1301,11 +1394,7 @@ export default function App() {
             </div>
           ) : (
             <FirstRun
-              onAdd={() => {
-                setOauth(null);
-                setAddMethod("start");
-                setDialog("add");
-              }}
+              onAdd={openAddDialog}
               onImport={() => void chooseImportFile()}
               t={t}
             />
@@ -1317,6 +1406,21 @@ export default function App() {
         <Modal onClose={closeAddDialog} t={t} title={t("add.title")} wide>
           {addMethod === "start" ? (
             <div className="add-methods">
+              <button
+                className="add-method-card"
+                onClick={() => {
+                  setMigrationPreview(null);
+                  setMigrationRoot(undefined);
+                  setMigrationSelection([]);
+                  setMigrationScanned(false);
+                  setAddMethod("migration");
+                }}
+                type="button"
+              >
+                <span className="method-icon"><Upload size={22} /></span>
+                <span><strong>{t("add.localTitle")}</strong><small>{t("add.localDescription")}</small></span>
+                <ChevronRight size={18} />
+              </button>
               <button className="add-method-card" onClick={() => void startOAuth()} type="button">
                 <span className="method-icon"><Globe2 size={22} /></span>
                 <span><strong>{t("add.browserTitle")}</strong><small>{t("add.browserDescription")}</small></span>
@@ -1339,6 +1443,83 @@ export default function App() {
                 <ChevronRight size={18} />
               </button>
               <p className="dialog-footnote">{t("add.privateStorage")}</p>
+            </div>
+          ) : null}
+
+          {addMethod === "migration" ? (
+            <div className="migration-flow">
+              <button className="back-link" onClick={() => setAddMethod("start")} type="button">{t("migration.back")}</button>
+              <h3>{t("migration.title")}</h3>
+              <p>{t("migration.body")}</p>
+              {!migrationScanned ? (
+                <div className="modal-actions migration-actions">
+                  <button className="button button-secondary" disabled={busy !== null} onClick={() => void chooseMigrationFolder()} type="button">
+                    <FolderOpen size={16} />
+                    {t("migration.chooseFolder")}
+                  </button>
+                  <button className="button button-primary" disabled={busy !== null} onClick={() => void scanMigration()} type="button">
+                    {busy === "migration-scan" ? <LoaderCircle className="spin" size={16} /> : <Upload size={16} />}
+                    {t("migration.scan")}
+                  </button>
+                </div>
+              ) : (
+                <>
+                  {migrationPreview?.candidates.length ? (
+                    <div className="migration-list" aria-label={t("migration.title")}>
+                      {migrationPreview.candidates.map((candidate) => {
+                        const disabled = candidate.state !== "new";
+                        const checked = migrationSelection.includes(candidate.id);
+                        const primary = candidate.email || candidate.workspace_name || t("common.unknown");
+                        return (
+                          <label className={`migration-item migration-${candidate.state}`} key={candidate.id}>
+                            <input
+                              checked={checked}
+                              disabled={disabled || busy !== null}
+                              onChange={() => {
+                                setMigrationSelection((current) =>
+                                  checked
+                                    ? current.filter((id) => id !== candidate.id)
+                                    : [...current, candidate.id],
+                                );
+                              }}
+                              type="checkbox"
+                            />
+                            <span className="migration-item-copy">
+                              <strong>{primary}</strong>
+                              <small>
+                                {migrationSourceLabel(candidate, t)} · {migrationStateLabel(candidate, t)}
+                                {candidate.workspace_name && candidate.workspace_name !== primary
+                                  ? ` · ${t("migration.workspace", { name: candidate.workspace_name })}`
+                                  : ""}
+                                {candidate.plan_type ? ` · ${t("migration.plan", { plan: candidate.plan_type })}` : ""}
+                              </small>
+                            </span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <p className="dialog-footnote">{t("migration.empty")}</p>
+                  )}
+                  {!migrationSelection.length && migrationPreview?.candidates.some((candidate) => candidate.state === "new") ? (
+                    <p className="dialog-footnote">{t("migration.noSelection")}</p>
+                  ) : null}
+                  <div className="modal-actions migration-actions">
+                    <button className="button button-secondary" disabled={busy !== null} onClick={() => void chooseMigrationFolder()} type="button">
+                      <FolderOpen size={16} />
+                      {t("migration.chooseFolder")}
+                    </button>
+                    <button className="button button-quiet" disabled={busy !== null} onClick={() => void scanMigration(migrationRoot)} type="button">
+                      <RefreshCw size={16} />
+                      {t("migration.rescan")}
+                    </button>
+                    <button className="button button-primary" disabled={!migrationSelection.length || busy !== null} onClick={() => void confirmMigration()} type="button">
+                      {busy === "migration-import" ? <LoaderCircle className="spin" size={16} /> : <Check size={16} />}
+                      {t("migration.import")}
+                    </button>
+                  </div>
+                </>
+              )}
             </div>
           ) : null}
 

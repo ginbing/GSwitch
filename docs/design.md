@@ -49,9 +49,12 @@ Reset credits remain compact in the row. Details and the destructive
 eligible credit presented first.
 
 The empty state is two deliberate choices: import one or more export files the
-user selects, or add an account manually. It states plainly that GSwitch does not read
-Cockpit Tools private storage. The add dialog offers official browser sign-in,
-pasted auth JSON, selected export files, and API key without a separate page.
+user selects, or add an account manually. It states plainly that GSwitch does
+not inspect another application's account storage automatically. The add dialog
+offers a clearly labeled **Import from this computer** preview, official
+browser sign-in, pasted auth JSON, selected export files, and API key without a
+separate page. The local preview explains its allowlist before scanning and
+keeps already-saved identities disabled.
 
 A damaged GSwitch account library is not an empty state. It replaces the cards
 with one recovery-only surface, disables account actions, and explains that an

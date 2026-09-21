@@ -167,7 +167,7 @@ fn refresh_via_managed_profile(
     let snapshot = normalized.snapshot;
     persist_refreshed_credential_and_quota(
         state,
-        &operation,
+        operation,
         &account.id,
         &refreshed_credential,
         snapshot.clone(),

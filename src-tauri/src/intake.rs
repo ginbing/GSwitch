@@ -26,15 +26,15 @@ const MAX_IMPORT_FILE_BYTES: u64 = 10 * 1024 * 1024;
 const MAX_IMPORT_FILES: usize = 64;
 const MAX_IMPORT_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
 
-struct ImportCandidate {
-    credential: Value,
-    label: Option<String>,
+pub(crate) struct ImportCandidate {
+    pub(crate) credential: Value,
+    pub(crate) label: Option<String>,
 }
 
-struct ParsedImport {
-    candidates: Vec<ImportCandidate>,
-    unsupported_count: u32,
-    duplicate_count: u32,
+pub(crate) struct ParsedImport {
+    pub(crate) candidates: Vec<ImportCandidate>,
+    pub(crate) unsupported_count: u32,
+    pub(crate) duplicate_count: u32,
 }
 
 pub fn start_oauth(state: AppState) -> Result<OAuthLoginStart, String> {
@@ -240,7 +240,30 @@ pub fn import_files(state: &AppState, paths: Vec<String>) -> Result<ImportResult
         }
     }
 
-    let parsed = deduplicate_candidates(parsed);
+    import_parsed(state, deduplicate_candidates(parsed), failed_count)
+}
+
+/// Sends migration candidates through the same bounded, sequential intake
+/// path as selected export files. The source adapter supplies only normalized
+/// credential documents; provider validation and GSwitch persistence remain
+/// owned here.
+pub(crate) fn import_migration_credentials(
+    state: &AppState,
+    candidates: Vec<ImportCandidate>,
+) -> Result<ImportResult, String> {
+    let parsed = ParsedImport {
+        candidates,
+        unsupported_count: 0,
+        duplicate_count: 0,
+    };
+    import_parsed(state, deduplicate_candidates(parsed), 0)
+}
+
+fn import_parsed(
+    state: &AppState,
+    parsed: ParsedImport,
+    mut failed_count: u32,
+) -> Result<ImportResult, String> {
     if parsed.candidates.is_empty() {
         state.ensure_store_ready()?;
         return Ok(ImportResult {
@@ -546,7 +569,7 @@ pub fn import_api_key(
     )
 }
 
-fn parse_export(value: Value) -> Result<ParsedImport, String> {
+pub(crate) fn parse_export(value: Value) -> Result<ParsedImport, String> {
     if let Some(candidate) = current_cockpit_candidate(&value) {
         return Ok(ParsedImport {
             candidates: vec![candidate],
