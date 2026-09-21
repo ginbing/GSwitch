@@ -46,11 +46,11 @@ jobs:
             rust_targets: ""
           - id: macos-silicon
             os: macos-latest
-            args: --target aarch64-apple-darwin --bundles dmg
+            args: --target aarch64-apple-darwin --bundles app,dmg
             rust_targets: aarch64-apple-darwin
           - id: macos-intel
             os: macos-latest
-            args: --target x86_64-apple-darwin --bundles dmg
+            args: --target x86_64-apple-darwin --bundles app,dmg
             rust_targets: x86_64-apple-darwin
           - id: linux
             os: ubuntu-22.04
@@ -130,12 +130,15 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          assets="$(gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name')"
+          assets="$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')"
           printf '%s\n' "$assets"
           test "$(printf '%s\n' "$assets" | grep -Eic 'setup\.exe$')" -eq 1
           test "$(printf '%s\n' "$assets" | grep -Eic '\.dmg$')" -eq 2
           test "$(printf '%s\n' "$assets" | grep -Eic '\.AppImage$')" -eq 1
           test "$(printf '%s\n' "$assets" | grep -Eic '\.deb$')" -eq 1
           test "$(printf '%s\n' "$assets" | grep -Eic '^latest\.json$')" -eq 1
-          test "$(printf '%s\n' "$assets" | grep -Eic '\.sig$')" -eq 4
-          test "$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq '.isDraft')" = true
+          test "$(printf '%s\n' "$assets" | grep -Eic 'setup\.exe\.sig$')" -eq 1
+          test "$(printf '%s\n' "$assets" | grep -Eic 'aarch64\.app\.tar\.gz\.sig$')" -eq 1
+          test "$(printf '%s\n' "$assets" | grep -Eic 'x64\.app\.tar\.gz\.sig$')" -eq 1
+          test "$(printf '%s\n' "$assets" | grep -Eic 'amd64\.AppImage\.sig$')" -eq 1
+          test "$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json isDraft --jq '.isDraft')" = true
