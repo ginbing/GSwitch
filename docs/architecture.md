@@ -51,6 +51,7 @@ Keep the backend flat and organized by concrete responsibility:
   state;
 - `app_server.rs`: lifecycle and protocol boundary for the official Codex App
   Server;
+- `chatgpt.rs`: read-only ChatGPT quota and account-metadata HTTP boundary;
 - `codex.rs`: `CODEX_HOME`, effective storage mode, and live auth-file access;
 - `identity.rs`: credential classification, stable non-secret identity, and
   fingerprints used for comparisons;
@@ -88,11 +89,13 @@ or recovery records.
 
 ## Isolated Codex profiles
 
-OAuth, imported-account validation, quota refresh, reset redemption, and Wake
+OAuth, imported-account validation, quota fallback, reset redemption, and Wake
 may run an official Codex App Server in a short-lived GSwitch-owned
 `CODEX_HOME`. This isolates the operation from the user's live Codex identity.
 Refreshed credentials are accepted only after the returned document still
-matches the expected account identity.
+matches the expected account identity. Ordinary quota and account metadata
+reads use the small read-only ChatGPT HTTP boundary first; that path never
+starts App Server or writes a credential.
 
 ## Mutation boundary
 
