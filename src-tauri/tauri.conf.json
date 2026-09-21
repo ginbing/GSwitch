@@ -47,6 +47,9 @@
         "installMode": "currentUser",
         "startMenuFolder": "GSwitch"
       }
+    },
+    "macOS": {
+      "signingIdentity": "-"
     }
   }
 }
