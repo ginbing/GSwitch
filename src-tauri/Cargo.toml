@@ -15,7 +15,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 aes-gcm = "0.10"
 atomic-write-file = "0.3.1"
-base64 = "0.22"
+base64 = "0.23"
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 fs2 = "0.4"
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "json"] }

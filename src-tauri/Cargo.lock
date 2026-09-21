@@ -1559,7 +1559,7 @@ version = "1.0.1"
 dependencies = [
  "aes-gcm",
  "atomic-write-file",
- "base64 0.22.1",
+ "base64 0.23.1",
  "chrono",
  "fs2",
  "reqwest",
