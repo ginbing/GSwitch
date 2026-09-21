@@ -51,16 +51,19 @@ Codex location outside those paths must be placed in the graphical session's
 
 ## Signing and distribution
 
-A public macOS build requires a Developer ID signing identity and Apple
-notarization credentials. Verify the stapled/notarized artifact on a clean
-machine before publication.
+macOS release artifacts use Tauri ad-hoc signing (`bundle.macOS.signingIdentity`
+is `"-"`). They do not require an Apple Developer certificate, Apple ID,
+notarization credentials, or a macOS keychain import. A user may need to
+manually allow the app in macOS Privacy & Security; this is an expected
+limitation of an ad-hoc-signed, non-notarized distribution.
 
 Windows release artifacts should be Authenticode signed when a code-signing
 certificate is configured. An unsigned build is a development or explicitly
 identified preview artifact, not evidence of a trusted public installer.
 
-Signing identities, passwords, tokens, and notarization material are release
-secrets. Keep them out of source, logs, Issues, and generated support output.
+The Tauri updater private key and any optional Windows signing material are
+release secrets. Keep them out of source, logs, Issues, and generated support
+output.
 
 ## Release workflow
 
@@ -70,13 +73,12 @@ version, frontend, and Rust checks before building Windows NSIS, Apple Silicon
 and Intel macOS DMGs, and Linux AppImage plus Debian packages. The standard
 Tauri GitHub Action assembles every artifact into one GitHub Release draft.
 
-The workflow requires these macOS secrets before it can assemble a release:
-`APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `KEYCHAIN_PASSWORD`,
-`APPLE_ID`, `APPLE_PASSWORD`, and `APPLE_TEAM_ID`. It imports a Developer ID
-certificate, signs the app, and lets Tauri notarize it. Windows signing is
-enabled when `WINDOWS_CERTIFICATE` and `WINDOWS_CERTIFICATE_PASSWORD` are set
-and the public certificate thumbprint, digest algorithm, and timestamp URL are
-configured in Tauri's Windows bundle settings.
+The workflow does not read or require Apple Developer secrets, so missing Apple
+credentials cannot block either macOS build. Tauri applies the configured
+ad-hoc signature to both macOS architectures. Windows signing is enabled when
+`WINDOWS_CERTIFICATE` and `WINDOWS_CERTIFICATE_PASSWORD` are set and the public
+certificate thumbprint, digest algorithm, and timestamp URL are configured in
+Tauri's Windows bundle settings.
 
 The workflow deliberately leaves the completed release as a draft. A maintainer
 must review its exact assets, signing results, clean-install evidence, and
@@ -156,7 +158,7 @@ A public candidate requires:
   login;
 - no unresolved credential-loss or secret-exposure regression;
 - review of effective Tauri capabilities and network behavior;
-- signed/notarized packaging where required for the distribution claim;
+- platform-signing behavior and user warnings matching the distribution claim;
 - accurate release notes for capabilities, prerequisites, and limitations.
 
 A merge, passing source check, or successful local build does not by itself

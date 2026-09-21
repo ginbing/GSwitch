@@ -23,18 +23,6 @@ jobs:
         run: |
           version="$(node -p \"require('./src-tauri/tauri.conf.json').version\")"
           test "$GITHUB_REF_NAME" = "v$version"
-      - name: Require macOS release credentials
-        env:
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
-        run: |
-          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID KEYCHAIN_PASSWORD; do
-            test -n "${!name}" || { echo "Missing required release secret: $name" >&2; exit 1; }
-          done
       - name: Require signed updater configuration
         env:
           TAURI_UPDATER_PUBLIC_KEY: ${{ vars.TAURI_UPDATER_PUBLIC_KEY }}
@@ -119,33 +107,9 @@ jobs:
           certutil -decode $encoded $certificate | Out-Host
           Import-PfxCertificate -FilePath $certificate -CertStoreLocation Cert:\CurrentUser\My -Password (ConvertTo-SecureString -String $env:WINDOWS_CERTIFICATE_PASSWORD -Force -AsPlainText) | Out-Null
           Remove-Item -LiteralPath $encoded, $certificate -Force
-      - name: Import the macOS Developer ID certificate
-        if: startsWith(matrix.id, 'macos-')
-        env:
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
-        run: |
-          certificate="$RUNNER_TEMP/gswitch-certificate.p12"
-          keychain="$RUNNER_TEMP/gswitch-build.keychain"
-          echo "$APPLE_CERTIFICATE" | base64 --decode > "$certificate"
-          security create-keychain -p "$KEYCHAIN_PASSWORD" "$keychain"
-          security default-keychain -s "$keychain"
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$keychain"
-          security set-keychain-settings -t 3600 -u "$keychain"
-          security import "$certificate" -k "$keychain" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
-          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$keychain"
-          identity="$(security find-identity -v -p codesigning "$keychain" | grep 'Developer ID Application' | head -n 1 | awk -F '\"' '{print $2}')"
-          test -n "$identity"
-          echo "APPLE_SIGNING_IDENTITY=$identity" >> "$GITHUB_ENV"
-          rm -f "$certificate"
       - uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_SIGNING_IDENTITY: ${{ env.APPLE_SIGNING_IDENTITY }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
