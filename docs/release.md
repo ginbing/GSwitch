@@ -19,6 +19,13 @@ Production Windows builds use the GUI subsystem. Launching GSwitch must open
 only its application window; GSwitch-owned Codex helper processes also run
 without creating visible console windows.
 
+The Windows NSIS installer uses the versioned GSwitch application icon plus a
+small branded header and welcome/finish sidebar. It offers English and
+Simplified Chinese according to the operating-system language, installs for the
+current user without an administrator prompt, and places its shortcut in a
+GSwitch Start menu folder. These assets are presentation only; installation
+must not collect account data or alter Codex credentials.
+
 The repository's current Tauri configuration is authoritative for which bundles
 and architectures a particular revision actually produces.
 
