@@ -26,6 +26,12 @@ Desktop compilation without producing an installer:
 pnpm tauri build --no-bundle
 ```
 
+Release configuration checks:
+
+```bash
+pnpm run version:check
+```
+
 Linux distribution bundles, on a Linux host with the current Tauri prerequisites:
 
 ```bash
