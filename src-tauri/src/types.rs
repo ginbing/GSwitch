@@ -69,6 +69,46 @@ pub struct ImportResult {
     pub failed_count: u32,
 }
 
+/// A source adapter exposed by the one-shot local migration assistant. The
+/// enum is intentionally closed: discovery never becomes a generic plugin or
+/// filesystem search surface.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MigrationSource {
+    OfficialCodex,
+    CockpitTools,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MigrationCandidateState {
+    New,
+    AlreadyPresent,
+    Unsupported,
+}
+
+/// Sanitized preview data for a local migration candidate. Credential
+/// documents, raw source records, keys, paths, and provider payloads remain
+/// Rust-owned and never cross the Tauri boundary.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MigrationCandidateView {
+    pub id: String,
+    pub source: MigrationSource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_type: Option<String>,
+    pub state: MigrationCandidateState,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MigrationPreview {
+    #[serde(default)]
+    pub candidates: Vec<MigrationCandidateView>,
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 pub struct PendingSwitch {
     pub target_id: String,

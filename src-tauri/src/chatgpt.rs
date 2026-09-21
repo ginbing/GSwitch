@@ -139,12 +139,8 @@ impl ChatGptClient {
             .get(format!("{}{}", self.base_url, path))
             .headers(headers(credential)?)
             .send()
-            .map_err(|error| RequestFailure {
-                kind: if error.is_timeout() {
-                    RequestFailureKind::Transport
-                } else {
-                    RequestFailureKind::Transport
-                },
+            .map_err(|_error| RequestFailure {
+                kind: RequestFailureKind::Transport,
                 status: None,
             })?;
         let status = response.status();

@@ -3,11 +3,11 @@ use tauri_plugin_opener::OpenerExt;
 
 use crate::{
     accounts::AppState,
-    codex, intake, quota, switching,
+    codex, intake, migration, quota, switching,
     types::{
-        AccountView, AppSnapshot, ImportResult, LiveAccountView, OAuthLoginStart, OAuthLoginStatus,
-        QuotaView, ResetCreditOutcome, RuntimeInfo, StorageStatus, SwitchOutcome, UpdateDelivery,
-        WakeOperationView, WakeStart,
+        AccountView, AppSnapshot, ImportResult, LiveAccountView, MigrationPreview, OAuthLoginStart,
+        OAuthLoginStatus, QuotaView, ResetCreditOutcome, RuntimeInfo, StorageStatus, SwitchOutcome,
+        UpdateDelivery, WakeOperationView, WakeStart,
     },
     wake,
 };
@@ -128,6 +128,23 @@ pub fn import_auth_files(
     paths: Vec<String>,
 ) -> Result<ImportResult, String> {
     intake::import_files(state.inner(), paths)
+}
+
+#[tauri::command]
+pub fn discover_local_accounts(
+    state: State<'_, AppState>,
+    custom_root: Option<String>,
+) -> Result<MigrationPreview, String> {
+    migration::discover(state.inner(), custom_root)
+}
+
+#[tauri::command]
+pub fn import_local_accounts(
+    state: State<'_, AppState>,
+    custom_root: Option<String>,
+    selected_ids: Vec<String>,
+) -> Result<ImportResult, String> {
+    migration::confirm(state.inner(), custom_root, selected_ids)
 }
 
 #[tauri::command]

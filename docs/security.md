@@ -16,10 +16,18 @@ product behavior, not optional implementation polish.
   all readable files before sequential credential validation. File contents,
   absolute paths, and individual failure details are not placed in WebView
   storage or returned in the aggregate result.
-- Import support for Cockpit Tools, Sub2API, and CPA applies only to a file the
-  user explicitly selects or drops. GSwitch never scans their private storage.
-  When a portable Cockpit export includes non-Codex account metadata, it drops
-  password, 2FA, note, phone, tag, group, provider, and mail-setting fields.
+- Import support for Cockpit Tools, Sub2API, and CPA applies to files the user
+  explicitly selects or drops. GSwitch does not inspect another application's
+  account storage automatically. After the user explicitly starts **Import
+  from this computer**, it may read only the documented Official Codex profile
+  and Cockpit allowlist, including the existing secure-storage key needed to
+  decode a supported Codex detail. The read is bounded and strictly
+  read-only: no key creation, rotation, repair, source rewrite, watcher,
+  scheduler, or generic recursive search is allowed. A changed source
+  identity invalidates the preview before normal intake runs. When a portable
+  Cockpit export or local record includes non-Codex account metadata, GSwitch
+  drops password, 2FA, note, phone, tag, group, provider, and mail-setting
+  fields.
 - Do not write credentials, raw provider payloads, reset-credit IDs, or account
   secrets to logs, telemetry, issue-report output, or user-facing errors.
 - The production WebView CSP permits bundled local assets and Tauri IPC only.

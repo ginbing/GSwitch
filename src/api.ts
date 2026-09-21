@@ -4,6 +4,7 @@ import type {
   AppSnapshot,
   ImportResult,
   LiveAccountView,
+  MigrationPreview,
   OAuthLoginStart,
   OAuthLoginStatus,
   QuotaView,
@@ -38,6 +39,13 @@ export const api = {
     invoke<ImportResult>("import_auth_file", { path }),
   importAuthFiles: (paths: string[]) =>
     invoke<ImportResult>("import_auth_files", { paths }),
+  discoverLocalAccounts: (customRoot?: string) =>
+    invoke<MigrationPreview>("discover_local_accounts", { customRoot }),
+  importLocalAccounts: (customRoot: string | undefined, selectedIds: string[]) =>
+    invoke<ImportResult>("import_local_accounts", {
+      customRoot,
+      selectedIds,
+    }),
   importApiKey: (apiKey: string, label?: string) =>
     invoke<AccountView>("import_api_key", { apiKey, label }),
   saveCurrentAccount: () => invoke<AccountView>("save_current_account"),

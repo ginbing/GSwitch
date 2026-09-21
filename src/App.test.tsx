@@ -18,6 +18,8 @@ const mocks = vi.hoisted(() => ({
   openOAuth: vi.fn(),
   importAuthJson: vi.fn(),
   importAuthFiles: vi.fn(),
+  discoverLocalAccounts: vi.fn(),
+  importLocalAccounts: vi.fn(),
   importApiKey: vi.fn(),
   saveCurrentAccount: vi.fn(),
   enableAccountSwitching: vi.fn(),
@@ -141,6 +143,13 @@ function prepareDefaults() {
     unsupported_count: 0,
     failed_count: 0,
   });
+  mocks.discoverLocalAccounts.mockResolvedValue({ candidates: [] });
+  mocks.importLocalAccounts.mockResolvedValue({
+    imported: [chatAccount],
+    duplicate_count: 0,
+    unsupported_count: 0,
+    failed_count: 0,
+  });
   mocks.importApiKey.mockResolvedValue({
     id: "api-1",
     label: "Key",
@@ -216,7 +225,7 @@ describe("GSwitch account workspace", () => {
     render(<App />);
 
     expect(await screen.findByRole("heading", { name: "0 saved accounts" })).toBeInTheDocument();
-    expect(screen.getByText(/never reads another app/i)).toBeInTheDocument();
+    expect(screen.getByText(/does not inspect another application's account storage automatically/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Import account files" })).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: "Add manually" }));
@@ -224,8 +233,77 @@ describe("GSwitch account workspace", () => {
     expect(dialog).toBeInTheDocument();
     expect(within(dialog).getByRole("button", { name: /Paste auth JSON/ })).toBeInTheDocument();
     expect(within(dialog).getByRole("button", { name: /Cockpit Tools exports, Codex auth\.json/i })).toBeInTheDocument();
-    expect(within(dialog).getByText(/select the Codex accounts you want/i)).toBeInTheDocument();
-    expect(within(dialog).getByText(/does not access Cockpit Tools/i)).toBeInTheDocument();
+    expect(within(dialog).getByText(/export account files from Cockpit Tools/i)).toBeInTheDocument();
+    expect(within(dialog).getByText(/does not inspect another application's account storage automatically/i)).toBeInTheDocument();
+  });
+
+  it("does not scan local account sources at startup or when the method row opens", async () => {
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "0 saved accounts" })).toBeInTheDocument();
+    expect(mocks.discoverLocalAccounts).not.toHaveBeenCalled();
+
+    await userEvent.click(screen.getByRole("button", { name: "Add manually" }));
+    await userEvent.click(screen.getByRole("button", { name: /Import from this computer/ }));
+    expect(screen.getByText(/Before scanning, GSwitch will read only/i)).toBeInTheDocument();
+    expect(mocks.discoverLocalAccounts).not.toHaveBeenCalled();
+  });
+
+  it("shows a sanitized migration preview and imports only selected new candidates", async () => {
+    mocks.discoverLocalAccounts.mockResolvedValue({
+      candidates: [
+        {
+          id: "new-id",
+          source: "official_codex",
+          email: "person@example.com",
+          workspace_name: "Personal",
+          plan_type: "Plus",
+          state: "new",
+        },
+        {
+          id: "existing-id",
+          source: "cockpit_tools",
+          email: "saved@example.com",
+          state: "already_present",
+        },
+        {
+          id: "unsupported-id",
+          source: "cockpit_tools",
+          email: "unknown@example.com",
+          state: "unsupported",
+        },
+      ],
+    });
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Add manually" }));
+    await userEvent.click(screen.getByRole("button", { name: /Import from this computer/ }));
+    await userEvent.click(screen.getByRole("button", { name: "Scan supported locations" }));
+
+    expect(await screen.findByText("person@example.com")).toBeInTheDocument();
+    expect(screen.getByText(/Official Codex · New/)).toBeInTheDocument();
+    expect(screen.getByText(/Already in GSwitch/)).toBeInTheDocument();
+    expect(screen.getByText(/Unsupported/)).toBeInTheDocument();
+    expect(screen.getAllByRole("checkbox")).toHaveLength(3);
+    expect(screen.getAllByRole("checkbox")[0]).toBeChecked();
+    expect(screen.getAllByRole("checkbox")[1]).toBeDisabled();
+    expect(screen.getAllByRole("checkbox")[2]).toBeDisabled();
+
+    await userEvent.click(screen.getByRole("button", { name: "Import selected" }));
+    await waitFor(() => expect(mocks.importLocalAccounts).toHaveBeenCalledWith(undefined, ["new-id"]));
+  });
+
+  it("uses the explicit folder choice only for a migration scan", async () => {
+    vi.mocked(open).mockResolvedValue("C:\\custom\\cockpit");
+    mocks.discoverLocalAccounts.mockResolvedValue({ candidates: [] });
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Add manually" }));
+    await userEvent.click(screen.getByRole("button", { name: /Import from this computer/ }));
+    await userEvent.click(screen.getByRole("button", { name: "Choose another Cockpit folder" }));
+
+    await waitFor(() => expect(mocks.discoverLocalAccounts).toHaveBeenCalledWith("C:\\custom\\cockpit"));
+    expect(open).toHaveBeenCalledWith(expect.objectContaining({ directory: true, multiple: false }));
   });
 
   it("opens the native picker for multiple account files and reports one summary", async () => {

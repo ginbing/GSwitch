@@ -40,8 +40,25 @@ refreshes each imported ChatGPT account without making the batch wait for
 network requests.
 
 GSwitch can import a complete official Codex auth document and explicitly
-user-selected public exports from Cockpit Tools, Sub2API, and CPA. It never
-searches for, reads, or decrypts Cockpit Tools private application storage.
+user-selected public exports from Cockpit Tools, Sub2API, and CPA. It does not
+inspect another application's account storage automatically. The Add Account
+dialog also offers a one-shot **Import from this computer** action: after the
+user starts it, Rust reads only the documented Official Codex profile and
+Cockpit production/legacy roots (`codex_accounts.json`, direct detail files,
+and the existing secure-storage key). A user-selected alternate folder is
+bounded to the same allowlist. The preview contains only email, workspace or
+account name, local plan, source, and New/Already/Unsupported state. Already
+saved identities are disabled and never replaced.
+
+The local migration decoder accepts only the current Cockpit version-1
+`codex`/`AES-256-GCM` envelope with its existing 32-byte key and 12-byte nonce,
+or an unencrypted known Codex record. It never creates, rotates, repairs, or
+rewrites Cockpit files. Confirming a preview rereads the selected records and
+rederives identity; a changed identity makes the preview stale. Supported
+records are reduced to the minimum complete Codex credential shape and then
+sent through the normal snapshot-first intake path. There is no startup scan,
+watcher, scheduler, plugin source, or generic search surface.
+
 The native picker and drop handler accept one or more files in one bounded
 operation: at most 64 files and 64 MiB in aggregate, with the existing 10 MiB
 per-file limit. Rust reads and parses all readable files before starting
