@@ -31,6 +31,14 @@ An account card should show only the state needed for a decision:
 - reset-credit count and nearest expiry when available;
 - direct actions such as Switch, Wake, refresh, reset, or remove when eligible.
 
+For ChatGPT accounts, the email is the primary identity and the normalized
+workspace or account name is secondary context when it adds information. A
+legacy label may provide that secondary context only when no workspace is
+available and it differs from the email; duplicate email text is omitted.
+API-key cards remain label-first. Card action labels identify the primary
+identity so accounts in the same workspace remain distinguishable to screen
+readers and keyboard users.
+
 The active account must be obvious at a glance through a clear border and
 status badge. Actions stay next to the account they affect. Global actions such
 as **Add account** and **Wake All** stay near the cards rather than behind a

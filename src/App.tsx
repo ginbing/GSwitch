@@ -126,6 +126,28 @@ function accountPlan(account: AccountView, t: Translator) {
   return account.kind === "api_key" ? t("account.apiKey") : account.plan_type || t("account.chatGpt");
 }
 
+function accountPrimaryName(account: AccountView) {
+  if (account.kind === "chat_gpt" && account.email?.trim()) {
+    return account.email.trim();
+  }
+  return account.label;
+}
+
+function accountSecondaryName(account: AccountView, primary: string, t: Translator) {
+  if (account.kind === "api_key") {
+    return t("account.storedLocally");
+  }
+  const workspace = account.workspace_name?.trim();
+  if (workspace && workspace !== primary) {
+    return workspace;
+  }
+  const legacyLabel = account.label.trim();
+  if (!workspace && legacyLabel && legacyLabel !== primary) {
+    return legacyLabel;
+  }
+  return undefined;
+}
+
 function credentialStoreLabel(store: RuntimeInfo["credential_store"] | undefined, t: Translator) {
   const labels = {
     file: "credentialStore.file",
@@ -279,25 +301,32 @@ function AccountCard({
 }) {
   const credits = quota?.snapshot?.reset_credits;
   const isApiKey = account.kind === "api_key";
+  const primaryName = accountPrimaryName(account);
+  const secondaryName = accountSecondaryName(account, primaryName, t);
 
   return (
     <article className={"account-card" + (active ? " account-active" : "")}>
       <div className="account-card-head">
         <div className="account-identity">
           <div className="account-avatar" aria-hidden="true">
-            {account.label.slice(0, 1).toUpperCase()}
+            {primaryName.slice(0, 1).toUpperCase()}
           </div>
           <div className="account-copy">
-            <h3>{account.label}</h3>
-            <p>{account.email || (isApiKey ? t("account.storedLocally") : t("account.verifiedCodex"))}</p>
+            <h3>{primaryName}</h3>
+            {secondaryName ? <p>{secondaryName}</p> : null}
           </div>
         </div>
         <details className="card-menu">
-          <summary aria-label={t("account.moreActions", { name: account.label })}>
+          <summary aria-label={t("account.moreActions", { name: primaryName })}>
             <MoreHorizontal size={18} />
           </summary>
           <div className="card-menu-popover">
-            <button disabled={active || busy} onClick={onRemove} type="button">
+            <button
+              aria-label={t("account.remove", { name: primaryName })}
+              disabled={active || busy}
+              onClick={onRemove}
+              type="button"
+            >
               <Trash2 size={15} />
               {t("common.removeAccount")}
             </button>
@@ -344,7 +373,7 @@ function AccountCard({
 
       <div className="card-footer">
         <button
-          aria-label={t("account.refresh", { name: account.label })}
+          aria-label={t("account.refresh", { name: primaryName })}
           className="icon-button"
           disabled={busy || isApiKey}
           onClick={onRefresh}
@@ -354,12 +383,24 @@ function AccountCard({
         </button>
         <div className="card-footer-actions">
           {!isApiKey ? (
-            <button className="button button-secondary" disabled={busy} onClick={onWake} type="button">
+            <button
+              aria-label={t("account.wake", { name: primaryName })}
+              className="button button-secondary"
+              disabled={busy}
+              onClick={onWake}
+              type="button"
+            >
               <Zap size={15} />
               {t("common.wake")}
             </button>
           ) : null}
-          <button className="button button-primary" disabled={busy || active} onClick={onSwitch} type="button">
+          <button
+            aria-label={t(active ? "account.current" : "account.switch", { name: primaryName })}
+            className="button button-primary"
+            disabled={busy || active}
+            onClick={onSwitch}
+            type="button"
+          >
             {busy ? <LoaderCircle className="spin" size={15} /> : <ArrowRightLeft size={15} />}
             {active ? t("common.current") : t("common.switch")}
           </button>

@@ -61,6 +61,7 @@ const chatAccount: AccountView = {
   label: "Personal",
   kind: "chat_gpt",
   email: "person@example.com",
+  workspace_name: "Personal",
   plan_type: "Plus",
   active: false,
 };
@@ -295,6 +296,69 @@ describe("GSwitch account workspace", () => {
     );
   });
 
+  it("uses ChatGPT email as the primary identity and workspace as context", async () => {
+    mocks.listAccounts.mockResolvedValue([chatAccount]);
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "person@example.com" })).toBeInTheDocument();
+    expect(screen.getByText("Personal")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Refresh person@example.com" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Wake person@example.com" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Switch to person@example.com" })).toBeEnabled();
+  });
+
+  it("localizes ChatGPT card actions in Simplified Chinese", async () => {
+    Object.defineProperty(window.navigator, "language", { configurable: true, value: "zh-CN" });
+    mocks.listAccounts.mockResolvedValue([chatAccount]);
+    render(<App />);
+
+    expect(await screen.findByRole("button", { name: "切换到 person@example.com" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "唤醒 person@example.com" })).toBeEnabled();
+  });
+
+  it("identifies the current account in its disabled action", async () => {
+    mocks.listAccounts.mockResolvedValue([{ ...chatAccount, active: true }]);
+    render(<App />);
+
+    const current = await screen.findByRole("button", { name: "Current account: person@example.com" });
+    expect(current).toBeDisabled();
+  });
+
+  it("keeps same-workspace ChatGPT accounts distinct by email", async () => {
+    mocks.listAccounts.mockResolvedValue([
+      chatAccount,
+      { ...chatAccount, id: "account-2", email: "other@example.com" },
+    ]);
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "person@example.com" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "other@example.com" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Switch to person@example.com" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Switch to other@example.com" })).toBeEnabled();
+  });
+
+  it("omits a duplicate workspace and falls back to a distinct legacy label", async () => {
+    mocks.listAccounts.mockResolvedValue([
+      { ...chatAccount, workspace_name: "person@example.com", label: "person@example.com" },
+      { ...chatAccount, id: "account-2", workspace_name: undefined, label: "Legacy workspace" },
+    ]);
+    const { container } = render(<App />);
+
+    expect(await screen.findAllByRole("heading", { name: "person@example.com" })).toHaveLength(2);
+    expect(container.querySelectorAll(".account-copy p")).toHaveLength(1);
+    expect(screen.getByText("Legacy workspace")).toBeInTheDocument();
+  });
+
+  it("keeps API-key cards label-first", async () => {
+    mocks.listAccounts.mockResolvedValue([
+      { id: "api-1", label: "Build key", kind: "api_key", active: false },
+    ]);
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Build key" })).toBeInTheDocument();
+    expect(screen.getByText("Stored locally")).toBeInTheDocument();
+  });
+
   it("requires a deliberate recovery of the original pending reset request", async () => {
     mocks.listAccounts.mockResolvedValue([chatAccount]);
     mocks.accountQuota.mockResolvedValue(staleQuota);
@@ -324,7 +388,7 @@ describe("GSwitch account workspace", () => {
     render(<App />);
 
     expect(await screen.findByText("Personal")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Switch" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Switch to person@example.com" })).toBeEnabled();
     expect(screen.getAllByText("Not available")).toHaveLength(2);
   });
 
@@ -363,7 +427,7 @@ describe("GSwitch account workspace", () => {
 
     await screen.findByText("Personal");
     await waitFor(() => expect(mocks.refreshAccountQuota).toHaveBeenCalledOnce());
-    await userEvent.click(screen.getByRole("button", { name: "Refresh Personal" }));
+    await userEvent.click(screen.getByRole("button", { name: "Refresh person@example.com" }));
     expect(mocks.refreshAccountQuota).toHaveBeenCalledOnce();
 
     mocks.accountQuota.mockResolvedValue(staleQuota);
@@ -380,7 +444,7 @@ describe("GSwitch account workspace", () => {
     render(<App />);
 
     expect(await screen.findByText(/could not identify Codex's live account/)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Switch" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Switch to person@example.com" })).toBeEnabled();
   });
 
   it("maps the existing Quit Codex guard to an actionable retry message", async () => {
@@ -388,7 +452,7 @@ describe("GSwitch account workspace", () => {
     mocks.switchAccount.mockRejectedValue(new Error("Quit Codex before changing the active account"));
     render(<App />);
 
-    await userEvent.click(await screen.findByRole("button", { name: "Switch" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Switch to person@example.com" }));
     expect(await screen.findByText(/Quit the other Codex session/)).toBeInTheDocument();
   });
 
