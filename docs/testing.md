@@ -58,6 +58,8 @@ as applicable:
 - target identity confirmation before switch success;
 - interrupted-switch and protected-credential recovery;
 - quota bucket normalization, zero remaining, and stale-cache labeling;
+- a quota projection failure leaving the saved-account workspace and Switch
+  action available;
 - provider refresh before reset-credit selection;
 - earliest eligible unexpired reset-credit selection and idempotent outcomes;
 - Wake model allowlisting, low reasoning effort, quota guards, and confirmation;

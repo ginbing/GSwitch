@@ -235,6 +235,16 @@ describe("GSwitch account workspace", () => {
     );
   });
 
+  it("keeps account actions available when a local quota projection cannot be read", async () => {
+    mocks.listAccounts.mockResolvedValue([chatAccount]);
+    mocks.accountQuota.mockRejectedValue(new Error("quota cache unavailable"));
+    render(<App />);
+
+    expect(await screen.findByText("Personal")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Switch" })).toBeEnabled();
+    expect(screen.getAllByText("Not available")).toHaveLength(2);
+  });
+
   it("lets the user cancel a browser OAuth flow", async () => {
     render(<App />);
     await screen.findByRole("heading", { name: "0 saved accounts" });
