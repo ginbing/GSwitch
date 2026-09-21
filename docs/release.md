@@ -5,14 +5,15 @@ status, or deployment authorization.
 
 ## Supported targets
 
-The v1 desktop targets are Windows and macOS. Linux is not a release requirement.
-Keep portable code where Tauri makes that natural, but do not add platform work
-or CI for an unaccepted target.
+The v1 desktop targets are Windows, macOS, and Linux. A platform is supported
+only after its matching packaged build and clean-install checks have run for the
+specific release candidate.
 
 Use standard Tauri 2 bundles:
 
 - Windows: NSIS installer;
 - macOS: application bundle distributed through a DMG.
+- Linux: AppImage and Debian package.
 
 Production Windows builds use the GUI subsystem. Launching GSwitch must open
 only its application window; GSwitch-owned Codex helper processes also run
@@ -20,6 +21,18 @@ without creating visible console windows.
 
 The repository's current Tauri configuration is authoritative for which bundles
 and architectures a particular revision actually produces.
+
+Linux builds use the Tauri-supported AppImage and Debian formats. Build them on
+an Ubuntu 22.04 baseline, which supplies Tauri's required WebKitGTK 4.1
+development packages without unnecessarily raising the AppImage's glibc floor.
+The project does not publish an RPM, Snap, Flatpak, AUR package, or a Linux
+repository without a separate product decision.
+
+Desktop launchers on Linux and macOS do not inherit shell startup files. GSwitch
+uses `GSWITCH_CODEX_BIN` when the user explicitly sets it and recognizes the
+official Codex installer's default `$HOME/.local/bin/codex` location. A custom
+Codex location outside those paths must be placed in the graphical session's
+`PATH` or provided through `GSWITCH_CODEX_BIN`.
 
 ## Signing and distribution
 
@@ -68,7 +81,8 @@ distribution need requires one.
 A public candidate requires:
 
 - an exact source revision with passing repository CI;
-- frontend and Rust tests plus no-bundle Tauri builds on Windows and macOS;
+- frontend and Rust tests plus no-bundle Tauri builds on Windows, macOS, and
+  Linux;
 - bundled artifacts produced from that same candidate revision;
 - clean-install smoke tests on each advertised platform and architecture;
 - account intake, live identity, confirmed switch, quota, reset-credit, Wake,
