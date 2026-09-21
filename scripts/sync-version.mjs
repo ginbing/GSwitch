@@ -15,17 +15,22 @@ function replaceVersion(content, expression, version, label) {
   return content.replace(expression, `$1${version}$2`);
 }
 
+function lineEnding(content) {
+  return content.includes("\r\n") ? "\r\n" : "\n";
+}
+
 const tauri = JSON.parse(await readFile(paths.tauri, "utf8"));
 const version = tauri.version;
 if (typeof version !== "string" || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(version)) {
   throw new Error("src-tauri/tauri.conf.json must contain a SemVer version.");
 }
 
-const packageJson = JSON.stringify(
-  { ...JSON.parse(await readFile(paths.package, "utf8")), version },
-  null,
-  2,
-) + "\n";
+const packageSource = await readFile(paths.package, "utf8");
+const packageJson =
+  JSON.stringify({ ...JSON.parse(packageSource), version }, null, 2).replace(
+    /\n/g,
+    lineEnding(packageSource),
+  ) + lineEnding(packageSource);
 const cargoToml = replaceVersion(
   await readFile(paths.cargo, "utf8"),
   /(^\[package\][\s\S]*?^version = ")[^"]+("\r?$)/m,

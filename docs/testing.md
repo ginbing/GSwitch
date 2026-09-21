@@ -44,10 +44,16 @@ Run focused tests while editing, then the full relevant path before handoff.
 
 GitHub Actions runs:
 
-- frontend tests and a production frontend build on Linux;
-- Rust formatting, Clippy, and tests on Windows and macOS;
+- version synchronization, frontend tests, and a production frontend build on
+  Linux;
+- version synchronization, Rust formatting, Clippy, tests, and a standard
+  platform bundle on Windows and macOS;
 - frontend, Rust, no-bundle Tauri, AppImage, and Debian-package checks on an
   Ubuntu 22.04 Linux runner.
+
+The workflow uploads the Windows NSIS installer, macOS DMG, and Linux AppImage
+plus Debian package from its exact revision. They are CI artifacts only: they
+are not signed, notarized, tested through an interactive installer, or released.
 
 The CI workflow has read-only repository permissions. A passing CI run proves
 that the checked-in revision passed those commands on those runners; it does
