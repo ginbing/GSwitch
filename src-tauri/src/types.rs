@@ -282,6 +282,17 @@ pub struct WakeStart {
     pub operation_id: String,
 }
 
+/// How a signed update is delivered on this particular installed package.
+/// This is intentionally independent from Codex account state: it only tells
+/// the WebView whether Tauri can install and whether a relaunch is required.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum UpdateDelivery {
+    InstallerExits,
+    RelaunchRequired,
+    ReleaseDownload,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct QuotaBucket {
     pub limit_id: String,

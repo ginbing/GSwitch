@@ -32,7 +32,7 @@ import {
   useState,
 } from "react";
 
-import { api } from "./api";
+import { api, type UpdateDelivery } from "./api";
 import {
   createTranslator,
   formatDateTimeWithRelative,
@@ -55,6 +55,7 @@ import type {
   StorageView,
   WakeOperationView,
 } from "./types";
+import { updater, type AvailableUpdate } from "./updater";
 
 type Dialog =
   | "add"
@@ -77,6 +78,13 @@ interface Notice {
 
 interface OAuthFlow extends OAuthLoginStart {
   status: OAuthLoginStatus;
+}
+
+type UpdatePhase = "available" | "downloading" | "installing" | "ready" | "error";
+
+interface PendingUpdate {
+  update: AvailableUpdate;
+  delivery: UpdateDelivery;
 }
 
 function fileFilters(t: Translator) {
@@ -382,6 +390,69 @@ function FirstRun({ onImport, onAdd, t }: { onImport: () => void; onAdd: () => v
   );
 }
 
+function UpdateNotice({
+  pending,
+  phase,
+  progress,
+  onInstall,
+  onLater,
+  onRestart,
+  t,
+}: {
+  pending: PendingUpdate;
+  phase: UpdatePhase;
+  progress: number | null;
+  onInstall: () => void;
+  onLater: () => void;
+  onRestart: () => void;
+  t: Translator;
+}) {
+  const downloading = phase === "downloading" || phase === "installing";
+  const isReleaseDownload = pending.delivery === "release_download";
+  const primaryLabel = isReleaseDownload
+    ? t("update.download")
+    : phase === "ready"
+      ? t("update.restart")
+        : phase === "error"
+          ? t("update.retry")
+          : phase === "installing"
+            ? t("update.installing")
+          : downloading
+          ? t("update.downloading", { progress: progress ?? "…" })
+          : t("update.install");
+
+  return (
+    <section aria-label={t("update.available", { version: pending.update.version })} className="update-notice">
+      <div>
+        <strong>{t("update.available", { version: pending.update.version })}</strong>
+        <p>
+          {isReleaseDownload
+            ? t("update.debianFallback")
+            : phase === "ready"
+              ? t("update.restartRequired")
+              : phase === "error"
+                ? t("update.failed")
+                : t("update.safe")}
+        </p>
+      </div>
+      <div className="update-actions">
+        {phase !== "ready" && !downloading ? (
+          <button className="button button-quiet" onClick={onLater} type="button">{t("update.later")}</button>
+        ) : null}
+        <button
+          className="button button-primary"
+          disabled={downloading}
+          onClick={phase === "ready" ? onRestart : onInstall}
+          type="button"
+        >
+          {downloading ? <LoaderCircle className="spin" size={15} /> : <RefreshCw size={15} />}
+          {primaryLabel}
+        </button>
+      </div>
+    </section>
+  );
+}
+
 export default function App() {
   const [languagePreference, setLanguagePreference] = useState<LanguagePreference>(() => readLanguagePreference());
   const [accounts, setAccounts] = useState<AccountView[]>([]);
@@ -401,8 +472,13 @@ export default function App() {
   const [removeAccount, setRemoveAccount] = useState<AccountView | null>(null);
   const [resetConfirmation, setResetConfirmation] = useState(false);
   const [storageResetConfirmation, setStorageResetConfirmation] = useState(false);
+  const [pendingUpdate, setPendingUpdate] = useState<PendingUpdate | null>(null);
+  const [updatePhase, setUpdatePhase] = useState<UpdatePhase>("available");
+  const [updateProgress, setUpdateProgress] = useState<number | null>(null);
   const jsonRef = useRef<HTMLTextAreaElement>(null);
   const apiKeyRef = useRef<HTMLInputElement>(null);
+  const dismissedUpdateVersions = useRef(new Set<string>());
+  const updateCheckInFlight = useRef(false);
   const [label, setLabel] = useState("");
   const locale = useMemo(() => resolveLocale(languagePreference), [languagePreference]);
   const t = useMemo(() => createTranslator(locale.language), [locale.language]);
@@ -447,6 +523,34 @@ export default function App() {
   useEffect(() => {
     void loadSnapshot();
   }, [loadSnapshot]);
+
+  const checkForUpdate = useCallback(async () => {
+    if (!("__TAURI_INTERNALS__" in window) || updateCheckInFlight.current) {
+      return;
+    }
+    updateCheckInFlight.current = true;
+    try {
+      const update = await updater.check();
+      if (!update || dismissedUpdateVersions.current.has(update.version)) {
+        return;
+      }
+      const delivery = await api.updateDelivery();
+      setPendingUpdate({ update, delivery });
+      setUpdatePhase("available");
+      setUpdateProgress(null);
+    } catch {
+      // A failed background check is intentionally quiet. A user-initiated
+      // install reports an actionable retry state instead.
+    } finally {
+      updateCheckInFlight.current = false;
+    }
+  }, []);
+
+  useEffect(() => {
+    void checkForUpdate();
+    const interval = window.setInterval(() => void checkForUpdate(), 6 * 60 * 60 * 1000);
+    return () => window.clearInterval(interval);
+  }, [checkForUpdate]);
 
   const runTask = useCallback(
     async <T,>(key: string, task: () => Promise<T>, reload = true): Promise<T | undefined> => {
@@ -645,6 +749,57 @@ export default function App() {
       await api.openOAuth(result.login_id);
     } catch {
       setNotice({ kind: "info", text: t("notice.oauthReady") });
+    }
+  };
+
+  const dismissUpdate = () => {
+    if (pendingUpdate) {
+      dismissedUpdateVersions.current.add(pendingUpdate.update.version);
+    }
+    setPendingUpdate(null);
+    setUpdatePhase("available");
+    setUpdateProgress(null);
+  };
+
+  const installUpdate = async () => {
+    if (!pendingUpdate) {
+      return;
+    }
+    if (pendingUpdate.delivery === "release_download") {
+      try {
+        await api.openLatestRelease();
+      } catch {
+        setUpdatePhase("error");
+      }
+      return;
+    }
+
+    setUpdatePhase("downloading");
+    setUpdateProgress(null);
+    let expectedBytes: number | undefined;
+    let downloadedBytes = 0;
+    try {
+      await pendingUpdate.update.downloadAndInstall((event) => {
+        if (event.event === "Started") {
+          expectedBytes = event.data.contentLength;
+        } else if (event.event === "Progress") {
+          downloadedBytes += event.data.chunkLength;
+          if (expectedBytes && expectedBytes > 0) {
+            setUpdateProgress(Math.min(100, Math.round((downloadedBytes / expectedBytes) * 100)));
+          }
+        }
+      });
+      setUpdatePhase(pendingUpdate.delivery === "installer_exits" ? "installing" : "ready");
+    } catch {
+      setUpdatePhase("error");
+    }
+  };
+
+  const restartAfterUpdate = async () => {
+    try {
+      await updater.relaunch();
+    } catch {
+      setUpdatePhase("error");
     }
   };
 
@@ -951,6 +1106,18 @@ export default function App() {
       </header>
 
       <div className="content">
+        {pendingUpdate ? (
+          <UpdateNotice
+            onInstall={() => void installUpdate()}
+            onLater={dismissUpdate}
+            onRestart={() => void restartAfterUpdate()}
+            pending={pendingUpdate}
+            phase={updatePhase}
+            progress={updateProgress}
+            t={t}
+          />
+        ) : null}
+
         {notice ? (
           <div className={"toast toast-" + notice.kind} role="status">
             {notice.kind === "success" ? <CircleCheck size={17} /> : <CircleAlert size={17} />}

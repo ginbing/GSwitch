@@ -14,6 +14,8 @@ import type {
   WakeStart,
 } from "./types";
 
+export type UpdateDelivery = "installer_exits" | "relaunch_required" | "release_download";
+
 // Keep provider payloads on the Rust side. The WebView only deals with this
 // small, display-oriented capacity view.
 export const api = {
@@ -57,4 +59,6 @@ export const api = {
     invoke<WakeOperationView>("get_wake_operation", { operationId }),
   cancelWake: (operationId: string) =>
     invoke<void>("cancel_wake", { operationId }),
+  updateDelivery: () => invoke<UpdateDelivery>("get_update_delivery"),
+  openLatestRelease: () => invoke<void>("open_latest_release"),
 };
