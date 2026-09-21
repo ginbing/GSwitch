@@ -6,6 +6,7 @@ use uuid::Uuid;
 use crate::{
     accounts::{AppState, OperationGuard},
     app_server::{AppServer, TempCodexHome},
+    codex,
     identity::{derive_identity, document_kind},
     runtime,
     types::{
@@ -29,12 +30,12 @@ pub fn cached_quota(state: &AppState, account_id: &str) -> Result<QuotaView, Str
 /// account endpoint; `account/read` alone is deliberately not used as proof.
 pub fn refresh_quota(state: &AppState, account_id: &str) -> Result<QuotaView, String> {
     let operation = state.acquire_operation()?;
-    runtime::ensure_no_external_codex(&[])?;
     let account = state.account_by_id_under_operation(&operation, account_id)?;
     if account.kind == AccountKind::ApiKey {
         return Ok(not_applicable(&account));
     }
     let identity = verified_chatgpt_identity(&account)?;
+    ensure_quota_refresh_is_safe(&account, &identity)?;
 
     let mut temporary = TempCodexHome::create(&state.isolated_profile_root()?)?;
     temporary.write_auth(&account.credential)?;
@@ -340,6 +341,53 @@ pub(crate) fn verified_chatgpt_identity(
         );
     }
     Ok(identity)
+}
+
+/// A quota request uses a GSwitch-owned profile and never writes live
+/// credentials. When Codex is running on a different saved account, the
+/// isolated request remains safe. If the live file identifies the same
+/// account, keep cached quota instead of racing a possible token refresh.
+fn ensure_quota_refresh_is_safe(
+    account: &StoredAccount,
+    identity: &AccountIdentity,
+) -> Result<(), String> {
+    if !runtime::external_codex_running(&[])? {
+        return Ok(());
+    }
+
+    let codex_home = codex::codex_home()?;
+    if codex::credential_store_mode(&codex_home)? != crate::types::CredentialStoreMode::File {
+        return Err("Codex is running and GSwitch cannot safely identify its active account. GSwitch kept the cached quota; quit Codex to refresh it.".to_string());
+    }
+    let live = codex::read_optional_auth_document(&codex_home)?.ok_or_else(|| {
+        "Codex is running and GSwitch cannot safely identify its active account. GSwitch kept the cached quota; quit Codex to refresh it.".to_string()
+    })?;
+    let live_kind = document_kind(&live).map_err(|_| {
+        "Codex is running and GSwitch cannot safely identify its active account. GSwitch kept the cached quota; quit Codex to refresh it.".to_string()
+    })?;
+    let live_identity = derive_identity(&live_kind, &live).map_err(|_| {
+        "Codex is running and GSwitch cannot safely identify its active account. GSwitch kept the cached quota; quit Codex to refresh it.".to_string()
+    })?;
+    if quota_refresh_conflicts_with_live_identity(
+        &account.kind,
+        identity,
+        &live_kind,
+        &live_identity,
+    ) {
+        return Err("Codex is currently using this account. GSwitch kept the cached quota; quit Codex to refresh it.".to_string());
+    }
+    Ok(())
+}
+
+fn quota_refresh_conflicts_with_live_identity(
+    target_kind: &AccountKind,
+    target_identity: &AccountIdentity,
+    live_kind: &AccountKind,
+    live_identity: &AccountIdentity,
+) -> bool {
+    target_kind == &AccountKind::ChatGpt
+        && live_kind == &AccountKind::ChatGpt
+        && target_identity == live_identity
 }
 
 fn cached_view(account: &StoredAccount, now: i64) -> QuotaView {
@@ -741,6 +789,31 @@ mod tests {
         };
         let view = view_from_snapshot("account", snapshot, CACHE_FRESH_FOR_MS + 2);
         assert_eq!(view.status, QuotaStatus::Stale);
+    }
+
+    #[test]
+    fn blocks_only_the_running_codex_account_from_an_isolated_refresh() {
+        let target = AccountIdentity::ChatGpt {
+            user_id: "user".to_string(),
+            workspace_id: Some("workspace".to_string()),
+        };
+        let other = AccountIdentity::ChatGpt {
+            user_id: "other-user".to_string(),
+            workspace_id: Some("workspace".to_string()),
+        };
+
+        assert!(quota_refresh_conflicts_with_live_identity(
+            &AccountKind::ChatGpt,
+            &target,
+            &AccountKind::ChatGpt,
+            &target,
+        ));
+        assert!(!quota_refresh_conflicts_with_live_identity(
+            &AccountKind::ChatGpt,
+            &target,
+            &AccountKind::ChatGpt,
+            &other,
+        ));
     }
 
     #[test]

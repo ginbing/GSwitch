@@ -324,6 +324,70 @@ describe("GSwitch account workspace", () => {
     expect(screen.getAllByText("Not available")).toHaveLength(2);
   });
 
+  it("saves the current account and refreshes its unknown quota in the background", async () => {
+    mocks.liveAccount.mockResolvedValue({
+      status: "unknown_account",
+      credential_store: "file",
+      message: "Save the current Codex account before replacing its credentials",
+    });
+    mocks.accountQuota.mockResolvedValue({ account_id: "account-1", status: "unknown" });
+    mocks.saveCurrentAccount.mockImplementation(async () => {
+      mocks.listAccounts.mockResolvedValue([chatAccount]);
+      mocks.liveAccount.mockResolvedValue({
+        status: "ready",
+        credential_store: "file",
+        account: { ...chatAccount, active: true },
+      });
+      return chatAccount;
+    });
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Save current account" }));
+    await waitFor(() => expect(mocks.saveCurrentAccount).toHaveBeenCalledOnce());
+    await waitFor(() => expect(mocks.refreshAccountQuota).toHaveBeenCalledWith("account-1"));
+    expect(await screen.findByText("Personal was saved safely.")).toBeInTheDocument();
+  });
+
+  it("coalesces a manual refresh with the background quota refresh", async () => {
+    mocks.listAccounts.mockResolvedValue([chatAccount]);
+    mocks.accountQuota.mockResolvedValue({ account_id: "account-1", status: "unknown" });
+    let resolveRefresh: ((quota: QuotaView) => void) | undefined;
+    mocks.refreshAccountQuota.mockImplementation(
+      () => new Promise<QuotaView>((resolve) => { resolveRefresh = resolve; }),
+    );
+    render(<App />);
+
+    await screen.findByText("Personal");
+    await waitFor(() => expect(mocks.refreshAccountQuota).toHaveBeenCalledOnce());
+    await userEvent.click(screen.getByRole("button", { name: "Refresh Personal" }));
+    expect(mocks.refreshAccountQuota).toHaveBeenCalledOnce();
+
+    mocks.accountQuota.mockResolvedValue(staleQuota);
+    resolveRefresh?.(staleQuota);
+    expect(await screen.findByText("30%")).toBeInTheDocument();
+  });
+
+  it("keeps account actions available when a running Codex account retains cached quota", async () => {
+    mocks.listAccounts.mockResolvedValue([chatAccount]);
+    mocks.accountQuota.mockResolvedValue({ account_id: "account-1", status: "unknown" });
+    mocks.refreshAccountQuota.mockRejectedValue(
+      new Error("Codex is currently using this account. GSwitch kept the cached quota; quit Codex to refresh it."),
+    );
+    render(<App />);
+
+    expect(await screen.findByText(/Codex is using this account/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Switch" })).toBeEnabled();
+  });
+
+  it("maps the existing Quit Codex guard to an actionable retry message", async () => {
+    mocks.listAccounts.mockResolvedValue([chatAccount]);
+    mocks.switchAccount.mockRejectedValue(new Error("Quit Codex before changing the active account"));
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Switch" }));
+    expect(await screen.findByText(/Quit the other Codex session/)).toBeInTheDocument();
+  });
+
   it("lets the user cancel a browser OAuth flow", async () => {
     render(<App />);
     await screen.findByRole("heading", { name: "0 saved accounts" });

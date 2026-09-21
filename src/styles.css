@@ -715,6 +715,13 @@ summary:focus-visible {
   line-height: 1.35;
 }
 
+.quota-status-message {
+  margin: 9px 0 0;
+  color: var(--soft-muted);
+  font-size: 10.5px;
+  line-height: 1.35;
+}
+
 .credit-row {
   min-height: 37px;
   justify-content: space-between;
