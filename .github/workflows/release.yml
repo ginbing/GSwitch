@@ -115,9 +115,9 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: GSwitch v__VERSION__
-          releaseBody: "Review the assets, release notes, platform smoke evidence, and signing results before publishing this draft."
           releaseDraft: true
           prerelease: false
+          generateReleaseNotes: true
           uploadUpdaterJson: true
           updaterJsonPreferNsis: true
           args: --config src-tauri/tauri.updater.conf.json ${{ matrix.args }}
