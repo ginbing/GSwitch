@@ -23,5 +23,7 @@ sysinfo = { version = "=0.38.2", default-features = false, features = ["system"]
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
+tauri-plugin-process = "2.3.1"
+tauri-plugin-updater = "2.10.1"
 toml_edit = "0.25"
 uuid = { version = "1", features = ["v4"] }

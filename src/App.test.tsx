@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "./App";
 import type { AccountView, QuotaView } from "./types";
@@ -31,10 +31,29 @@ const mocks = vi.hoisted(() => ({
   startWakeAll: vi.fn(),
   wakeOperation: vi.fn(),
   cancelWake: vi.fn(),
+  updateDelivery: vi.fn(),
+  openLatestRelease: vi.fn(),
+}));
+
+const updaterMocks = vi.hoisted(() => ({
+  check: vi.fn(),
+  relaunch: vi.fn(),
+}));
+
+const webviewMocks = vi.hoisted(() => ({
+  onDragDropEvent: vi.fn(),
 }));
 
 vi.mock("./api", () => ({
   api: mocks,
+}));
+
+vi.mock("./updater", () => ({
+  updater: updaterMocks,
+}));
+
+vi.mock("@tauri-apps/api/webview", () => ({
+  getCurrentWebview: () => ({ onDragDropEvent: webviewMocks.onDragDropEvent }),
 }));
 
 const chatAccount: AccountView = {
@@ -143,6 +162,11 @@ function prepareDefaults() {
     results: [],
   });
   mocks.cancelWake.mockResolvedValue(undefined);
+  mocks.updateDelivery.mockResolvedValue("installer_exits");
+  mocks.openLatestRelease.mockResolvedValue(undefined);
+  updaterMocks.check.mockResolvedValue(null);
+  updaterMocks.relaunch.mockResolvedValue(undefined);
+  webviewMocks.onDragDropEvent.mockResolvedValue(() => undefined);
 }
 
 describe("GSwitch account workspace", () => {
@@ -151,6 +175,10 @@ describe("GSwitch account workspace", () => {
     window.localStorage.clear();
     Object.defineProperty(window.navigator, "language", { configurable: true, value: "en-US" });
     prepareDefaults();
+  });
+
+  afterEach(() => {
+    delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
   });
 
   it("uses the Simplified Chinese system locale and keeps the main account flow localized", async () => {
@@ -320,5 +348,40 @@ describe("GSwitch account workspace", () => {
     expect(await screen.findByRole("dialog", { name: "Wake" })).toBeInTheDocument();
     expect(screen.getByText("Wake is running safely")).toBeInTheDocument();
     expect(mocks.startWakeAll).toHaveBeenCalledOnce();
+  });
+
+  it("offers a signed update once and keeps Later local to the current session", async () => {
+    Object.defineProperty(window, "__TAURI_INTERNALS__", { configurable: true, value: {} });
+    updaterMocks.check.mockResolvedValue({ version: "1.0.2" });
+    render(<App />);
+
+    expect(await screen.findByText("GSwitch 1.0.2 is ready")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Later" }));
+    expect(screen.queryByText("GSwitch 1.0.2 is ready")).not.toBeInTheDocument();
+  });
+
+  it("uses the release page fallback for a Debian package without touching accounts", async () => {
+    Object.defineProperty(window, "__TAURI_INTERNALS__", { configurable: true, value: {} });
+    updaterMocks.check.mockResolvedValue({ version: "1.0.2" });
+    mocks.updateDelivery.mockResolvedValue("release_download");
+    render(<App />);
+
+    expect(await screen.findByText("This Linux package updates from the GSwitch release page.")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Open release" }));
+    await waitFor(() => expect(mocks.openLatestRelease).toHaveBeenCalledOnce());
+    expect(mocks.switchAccount).not.toHaveBeenCalled();
+  });
+
+  it("restarts only after a macOS or AppImage update finishes", async () => {
+    Object.defineProperty(window, "__TAURI_INTERNALS__", { configurable: true, value: {} });
+    const downloadAndInstall = vi.fn().mockResolvedValue(undefined);
+    updaterMocks.check.mockResolvedValue({ version: "1.0.2", downloadAndInstall });
+    mocks.updateDelivery.mockResolvedValue("relaunch_required");
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Update" }));
+    await waitFor(() => expect(downloadAndInstall).toHaveBeenCalledOnce());
+    await userEvent.click(await screen.findByRole("button", { name: "Restart now" }));
+    expect(updaterMocks.relaunch).toHaveBeenCalledOnce();
   });
 });

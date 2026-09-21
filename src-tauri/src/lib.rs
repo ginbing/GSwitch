@@ -18,6 +18,8 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             let store_path = app.path().app_config_dir()?.join("accounts.json");
             let state = accounts::AppState::new(store_path).map_err(std::io::Error::other)?;
@@ -33,6 +35,8 @@ pub fn run() {
             commands::get_oauth_login_status,
             commands::cancel_oauth_login,
             commands::open_oauth_login,
+            commands::get_update_delivery,
+            commands::open_latest_release,
             commands::import_auth_json,
             commands::import_auth_file,
             commands::import_api_key,
