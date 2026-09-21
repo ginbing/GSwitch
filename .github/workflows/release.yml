@@ -90,23 +90,6 @@ jobs:
       - run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
       - run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
       - run: cargo test --manifest-path src-tauri/Cargo.toml --locked
-      - name: Import the configured Windows certificate
-        if: matrix.id == 'windows'
-        shell: pwsh
-        env:
-          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
-          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
-        run: |
-          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE)) { exit 0 }
-          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_PASSWORD)) {
-            throw 'WINDOWS_CERTIFICATE_PASSWORD is required when WINDOWS_CERTIFICATE is configured.'
-          }
-          $encoded = Join-Path $env:RUNNER_TEMP 'gswitch-certificate.txt'
-          $certificate = Join-Path $env:RUNNER_TEMP 'gswitch-certificate.pfx'
-          Set-Content -LiteralPath $encoded -Value $env:WINDOWS_CERTIFICATE
-          certutil -decode $encoded $certificate | Out-Host
-          Import-PfxCertificate -FilePath $certificate -CertStoreLocation Cert:\CurrentUser\My -Password (ConvertTo-SecureString -String $env:WINDOWS_CERTIFICATE_PASSWORD -Force -AsPlainText) | Out-Null
-          Remove-Item -LiteralPath $encoded, $certificate -Force
       - uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

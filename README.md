@@ -30,6 +30,9 @@ you to allow it manually in Privacy & Security.
 
 Codex must be installed before you use account actions in GSwitch.
 
+For the current Windows trust status, signing roles, and release order, see the
+[Code signing policy](./docs/code-signing-policy.md).
+
 ### Windows PowerShell helper
 
 Downloading the installer is the normal Windows path. If you prefer PowerShell,
@@ -43,10 +46,22 @@ non-administrator PowerShell window:
 The helper downloads and starts the same `setup.exe` from the latest public
 release. It does not build GSwitch or install development tools.
 
+## Uninstall
+
+- **Windows:** open Settings → Apps → Installed apps, find GSwitch, and choose
+  Uninstall.
+- **macOS:** move GSwitch to the Trash.
+- **Linux:** delete the AppImage, or remove the Debian package with your
+  distribution's package manager.
+
 ## Updates
 
 After installation, GSwitch checks GitHub Releases for signed updates and can
 install supported updates from inside the app.
+
+GSwitch has no analytics or telemetry. It contacts Codex/OpenAI for account
+operations you request and GitHub Releases for signed update checks and
+downloads.
 
 ## Build from source
 
