@@ -92,11 +92,16 @@ that its account kind and identity are unchanged. Delete the isolated profile
 after success unless it must be retained as a last-resort protected recovery
 copy.
 
-Quota refresh may coexist with a running Codex instance only when the current
-file-backed live identity is safely identifiable and differs from the saved
-account being refreshed. The same identity remains cached until Codex exits;
-GSwitch does not attempt to coordinate a concurrent token refresh across
-processes.
+Ordinary quota refresh is a read-only provider projection. When Codex is
+running, GSwitch rereads the file-backed live credential immediately before
+the request and uses that token snapshot when its identity matches the target.
+If the read gets an authentication response, it rereads once and retries only
+when the same identity has a newer credential. It never writes the live file or
+uses App Server for that active path. A running Codex instance on another saved
+identity can still be read through the target's saved snapshot. Only an
+authentication failure for an inactive account may enter the managed isolated
+refresh path; 429, transport, TLS, DNS, timeout, parse, and server failures do
+not.
 
 Wake also uses an empty workspace, read-only sandbox, no approvals, and an
 ephemeral thread. It does not load the user's project, MCP servers, Skills, or

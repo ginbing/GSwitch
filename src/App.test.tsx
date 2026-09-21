@@ -371,15 +371,15 @@ describe("GSwitch account workspace", () => {
     expect(await screen.findByText("30%")).toBeInTheDocument();
   });
 
-  it("keeps account actions available when a running Codex account retains cached quota", async () => {
+  it("keeps account actions available when the live Codex account cannot be identified", async () => {
     mocks.listAccounts.mockResolvedValue([chatAccount]);
     mocks.accountQuota.mockResolvedValue({ account_id: "account-1", status: "unknown" });
     mocks.refreshAccountQuota.mockRejectedValue(
-      new Error("Codex is currently using this account. GSwitch kept the cached quota; quit Codex to refresh it."),
+      new Error("Codex is running and GSwitch cannot safely identify its active account"),
     );
     render(<App />);
 
-    expect(await screen.findByText(/Codex is using this account/)).toBeInTheDocument();
+    expect(await screen.findByText(/could not identify Codex's live account/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Switch" })).toBeEnabled();
   });
 

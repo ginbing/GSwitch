@@ -86,10 +86,13 @@ profile cannot be removed until another identity is active.
 
 ## Quota
 
-Quota is read through the official Codex App Server in an isolated account
-profile. GSwitch normalizes the Codex bucket into five-hour and weekly windows
-by the durations supplied by the provider, while retaining other buckets as
-other. Missing or malformed values remain unknown.
+Quota is read from ChatGPT's current read-only usage endpoint with the live
+access-token snapshot when Codex is running, or the saved credential snapshot
+when it is not. GSwitch sends no App Server request and writes no credential
+for a successful ordinary read. It normalizes the provider's primary,
+secondary, and additional buckets into five-hour, weekly, and other windows by
+the durations supplied by the provider; missing or malformed values remain
+unknown.
 
 The supported minimum is Codex 0.144.5. GSwitch sends its rate-limit request
 with a null parameter payload for that version and retries once with an empty
@@ -97,21 +100,26 @@ object only when a newer server explicitly rejects the parameter shape. It
 never treats a cached `account/read` result as proof that a credential can reach
 the provider.
 
-An isolated read can rotate credentials. GSwitch verifies the returned document
-still belongs to the saved identity, then atomically stores it with the quota
-snapshot; a failed store write retains protected recovery data rather than
-discarding the refreshed credential. A snapshot is fresh for five minutes and
-then visibly stale. API-key accounts show quota as not applicable. Quota is
-operational account state, not usage analytics.
+If the read-only endpoint rejects an inactive saved credential with an
+authentication response, GSwitch may fall back to the existing isolated App
+Server refresh path, verifies the returned document still belongs to the saved
+identity, and atomically stores it with the quota snapshot. A successful
+read-only result stores only the quota projection. A snapshot is fresh for five
+minutes and then visibly stale. API-key accounts show quota as not applicable.
+Quota is operational account state, not usage analytics.
 
 The workspace renders its cached quota immediately and refreshes unknown or
 stale ChatGPT accounts in the background. A manual refresh joins that account's
 existing request rather than starting another one. Adding, importing, or saving
 an account follows the same refresh path. When a running Codex instance is
-identified as using that same file-backed account, GSwitch leaves the cache in
-place and asks the user to quit Codex before refreshing; it never races a
-possible token refresh. A running Codex instance on another saved identity does
-not prevent that isolated quota read.
+identified as using the account, GSwitch rereads the live file-backed
+credential immediately before the request and retries once only when the same
+identity has a newer credential. If the active identity cannot be safely
+identified, the cached projection remains and the UI offers a retry. A 429,
+transport, TLS, DNS, timeout, parse, or provider-server failure never starts a
+managed refresh. Reset-credit detail failure does not erase a successful usage
+result; its detailed rows remain unavailable until a later successful detail
+read.
 
 ## Reset credits
 

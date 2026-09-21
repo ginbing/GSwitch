@@ -422,6 +422,33 @@ impl AppState {
         Ok(())
     }
 
+    /// Stores a provider projection without replacing the credential
+    /// document. Read-only quota refreshes use this path so a live token
+    /// snapshot can never become a credential mutation.
+    pub fn update_quota_under_operation(
+        &self,
+        _operation: &OperationGuard<'_>,
+        id: &str,
+        quota: crate::types::QuotaSnapshot,
+        reset_credits: Option<StoredResetCredits>,
+    ) -> Result<(), String> {
+        let mut store = self
+            .store
+            .lock()
+            .map_err(|_| "Account store lock is unavailable".to_string())?;
+        let index = store
+            .accounts
+            .iter()
+            .position(|account| account.id == id)
+            .ok_or_else(|| "The selected account is no longer saved".to_string())?;
+        let mut candidate = store.clone();
+        candidate.accounts[index].quota = Some(quota);
+        candidate.accounts[index].reset_credits = reset_credits;
+        storage::save_atomic(&self.store_path, &candidate)?;
+        *store = candidate;
+        Ok(())
+    }
+
     pub fn prepare_reset_credit_under_operation(
         &self,
         _operation: &OperationGuard<'_>,

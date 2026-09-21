@@ -1,5 +1,6 @@
 mod accounts;
 mod app_server;
+mod chatgpt;
 mod codex;
 mod commands;
 mod identity;
