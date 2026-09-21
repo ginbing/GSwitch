@@ -75,7 +75,8 @@ body {
 
 button,
 input,
-textarea {
+textarea,
+select {
   font: inherit;
 }
 
@@ -96,6 +97,7 @@ button:disabled {
 button:focus-visible,
 input:focus-visible,
 textarea:focus-visible,
+select:focus-visible,
 summary:focus-visible {
   outline: 3px solid color-mix(in srgb, var(--accent) 42%, transparent);
   outline-offset: 2px;
@@ -1010,7 +1012,8 @@ summary:focus-visible {
 }
 
 input,
-textarea {
+textarea,
+select {
   width: 100%;
   border: 1px solid var(--border-strong);
   border-radius: 9px;
@@ -1021,6 +1024,12 @@ textarea {
 input {
   min-height: 38px;
   padding: 0 10px;
+}
+
+select {
+  min-height: 34px;
+  padding: 0 28px 0 9px;
+  background: var(--surface-soft);
 }
 
 textarea {
@@ -1087,6 +1096,16 @@ textarea {
   border-bottom: 1px solid var(--border);
   color: var(--muted);
   font-size: 12.5px;
+}
+
+.settings-list .settings-language label {
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.settings-list .settings-language select {
+  width: auto;
+  max-width: 60%;
 }
 
 .settings-list strong {

@@ -64,6 +64,16 @@ Errors should answer three questions: what did not happen, whether the current
 Codex state is safe, and what the user can do next. Raw Rust, HTTP, OAuth,
 filesystem, protocol, or token details do not belong in the primary UI.
 
+## Language
+
+The application ships English and Simplified Chinese in one frontend resource.
+On first launch it maps a compatible system/WebView locale to one of those
+languages and otherwise falls back to English. Settings offers only System /
+Automatic, English, and Simplified Chinese; a manual choice applies immediately
+and wins over automatic detection. The only persisted WebView preference is that
+language choice. Dates, reset/expiry timing, numbers, and percentages use the
+selected locale's platform formatters.
+
 ## Visual rules
 
 Use Segoe UI Variable or the system UI font, natural information density, clear
