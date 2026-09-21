@@ -5,7 +5,7 @@ authorize a tag, draft, or publication.
 
 ## Current release policy
 
-The first public GSwitch release is version `1.0.0`. The maintainer has waived
+GSwitch's first public release was version `1.0.0`. The maintainer waived
 additional platform acceptance testing for that release. Do not describe an
 unperformed clean install, interactive flow, or platform behavior as validated.
 
@@ -102,7 +102,7 @@ Default release posture:
 - outbound traffic only for user-visible Codex/OpenAI operations and signed
   update checks.
 
-## Versioning and first release
+## Versioning
 
 `src-tauri/tauri.conf.json` is the version source. Keep the JavaScript package,
 Cargo package, and Cargo lock metadata synchronized:
@@ -112,6 +112,6 @@ pnpm run version:sync
 pnpm run version:check
 ```
 
-After this work is merged, the remaining first-release action is for a
-maintainer to tag the chosen `main` revision as `v1.0.0`. The workflow creates a
-draft; publishing that draft is a separate maintainer decision.
+After a version change is merged, a maintainer can tag the chosen `main`
+revision as the matching `v<version>`. The workflow creates a draft; publishing
+that draft is a separate maintainer decision.
