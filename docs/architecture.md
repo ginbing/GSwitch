@@ -36,6 +36,10 @@ credential document.
 Unknown, stale, timed-out, or conflicting state remains unknown. A cache is a
 projection, not a second authority over runtime or provider facts.
 
+The initial workspace snapshot may reveal only a boolean that reset-credit
+recovery needs attention. Its account, provider credit, and idempotency key
+remain in Rust-owned storage.
+
 ## Rust module boundaries
 
 Keep the backend flat and organized by concrete responsibility:

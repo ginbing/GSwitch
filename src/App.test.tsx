@@ -97,6 +97,7 @@ function prepareDefaults() {
   mocks.appSnapshot.mockImplementation(async () => ({
     storage: { status: "ready" },
     accounts: await mocks.listAccounts(),
+    pending_reset_credit: false,
     runtime: await mocks.runtimeInfo(),
     live: await mocks.liveAccount(),
   }));
@@ -169,6 +170,7 @@ describe("GSwitch account workspace", () => {
         message: "GSwitch could not safely read its saved account library. Codex credentials were not changed.",
       },
       accounts: [],
+      pending_reset_credit: false,
     });
     render(<App />);
 
@@ -233,6 +235,29 @@ describe("GSwitch account workspace", () => {
     await waitFor(() =>
       expect(mocks.redeemEarliestResetCredit).toHaveBeenCalledWith("account-1"),
     );
+  });
+
+  it("requires a deliberate recovery of the original pending reset request", async () => {
+    mocks.listAccounts.mockResolvedValue([chatAccount]);
+    mocks.accountQuota.mockResolvedValue(staleQuota);
+    mocks.appSnapshot.mockImplementation(async () => ({
+      storage: { status: "ready" },
+      accounts: await mocks.listAccounts(),
+      pending_reset_credit: true,
+      runtime: await mocks.runtimeInfo(),
+      live: await mocks.liveAccount(),
+    }));
+    render(<App />);
+
+    expect(await screen.findByText("A reset-credit request needs recovery")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Review reset recovery" }));
+    expect(await screen.findByRole("dialog", { name: "Recover reset credit" })).toBeInTheDocument();
+    expect(mocks.recoverPendingResetCredit).not.toHaveBeenCalled();
+    expect(mocks.redeemEarliestResetCredit).not.toHaveBeenCalled();
+
+    await userEvent.click(screen.getByRole("button", { name: "Recover original request" }));
+    await waitFor(() => expect(mocks.recoverPendingResetCredit).toHaveBeenCalledOnce());
+    expect(mocks.redeemEarliestResetCredit).not.toHaveBeenCalled();
   });
 
   it("keeps account actions available when a local quota projection cannot be read", async () => {

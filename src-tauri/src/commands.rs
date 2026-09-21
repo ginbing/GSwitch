@@ -28,6 +28,7 @@ pub fn get_app_snapshot(state: State<'_, AppState>) -> Result<AppSnapshot, Strin
         return Ok(AppSnapshot {
             storage,
             accounts: Vec::new(),
+            pending_reset_credit: false,
             runtime: None,
             live: None,
         });
@@ -36,6 +37,7 @@ pub fn get_app_snapshot(state: State<'_, AppState>) -> Result<AppSnapshot, Strin
     Ok(AppSnapshot {
         storage,
         accounts: state.list()?,
+        pending_reset_credit: state.has_pending_reset_credit()?,
         runtime: Some(codex::runtime_info()?),
         live: Some(switching::live_account(state.inner())?),
     })

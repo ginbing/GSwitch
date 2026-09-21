@@ -62,6 +62,8 @@ as applicable:
   action available;
 - provider refresh before reset-credit selection;
 - earliest eligible unexpired reset-credit selection and idempotent outcomes;
+- a pending reset being surfaced as a boolean-only recovery prompt and replayed
+  only after a new explicit user action;
 - Wake model allowlisting, low reasoning effort, quota guards, and confirmation;
 - frontend clearing secret inputs, confirming reset consumption, and disabling
   conflicting actions;
