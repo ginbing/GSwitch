@@ -11,8 +11,11 @@ product behavior, not optional implementation polish.
   token fields; unknown future fields must survive a round trip.
 - A pasted auth document or API key may exist only in its transient input until
   submission and must be cleared immediately afterward.
-- A selected or dropped auth file is read in Rust. Its contents are not placed
-  in WebView storage.
+- Selected or dropped auth files are read in Rust. A batch is capped at 64
+  files and 64 MiB in aggregate, retains the 10 MiB per-file limit, and parses
+  all readable files before sequential credential validation. File contents,
+  absolute paths, and individual failure details are not placed in WebView
+  storage or returned in the aggregate result.
 - Import support for Cockpit Tools, Sub2API, and CPA applies only to a file the
   user explicitly selects or drops. GSwitch never scans their private storage.
   When a portable Cockpit export includes non-Codex account metadata, it drops

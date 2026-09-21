@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { open } from "@tauri-apps/plugin-dialog";
 
 import App from "./App";
 import type { AccountView, QuotaView } from "./types";
@@ -16,7 +17,7 @@ const mocks = vi.hoisted(() => ({
   cancelOAuth: vi.fn(),
   openOAuth: vi.fn(),
   importAuthJson: vi.fn(),
-  importAuthFile: vi.fn(),
+  importAuthFiles: vi.fn(),
   importApiKey: vi.fn(),
   saveCurrentAccount: vi.fn(),
   enableAccountSwitching: vi.fn(),
@@ -134,7 +135,12 @@ function prepareDefaults() {
   mocks.cancelOAuth.mockResolvedValue(undefined);
   mocks.openOAuth.mockResolvedValue(undefined);
   mocks.importAuthJson.mockResolvedValue(chatAccount);
-  mocks.importAuthFile.mockResolvedValue({ imported: [chatAccount], skipped_count: 0 });
+  mocks.importAuthFiles.mockResolvedValue({
+    imported: [chatAccount],
+    duplicate_count: 0,
+    unsupported_count: 0,
+    failed_count: 0,
+  });
   mocks.importApiKey.mockResolvedValue({
     id: "api-1",
     label: "Key",
@@ -211,15 +217,80 @@ describe("GSwitch account workspace", () => {
 
     expect(await screen.findByRole("heading", { name: "0 saved accounts" })).toBeInTheDocument();
     expect(screen.getByText(/never reads another app/i)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Import accounts" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Import account files" })).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: "Add manually" }));
     const dialog = await screen.findByRole("dialog", { name: "Add a Codex account" });
     expect(dialog).toBeInTheDocument();
     expect(within(dialog).getByRole("button", { name: /Paste auth JSON/ })).toBeInTheDocument();
-    expect(within(dialog).getByRole("button", { name: /Cockpit Tools export, Codex auth\.json/i })).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: /Cockpit Tools exports, Codex auth\.json/i })).toBeInTheDocument();
     expect(within(dialog).getByText(/select the Codex accounts you want/i)).toBeInTheDocument();
     expect(within(dialog).getByText(/does not access Cockpit Tools/i)).toBeInTheDocument();
+  });
+
+  it("opens the native picker for multiple account files and reports one summary", async () => {
+    vi.mocked(open).mockResolvedValue(["C:\\exports\\one.json", "C:\\exports\\two.json"]);
+    mocks.importAuthFiles.mockResolvedValue({
+      imported: [chatAccount, { ...chatAccount, id: "account-2", email: "other@example.com" }],
+      duplicate_count: 1,
+      unsupported_count: 1,
+      failed_count: 1,
+    });
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Import account files" }));
+    await waitFor(() =>
+      expect(mocks.importAuthFiles).toHaveBeenCalledWith([
+        "C:\\exports\\one.json",
+        "C:\\exports\\two.json",
+      ]),
+    );
+    expect(open).toHaveBeenCalledWith(expect.objectContaining({ multiple: true }));
+    expect(await screen.findByText("Imported 2 account(s); 1 already present or duplicate; 2 unsupported or failed.")).toBeInTheDocument();
+  });
+
+  it("uses the same bounded batch command for one selected file", async () => {
+    vi.mocked(open).mockResolvedValue(["C:\\exports\\one.json"]);
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Import account files" }));
+    await waitFor(() => expect(mocks.importAuthFiles).toHaveBeenCalledWith(["C:\\exports\\one.json"]));
+  });
+
+  it("keeps a saved batch account when its later quota refresh fails", async () => {
+    const imported = { ...chatAccount, id: "batch-account" };
+    vi.mocked(open).mockResolvedValue(["C:\\exports\\one.json"]);
+    mocks.importAuthFiles.mockImplementation(async () => {
+      mocks.listAccounts.mockResolvedValue([imported]);
+      return {
+        imported: [imported],
+        duplicate_count: 0,
+        unsupported_count: 0,
+        failed_count: 0,
+      };
+    });
+    mocks.accountQuota.mockResolvedValue({ account_id: imported.id, status: "unknown" });
+    mocks.refreshAccountQuota.mockRejectedValue(new Error("quota cache unavailable"));
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Import account files" }));
+    expect(await screen.findByRole("heading", { name: "person@example.com" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Switch to person@example.com" })).toBeEnabled();
+  });
+
+  it("passes every dropped path to the bounded batch command", async () => {
+    Object.defineProperty(window, "__TAURI_INTERNALS__", { configurable: true, value: {} });
+    render(<App />);
+
+    await waitFor(() => expect(webviewMocks.onDragDropEvent).toHaveBeenCalledOnce());
+    const onEvent = webviewMocks.onDragDropEvent.mock.calls[0][0] as (event: unknown) => void;
+    onEvent({ payload: { type: "drop", paths: ["C:\\exports\\one.json", "C:\\exports\\two.json"] } });
+    await waitFor(() =>
+      expect(mocks.importAuthFiles).toHaveBeenCalledWith([
+        "C:\\exports\\one.json",
+        "C:\\exports\\two.json",
+      ]),
+    );
   });
 
   it("contains a damaged account library until the user explicitly resets only GSwitch storage", async () => {

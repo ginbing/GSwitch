@@ -48,10 +48,10 @@ Reset credits remain compact in the row. Details and the destructive
 **Use reset** confirmation appear only on demand, with the earliest-expiring
 eligible credit presented first.
 
-The empty state is two deliberate choices: import an export the user selects,
-or add an account manually. It states plainly that GSwitch does not read
+The empty state is two deliberate choices: import one or more export files the
+user selects, or add an account manually. It states plainly that GSwitch does not read
 Cockpit Tools private storage. The add dialog offers official browser sign-in,
-pasted auth JSON, selected export file, and API key without a separate page.
+pasted auth JSON, selected export files, and API key without a separate page.
 
 A damaged GSwitch account library is not an empty state. It replaces the cards
 with one recovery-only surface, disables account actions, and explains that an

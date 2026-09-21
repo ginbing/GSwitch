@@ -57,15 +57,16 @@ pub struct AccountView {
     pub active: bool,
 }
 
-/// A display-only outcome for a user-selected account export. Parsed
-/// credentials stay in Rust; the WebView receives only the saved profiles and
-/// a count of entries that were incomplete or outside GSwitch's supported
-/// Codex formats.
+/// A display-only outcome for one bounded user-selected account-file batch.
+/// Parsed credentials and failure details stay in Rust; the WebView receives
+/// only saved profiles and aggregate counts.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ImportResult {
     #[serde(default)]
     pub imported: Vec<AccountView>,
-    pub skipped_count: u32,
+    pub duplicate_count: u32,
+    pub unsupported_count: u32,
+    pub failed_count: u32,
 }
 
 #[derive(Clone, Serialize, Deserialize)]

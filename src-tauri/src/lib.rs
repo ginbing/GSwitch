@@ -40,6 +40,7 @@ pub fn run() {
             commands::open_latest_release,
             commands::import_auth_json,
             commands::import_auth_file,
+            commands::import_auth_files,
             commands::import_api_key,
             commands::get_live_account_state,
             commands::save_current_account,

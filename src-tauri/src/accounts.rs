@@ -284,6 +284,28 @@ impl AppState {
             .map(|account| Self::view(account, store.active_account_id.as_deref())))
     }
 
+    pub fn find_import_match_under_operation(
+        &self,
+        _operation: &OperationGuard<'_>,
+        kind: &AccountKind,
+        identity: &AccountIdentity,
+        credential: &Value,
+    ) -> Result<Option<AccountView>, String> {
+        let store = self
+            .store
+            .lock()
+            .map_err(|_| "Account store lock is unavailable".to_string())?;
+        Ok(store
+            .accounts
+            .iter()
+            .find(|account| {
+                account.kind == *kind
+                    && (account.identity.as_ref() == Some(identity)
+                        || (account.identity.is_none() && account.credential == *credential))
+            })
+            .map(|account| Self::view(account, store.active_account_id.as_deref())))
+    }
+
     pub fn upsert_under_operation(
         &self,
         _operation: &OperationGuard<'_>,

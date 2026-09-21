@@ -33,14 +33,22 @@ fall back to the isolated official Codex runtime; network, timeout, 5xx, and
 parse failures never trigger managed refresh. A current externally owned
 identity gets one live-credential reread/retry and never enters that fallback.
 
-Pasted JSON is transient form input and is cleared after submission. A selected
-or dropped file is read by Rust; its contents are not returned to the WebView.
+Pasted JSON is transient form input and is cleared after submission. Selected
+or dropped files are read by Rust; their contents are not returned to the
+WebView. After successful saves, the normal background quota projection path
+refreshes each imported ChatGPT account without making the batch wait for
+network requests.
 
 GSwitch can import a complete official Codex auth document and explicitly
 user-selected public exports from Cockpit Tools, Sub2API, and CPA. It never
 searches for, reads, or decrypts Cockpit Tools private application storage.
-One Cockpit Tools export may contain multiple selected Codex accounts; choose
-that single user-exported file and GSwitch imports each supported account once.
+The native picker and drop handler accept one or more files in one bounded
+operation: at most 64 files and 64 MiB in aggregate, with the existing 10 MiB
+per-file limit. Rust reads and parses all readable files before starting
+credential validation, deduplicates candidates across the selection and saved
+profiles by `AccountIdentity`, then validates candidates sequentially. The
+result reports imported accounts plus duplicate, unsupported, and failed
+counts; it does not expose file paths, credential material, or provider errors.
 Portable exports are converted only to the minimum complete Codex credential
 shape needed for validation. Cockpit-specific private metadata such as 2FA
 secrets, passwords, phone fields, notes, labels, tags, and mail settings is

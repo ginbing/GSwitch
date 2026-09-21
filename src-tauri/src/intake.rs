@@ -23,6 +23,8 @@ use crate::{
 
 const OAUTH_COMPLETION_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 const MAX_IMPORT_FILE_BYTES: u64 = 10 * 1024 * 1024;
+const MAX_IMPORT_FILES: usize = 64;
+const MAX_IMPORT_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
 
 struct ImportCandidate {
     credential: Value,
@@ -31,7 +33,8 @@ struct ImportCandidate {
 
 struct ParsedImport {
     candidates: Vec<ImportCandidate>,
-    skipped_count: u32,
+    unsupported_count: u32,
+    duplicate_count: u32,
 }
 
 pub fn start_oauth(state: AppState) -> Result<OAuthLoginStart, String> {
@@ -162,32 +165,139 @@ pub fn import_json(
 /// auth.json, Sub2API, and CPA export layouts without touching Cockpit's
 /// private application storage.
 pub fn import_file(state: &AppState, path: &str) -> Result<ImportResult, String> {
-    let path = Path::new(path);
-    let metadata =
-        fs::metadata(path).map_err(|_| "Unable to read the selected account file".to_string())?;
-    if !metadata.is_file() || metadata.len() > MAX_IMPORT_FILE_BYTES {
-        return Err("The selected account file is not supported".to_string());
-    }
-    let raw = fs::read_to_string(path)
-        .map_err(|_| "Unable to read the selected account file".to_string())?;
-    let value: Value = serde_json::from_str(&raw)
-        .map_err(|_| "The selected account file is not valid JSON".to_string())?;
-    let parsed = deduplicate_candidates(parse_export(value)?);
+    import_files(state, vec![path.to_string()])
+}
 
-    let mut imported = Vec::new();
-    let mut skipped_count = parsed.skipped_count;
-    for candidate in parsed.candidates {
-        match import_credential(state, candidate.credential, candidate.label) {
-            Ok(account) => imported.push(account),
-            Err(_) => skipped_count += 1,
+/// Reads and validates one bounded set of user-selected or user-dropped file
+/// paths. All readable files are parsed before any credential validation
+/// begins; credential validation then runs sequentially under one operation
+/// guard so identity deduplication and persistence have one owner.
+pub fn import_files(state: &AppState, paths: Vec<String>) -> Result<ImportResult, String> {
+    if paths.is_empty() {
+        return Err("No account files were selected".to_string());
+    }
+    if paths.len() > MAX_IMPORT_FILES {
+        return Err("Select no more than 64 account files at once".to_string());
+    }
+
+    let mut total_bytes = 0u64;
+    let mut raw_documents = Vec::new();
+    let mut parsed = ParsedImport {
+        candidates: Vec::new(),
+        unsupported_count: 0,
+        duplicate_count: 0,
+    };
+    let mut failed_count = 0u32;
+
+    for raw_path in paths {
+        let path = Path::new(&raw_path);
+        let metadata = match fs::metadata(path) {
+            Ok(metadata) => metadata,
+            Err(_) => {
+                failed_count = failed_count.saturating_add(1);
+                continue;
+            }
+        };
+        if !metadata.is_file() {
+            parsed.unsupported_count = parsed.unsupported_count.saturating_add(1);
+            continue;
+        }
+        total_bytes = total_bytes.checked_add(metadata.len()).ok_or_else(|| {
+            "The selected account files exceed the 64 MiB batch limit".to_string()
+        })?;
+        if total_bytes > MAX_IMPORT_TOTAL_BYTES {
+            return Err("The selected account files exceed the 64 MiB batch limit".to_string());
+        }
+        if metadata.len() > MAX_IMPORT_FILE_BYTES {
+            parsed.unsupported_count = parsed.unsupported_count.saturating_add(1);
+            continue;
+        }
+        match fs::read_to_string(path) {
+            Ok(raw) => raw_documents.push(raw),
+            Err(_) => failed_count = failed_count.saturating_add(1),
         }
     }
-    if imported.is_empty() {
-        return Err("No supported Codex accounts could be imported from that file".to_string());
+
+    // Keep every file parse ahead of the first App Server or provider request.
+    for raw in raw_documents {
+        let value: Value = match serde_json::from_str(&raw) {
+            Ok(value) => value,
+            Err(_) => {
+                failed_count = failed_count.saturating_add(1);
+                continue;
+            }
+        };
+        match parse_export(value) {
+            Ok(file) => {
+                parsed.candidates.extend(file.candidates);
+                parsed.unsupported_count = parsed
+                    .unsupported_count
+                    .saturating_add(file.unsupported_count);
+            }
+            Err(_) => {
+                parsed.unsupported_count = parsed.unsupported_count.saturating_add(1);
+            }
+        }
     }
+
+    let parsed = deduplicate_candidates(parsed);
+    if parsed.candidates.is_empty() {
+        state.ensure_store_ready()?;
+        return Ok(ImportResult {
+            imported: Vec::new(),
+            duplicate_count: parsed.duplicate_count,
+            unsupported_count: parsed.unsupported_count,
+            failed_count,
+        });
+    }
+
+    let operation = state.acquire_operation()?;
+    let mut imported = Vec::new();
+    let mut duplicate_count = parsed.duplicate_count;
+    for candidate in parsed.candidates {
+        let expected_kind = match identity::document_kind(&candidate.credential) {
+            Ok(kind) => kind,
+            Err(_) => {
+                failed_count = failed_count.saturating_add(1);
+                continue;
+            }
+        };
+        let expected_identity =
+            match identity::derive_identity(&expected_kind, &candidate.credential) {
+                Ok(identity) => identity,
+                Err(_) => {
+                    failed_count = failed_count.saturating_add(1);
+                    continue;
+                }
+            };
+        if state
+            .find_import_match_under_operation(
+                &operation,
+                &expected_kind,
+                &expected_identity,
+                &candidate.credential,
+            )?
+            .is_some()
+        {
+            duplicate_count = duplicate_count.saturating_add(1);
+            continue;
+        }
+        match import_credential_under_operation(
+            state,
+            &operation,
+            candidate.credential,
+            candidate.label,
+        ) {
+            Ok(account) => imported.push(account),
+            Err(_) => failed_count = failed_count.saturating_add(1),
+        }
+    }
+
     Ok(ImportResult {
         imported,
-        skipped_count,
+        duplicate_count,
+        unsupported_count: parsed.unsupported_count,
+        failed_count,
     })
 }
 
@@ -196,11 +306,20 @@ fn import_credential(
     credential: Value,
     label: Option<String>,
 ) -> Result<AccountView, String> {
+    let operation = state.acquire_operation()?;
+    import_credential_under_operation(state, &operation, credential, label)
+}
+
+fn import_credential_under_operation(
+    state: &AppState,
+    operation: &OperationGuard<'_>,
+    credential: Value,
+    label: Option<String>,
+) -> Result<AccountView, String> {
     let expected_kind = identity::document_kind(&credential)?;
     let expected_identity = identity::derive_identity(&expected_kind, &credential)?;
-    let operation = state.acquire_operation()?;
     if let Some(existing) = state.find_exact_document_under_operation(
-        &operation,
+        operation,
         &expected_kind,
         &expected_identity,
         &credential,
@@ -211,7 +330,7 @@ fn import_credential(
     if expected_kind == AccountKind::ChatGpt {
         return import_chatgpt_snapshot(
             state,
-            &operation,
+            operation,
             credential,
             expected_identity,
             clean_label(label),
@@ -229,7 +348,7 @@ fn import_credential(
 
     persist_validated(
         state,
-        &operation,
+        operation,
         &mut profile,
         metadata,
         Some(expected_identity),
@@ -431,13 +550,15 @@ fn parse_export(value: Value) -> Result<ParsedImport, String> {
     if let Some(candidate) = current_cockpit_candidate(&value) {
         return Ok(ParsedImport {
             candidates: vec![candidate],
-            skipped_count: 0,
+            unsupported_count: 0,
+            duplicate_count: 0,
         });
     }
     if let Some(candidate) = direct_auth_candidate(&value) {
         return Ok(ParsedImport {
             candidates: vec![candidate],
-            skipped_count: 0,
+            unsupported_count: 0,
+            duplicate_count: 0,
         });
     }
 
@@ -451,7 +572,8 @@ fn parse_export(value: Value) -> Result<ParsedImport, String> {
         value => portable_candidate(&value, None)
             .map(|candidate| ParsedImport {
                 candidates: vec![candidate],
-                skipped_count: 0,
+                unsupported_count: 0,
+                duplicate_count: 0,
             })
             .ok_or_else(|| "The selected file is not a supported Codex account export".to_string()),
     }
@@ -459,7 +581,7 @@ fn parse_export(value: Value) -> Result<ParsedImport, String> {
 
 fn parse_portable_entries(entries: Vec<Value>) -> Result<ParsedImport, String> {
     let mut candidates = Vec::new();
-    let mut skipped_count: u32 = 0;
+    let mut unsupported_count: u32 = 0;
     for entry in entries {
         let candidate = current_cockpit_candidate(&entry)
             .or_else(|| direct_auth_candidate(&entry))
@@ -467,7 +589,7 @@ fn parse_portable_entries(entries: Vec<Value>) -> Result<ParsedImport, String> {
         if let Some(candidate) = candidate {
             candidates.push(candidate);
         } else {
-            skipped_count = skipped_count.saturating_add(1);
+            unsupported_count = unsupported_count.saturating_add(1);
         }
     }
     if candidates.is_empty() {
@@ -475,7 +597,8 @@ fn parse_portable_entries(entries: Vec<Value>) -> Result<ParsedImport, String> {
     }
     Ok(ParsedImport {
         candidates,
-        skipped_count,
+        unsupported_count,
+        duplicate_count: 0,
     })
 }
 
@@ -484,15 +607,15 @@ fn parse_sub2api_entries(value: Option<Value>) -> Result<ParsedImport, String> {
         .and_then(|value| value.as_array().cloned())
         .ok_or_else(|| "The selected Sub2API export has no account list".to_string())?;
     let mut candidates = Vec::new();
-    let mut skipped_count: u32 = 0;
+    let mut unsupported_count: u32 = 0;
 
     for entry in entries {
         let Some(object) = entry.as_object() else {
-            skipped_count = skipped_count.saturating_add(1);
+            unsupported_count = unsupported_count.saturating_add(1);
             continue;
         };
         if object.get("platform").and_then(Value::as_str) != Some("openai") {
-            skipped_count = skipped_count.saturating_add(1);
+            unsupported_count = unsupported_count.saturating_add(1);
             continue;
         }
         let label = string_value(object.get("name"));
@@ -509,7 +632,7 @@ fn parse_sub2api_entries(value: Option<Value>) -> Result<ParsedImport, String> {
         if let Some(candidate) = candidate {
             candidates.push(candidate);
         } else {
-            skipped_count = skipped_count.saturating_add(1);
+            unsupported_count = unsupported_count.saturating_add(1);
         }
     }
 
@@ -518,7 +641,8 @@ fn parse_sub2api_entries(value: Option<Value>) -> Result<ParsedImport, String> {
     }
     Ok(ParsedImport {
         candidates,
-        skipped_count,
+        unsupported_count,
+        duplicate_count: 0,
     })
 }
 
@@ -700,7 +824,7 @@ fn portable_candidate(value: &Value, label: Option<String>) -> Option<ImportCand
 fn deduplicate_candidates(parsed: ParsedImport) -> ParsedImport {
     let mut seen = Vec::<AccountIdentity>::new();
     let mut candidates = Vec::with_capacity(parsed.candidates.len());
-    let mut skipped_count = parsed.skipped_count;
+    let mut duplicate_count = parsed.duplicate_count;
 
     for candidate in parsed.candidates {
         let identity = identity::document_kind(&candidate.credential)
@@ -708,7 +832,7 @@ fn deduplicate_candidates(parsed: ParsedImport) -> ParsedImport {
             .and_then(|kind| identity::derive_identity(&kind, &candidate.credential).ok());
         if let Some(identity) = identity {
             if seen.contains(&identity) {
-                skipped_count = skipped_count.saturating_add(1);
+                duplicate_count = duplicate_count.saturating_add(1);
                 continue;
             }
             seen.push(identity);
@@ -718,7 +842,8 @@ fn deduplicate_candidates(parsed: ParsedImport) -> ParsedImport {
 
     ParsedImport {
         candidates,
-        skipped_count,
+        unsupported_count: parsed.unsupported_count,
+        duplicate_count,
     }
 }
 
@@ -816,6 +941,7 @@ mod tests {
     use super::*;
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
     use std::{
+        fs,
         io::{Read, Write},
         net::TcpListener,
     };
@@ -852,24 +978,42 @@ mod tests {
         (format!("http://{address}"), handle)
     }
 
+    fn test_path(prefix: &str, suffix: &str) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!("gswitch-{prefix}-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).expect("test directory");
+        root.join(format!("input.{suffix}"))
+    }
+
+    fn official_credential(user: &str, workspace: &str, access: &str) -> Value {
+        json!({
+            "OPENAI_API_KEY": null,
+            "tokens": {
+                "id_token": id_token(user, workspace),
+                "access_token": access,
+                "refresh_token": "refresh-token"
+            },
+            "future_field": {"must_not_cross": true}
+        })
+    }
+
     #[test]
     fn rejects_malformed_json_before_starting_codex() {
-        let path =
-            std::env::temp_dir().join(format!("gswitch-invalid-{}.json", uuid::Uuid::new_v4()));
-        let state = AppState::new(path).expect("state");
+        let path = test_path("invalid-json", "json");
+        let state = AppState::new(path.clone()).expect("state");
 
         let error = import_json(&state, "{not valid", None).expect_err("invalid JSON");
         assert_eq!(error, "Invalid auth JSON");
+        let _ = fs::remove_dir_all(path.parent().expect("parent"));
     }
 
     #[test]
     fn rejects_non_object_json_before_starting_codex() {
-        let path =
-            std::env::temp_dir().join(format!("gswitch-invalid-{}.json", uuid::Uuid::new_v4()));
-        let state = AppState::new(path).expect("state");
+        let path = test_path("non-object", "json");
+        let state = AppState::new(path.clone()).expect("state");
 
         let error = import_json(&state, "[]", None).expect_err("invalid document");
         assert_eq!(error, "Invalid auth JSON: expected a JSON object");
+        let _ = fs::remove_dir_all(path.parent().expect("parent"));
     }
 
     #[test]
@@ -954,11 +1098,12 @@ mod tests {
         .expect("current cockpit export");
 
         assert_eq!(parsed.candidates.len(), 3);
-        assert_eq!(parsed.skipped_count, 1);
+        assert_eq!(parsed.unsupported_count, 1);
 
         let parsed = deduplicate_candidates(parsed);
         assert_eq!(parsed.candidates.len(), 2);
-        assert_eq!(parsed.skipped_count, 2);
+        assert_eq!(parsed.unsupported_count, 1);
+        assert_eq!(parsed.duplicate_count, 1);
         assert_eq!(parsed.candidates[0].label.as_deref(), Some("One"));
         assert_eq!(parsed.candidates[1].label.as_deref(), Some("Two"));
 
@@ -1030,6 +1175,132 @@ mod tests {
     }
 
     #[test]
+    fn deduplicates_candidates_across_selected_files_by_identity() {
+        let first = parse_export(json!({
+            "id_token": id_token("user", "workspace"),
+            "access_token": "access-one"
+        }))
+        .expect("first export");
+        let second = parse_export(json!({
+            "id_token": id_token("user", "workspace"),
+            "access_token": "access-two"
+        }))
+        .expect("second export");
+        let parsed = deduplicate_candidates(ParsedImport {
+            candidates: first
+                .candidates
+                .into_iter()
+                .chain(second.candidates)
+                .collect(),
+            unsupported_count: first.unsupported_count + second.unsupported_count,
+            duplicate_count: 0,
+        });
+
+        assert_eq!(parsed.candidates.len(), 1);
+        assert_eq!(parsed.duplicate_count, 1);
+        assert_eq!(parsed.unsupported_count, 0);
+    }
+
+    #[test]
+    fn batch_zero_import_result_distinguishes_unsupported_and_failed_files() {
+        let store_path = test_path("batch-empty", "json");
+        let unsupported_path = test_path("batch-unsupported", "json");
+        let invalid_path = test_path("batch-invalid", "json");
+        fs::write(&unsupported_path, "{}").expect("unsupported file");
+        fs::write(&invalid_path, "{not valid json").expect("invalid file");
+        let state = AppState::new(store_path.clone()).expect("state");
+
+        let result = import_files(
+            &state,
+            vec![
+                unsupported_path.to_string_lossy().into_owned(),
+                invalid_path.to_string_lossy().into_owned(),
+            ],
+        )
+        .expect("aggregate result");
+
+        assert!(result.imported.is_empty());
+        assert_eq!(result.duplicate_count, 0);
+        assert_eq!(result.unsupported_count, 1);
+        assert_eq!(result.failed_count, 1);
+        let serialized = serde_json::to_string(&result).expect("result JSON");
+        assert!(!serialized.contains("access-token"));
+        assert!(!serialized.contains("future_field"));
+        let _ = fs::remove_file(&unsupported_path);
+        let _ = fs::remove_file(&invalid_path);
+        let _ = fs::remove_dir_all(unsupported_path.parent().expect("parent"));
+        let _ = fs::remove_dir_all(invalid_path.parent().expect("parent"));
+        let _ = fs::remove_dir_all(store_path.parent().expect("parent"));
+    }
+
+    #[test]
+    fn existing_saved_identity_counts_as_duplicate_without_validation() {
+        let store_path = test_path("batch-duplicate-store", "json");
+        let import_path = test_path("batch-duplicate-import", "json");
+        let credential = official_credential("user", "workspace", "access-token");
+        fs::write(
+            &import_path,
+            serde_json::to_string(&credential).expect("credential JSON"),
+        )
+        .expect("import file");
+        let state = AppState::new(store_path.clone()).expect("state");
+        let identity =
+            identity::derive_identity(&AccountKind::ChatGpt, &credential).expect("identity");
+        let operation = state.acquire_operation().expect("operation");
+        state
+            .upsert_under_operation(
+                &operation,
+                AccountDraft {
+                    label: None,
+                    default_label: "Existing".to_string(),
+                    kind: AccountKind::ChatGpt,
+                    email: Some("person@example.com".to_string()),
+                    plan_type: Some("plus".to_string()),
+                    workspace_name: Some("Personal".to_string()),
+                    account_structure: Some("workspace".to_string()),
+                    identity,
+                    credential: credential.clone(),
+                },
+            )
+            .expect("save existing account");
+        drop(operation);
+
+        let result = import_files(&state, vec![import_path.to_string_lossy().into_owned()])
+            .expect("duplicate result");
+
+        assert!(result.imported.is_empty());
+        assert_eq!(result.duplicate_count, 1);
+        assert_eq!(result.unsupported_count, 0);
+        assert_eq!(result.failed_count, 0);
+        let _ = fs::remove_file(&import_path);
+        let _ = fs::remove_dir_all(import_path.parent().expect("parent"));
+        let _ = fs::remove_dir_all(store_path.parent().expect("parent"));
+    }
+
+    #[test]
+    fn batch_limits_file_count_and_total_bytes_before_validation() {
+        let store_path = test_path("batch-limits", "json");
+        let state = AppState::new(store_path.clone()).expect("state");
+        let too_many = (0..=MAX_IMPORT_FILES)
+            .map(|index| format!("missing-{index}.json"))
+            .collect();
+        let error = import_files(&state, too_many).expect_err("file-count limit");
+        assert!(error.contains("64 account files"));
+
+        let oversized_path = test_path("batch-oversized", "json");
+        let file = fs::File::create(&oversized_path).expect("oversized file");
+        file.set_len(MAX_IMPORT_TOTAL_BYTES + 1)
+            .expect("set aggregate size");
+        drop(file);
+        let error = import_files(&state, vec![oversized_path.to_string_lossy().into_owned()])
+            .expect_err("aggregate-size limit");
+        assert!(error.contains("64 MiB"));
+        let _ = fs::remove_file(&oversized_path);
+        let _ = fs::remove_dir_all(oversized_path.parent().expect("parent"));
+        let _ = fs::remove_dir_all(store_path.parent().expect("parent"));
+    }
+
+    #[test]
     fn parses_openai_sub2api_accounts_and_skips_other_platforms() {
         let parsed = parse_export(json!({
             "type": "sub2api-data",
@@ -1056,7 +1327,7 @@ mod tests {
         .expect("sub2api export");
 
         assert_eq!(parsed.candidates.len(), 1);
-        assert_eq!(parsed.skipped_count, 1);
+        assert_eq!(parsed.unsupported_count, 1);
         assert_eq!(parsed.candidates[0].label.as_deref(), Some("Work"));
         assert_eq!(
             identity::document_kind(&parsed.candidates[0].credential).expect("kind"),
@@ -1081,10 +1352,7 @@ mod tests {
 
     #[test]
     fn valid_chatgpt_import_uses_the_snapshot_and_preserves_unknown_fields() {
-        let path = std::env::temp_dir().join(format!(
-            "gswitch-snapshot-intake-{}.json",
-            uuid::Uuid::new_v4()
-        ));
+        let path = test_path("snapshot-intake", "json");
         let state = AppState::new(path.clone()).expect("state");
         let credential = json!({
             "OPENAI_API_KEY": null,
