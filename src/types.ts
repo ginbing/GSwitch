@@ -6,6 +6,7 @@ export interface AccountView {
   kind: AccountKind;
   email?: string;
   plan_type?: string;
+  workspace_name?: string;
   active: boolean;
 }
 

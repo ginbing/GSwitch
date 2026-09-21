@@ -63,6 +63,8 @@ pub struct AccountDraft {
     pub kind: AccountKind,
     pub email: Option<String>,
     pub plan_type: Option<String>,
+    pub workspace_name: Option<String>,
+    pub account_structure: Option<String>,
     pub identity: AccountIdentity,
     pub credential: Value,
 }
@@ -306,6 +308,12 @@ impl AppState {
                 kind: draft.kind,
                 email: draft.email,
                 plan_type: draft.plan_type,
+                workspace_name: draft
+                    .workspace_name
+                    .or_else(|| existing.workspace_name.clone()),
+                account_structure: draft
+                    .account_structure
+                    .or_else(|| existing.account_structure.clone()),
                 identity: Some(draft.identity),
                 // Reauthentication invalidates a prior capacity snapshot.
                 quota: None,
@@ -319,6 +327,8 @@ impl AppState {
                 kind: draft.kind,
                 email: draft.email,
                 plan_type: draft.plan_type,
+                workspace_name: draft.workspace_name,
+                account_structure: draft.account_structure,
                 identity: Some(draft.identity),
                 quota: None,
                 reset_credits: None,
@@ -783,6 +793,7 @@ impl AppState {
             kind: account.kind.clone(),
             email: account.email.clone(),
             plan_type: account.plan_type.clone(),
+            workspace_name: account.workspace_name.clone(),
             active: active_account_id == Some(account.id.as_str()),
         }
     }
@@ -815,6 +826,8 @@ mod tests {
             kind: AccountKind::ChatGpt,
             email: Some("User@example.com".into()),
             plan_type: Some("plus".into()),
+            workspace_name: Some(workspace.into()),
+            account_structure: Some("workspace".into()),
             identity: AccountIdentity::ChatGpt {
                 user_id: "user".into(),
                 workspace_id: Some(workspace.into()),
