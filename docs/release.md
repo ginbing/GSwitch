@@ -32,6 +32,11 @@ macOS, and AppImage plus Debian package on Linux. The repository's current
 Tauri configuration is authoritative for which bundles and architectures a
 particular revision actually produces.
 
+The CI path builds these platform bundles from the exact checked revision
+and keeps them as unsigned CI artifacts. Artifacts are evidence for a build;
+they are not a public release, signing result, clean-install result, or
+publication authorization.
+
 Linux builds use the Tauri-supported AppImage and Debian formats. Build them on
 an Ubuntu 22.04 baseline, which supplies Tauri's required WebKitGTK 4.1
 development packages without unnecessarily raising the AppImage's glibc floor.
