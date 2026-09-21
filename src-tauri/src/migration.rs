@@ -686,6 +686,7 @@ mod tests {
     use crate::{accounts::AccountDraft, types::AccountKind};
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use std::time::{SystemTime, UNIX_EPOCH};
+    use uuid::Uuid;
 
     fn temp_dir(name: &str) -> PathBuf {
         let suffix = SystemTime::now()
@@ -820,9 +821,13 @@ mod tests {
         let root = temp_dir("encrypted");
         let cockpit = root.join("cockpit");
         write_index(&cockpit, "account-1", "person@example.com", "team");
-        let key = [7u8; 32];
+        let mut key = [0u8; 32];
+        key[..16].copy_from_slice(Uuid::new_v4().as_bytes());
+        key[16..].copy_from_slice(Uuid::new_v4().as_bytes());
         fs::write(cockpit.join(COCKPIT_KEY_NAME), STANDARD.encode(key)).expect("key");
-        let nonce = [9u8; 12];
+        let nonce_uuid = Uuid::new_v4();
+        let mut nonce = [0u8; 12];
+        nonce.copy_from_slice(&nonce_uuid.as_bytes()[..12]);
         let plaintext = credential("user", "workspace", "person@example.com", "access-secret");
         let cipher = Aes256Gcm::new_from_slice(&key).expect("cipher");
         let ciphertext = cipher
