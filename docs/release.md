@@ -62,6 +62,28 @@ identified preview artifact, not evidence of a trusted public installer.
 Signing identities, passwords, tokens, and notarization material are release
 secrets. Keep them out of source, logs, Issues, and generated support output.
 
+## Release workflow
+
+Pushing a tag named `v<version>` starts the sole release workflow. It first
+requires the tag to match `src-tauri/tauri.conf.json`, then runs the normal
+version, frontend, and Rust checks before building Windows NSIS, Apple Silicon
+and Intel macOS DMGs, and Linux AppImage plus Debian packages. The standard
+Tauri GitHub Action assembles every artifact into one GitHub Release draft.
+
+The workflow requires these macOS secrets before it can assemble a release:
+`APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `KEYCHAIN_PASSWORD`,
+`APPLE_ID`, `APPLE_PASSWORD`, and `APPLE_TEAM_ID`. It imports a Developer ID
+certificate, signs the app, and lets Tauri notarize it. Windows signing is
+enabled when `WINDOWS_CERTIFICATE` and `WINDOWS_CERTIFICATE_PASSWORD` are set
+and the public certificate thumbprint, digest algorithm, and timestamp URL are
+configured in Tauri's Windows bundle settings.
+
+The workflow deliberately leaves the completed release as a draft. A maintainer
+must review its exact assets, signing results, clean-install evidence, and
+user-facing release notes before explicitly publishing it. The normal installer
+remains the primary Windows download. Add the PowerShell install helper only
+after a real public release has established its exact asset naming.
+
 GSwitch has no auto-updater in v1. Do not add one until signing ownership and
 release operations are stable. If Tauri's updater is later accepted, update
 artifacts must use its signed-update mechanism; signature verification is not an
