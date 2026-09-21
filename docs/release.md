@@ -62,10 +62,54 @@ identified preview artifact, not evidence of a trusted public installer.
 Signing identities, passwords, tokens, and notarization material are release
 secrets. Keep them out of source, logs, Issues, and generated support output.
 
-GSwitch has no auto-updater in v1. Do not add one until signing ownership and
-release operations are stable. If Tauri's updater is later accepted, update
-artifacts must use its signed-update mechanism; signature verification is not an
-optional convenience.
+## Release workflow
+
+Pushing a tag named `v<version>` starts the sole release workflow. It first
+requires the tag to match `src-tauri/tauri.conf.json`, then runs the normal
+version, frontend, and Rust checks before building Windows NSIS, Apple Silicon
+and Intel macOS DMGs, and Linux AppImage plus Debian packages. The standard
+Tauri GitHub Action assembles every artifact into one GitHub Release draft.
+
+The workflow requires these macOS secrets before it can assemble a release:
+`APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `KEYCHAIN_PASSWORD`,
+`APPLE_ID`, `APPLE_PASSWORD`, and `APPLE_TEAM_ID`. It imports a Developer ID
+certificate, signs the app, and lets Tauri notarize it. Windows signing is
+enabled when `WINDOWS_CERTIFICATE` and `WINDOWS_CERTIFICATE_PASSWORD` are set
+and the public certificate thumbprint, digest algorithm, and timestamp URL are
+configured in Tauri's Windows bundle settings.
+
+The workflow deliberately leaves the completed release as a draft. A maintainer
+must review its exact assets, signing results, clean-install evidence, and
+user-facing release notes before explicitly publishing it. The normal installer
+remains the primary Windows download. Add the PowerShell install helper only
+after a real public release has established its exact asset naming.
+
+## Signed in-app updates
+
+GSwitch uses the official Tauri updater only. It checks the `latest.json` asset
+on GitHub Releases once after startup and then at most once every six hours.
+The native updater verifies every update signature before installation; an
+update check never reads, exports, or changes a Codex account. Failed background
+checks are silent. An update that a user starts reports a retry state without
+exposing transport or signing error bodies.
+
+Windows uses a passive NSIS installer and exits when that installer takes over.
+macOS and AppImage installations request a normal relaunch after installation.
+Debian packages are intentionally not self-replaced; when a newer version is
+available they open the verified GSwitch GitHub Release page instead.
+
+Before the first signed release, a maintainer must provide an already-owned
+updater public key as the repository variable `TAURI_UPDATER_PUBLIC_KEY` and
+the matching private key as `TAURI_SIGNING_PRIVATE_KEY`. If the private key is
+passphrase-protected, set `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` as well. The
+release workflow generates an ignored, release-only Tauri configuration from
+that public key, enabling `createUpdaterArtifacts`, the HTTPS `latest.json`
+endpoint, and passive Windows installation. The key pair must not be generated,
+rotated, copied into source, or printed by this repository workflow.
+
+The release draft must contain `latest.json` and exactly four updater signatures:
+Windows NSIS, two macOS archives, and the AppImage. The Debian package remains a
+download fallback, so it is not an in-app updater artifact.
 
 ## Permissions and privacy
 
