@@ -629,6 +629,8 @@ pub struct AccountMetadata {
     pub kind: crate::types::AccountKind,
     pub email: Option<String>,
     pub plan_type: Option<String>,
+    pub workspace_name: Option<String>,
+    pub account_structure: Option<String>,
 }
 
 pub fn account_metadata(result: &Value) -> Result<AccountMetadata, String> {
@@ -656,6 +658,19 @@ pub fn account_metadata(result: &Value) -> Result<AccountMetadata, String> {
             .map(ToString::to_string),
         plan_type: account
             .get("planType")
+            .or_else(|| account.get("plan_type"))
+            .and_then(Value::as_str)
+            .map(ToString::to_string),
+        workspace_name: account
+            .get("name")
+            .or_else(|| account.get("workspaceName"))
+            .or_else(|| account.get("workspace_name"))
+            .and_then(Value::as_str)
+            .map(ToString::to_string),
+        account_structure: account
+            .get("structure")
+            .or_else(|| account.get("accountStructure"))
+            .or_else(|| account.get("account_structure"))
             .and_then(Value::as_str)
             .map(ToString::to_string),
     })
@@ -688,6 +703,7 @@ mod tests {
         assert_eq!(metadata.kind, crate::types::AccountKind::ChatGpt);
         assert_eq!(metadata.email.as_deref(), Some("user@example.com"));
         assert_eq!(metadata.plan_type.as_deref(), Some("pro"));
+        assert_eq!(metadata.workspace_name, None);
     }
 
     #[test]

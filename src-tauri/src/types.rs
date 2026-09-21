@@ -33,6 +33,10 @@ pub struct StoredAccount {
     #[serde(default)]
     pub plan_type: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_structure: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub identity: Option<AccountIdentity>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quota: Option<QuotaSnapshot>,
@@ -48,6 +52,8 @@ pub struct AccountView {
     pub kind: AccountKind,
     pub email: Option<String>,
     pub plan_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_name: Option<String>,
     pub active: bool,
 }
 

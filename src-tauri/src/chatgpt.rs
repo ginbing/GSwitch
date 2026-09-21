@@ -49,6 +49,15 @@ pub(crate) struct QuotaResponse {
     pub(crate) detail_failure: Option<RequestFailure>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AccountMetadataProjection {
+    pub(crate) account_id: String,
+    pub(crate) email: Option<String>,
+    pub(crate) workspace_name: Option<String>,
+    pub(crate) account_structure: Option<String>,
+    pub(crate) plan_type: Option<String>,
+}
+
 pub(crate) struct ChatGptClient {
     client: Client,
     base_url: String,
@@ -60,7 +69,7 @@ impl ChatGptClient {
     }
 
     #[cfg(test)]
-    fn with_base_url(base_url: &str) -> Result<Self, String> {
+    pub(crate) fn with_base_url(base_url: &str) -> Result<Self, String> {
         install_crypto_provider();
         let client = Client::builder()
             .timeout(REQUEST_TIMEOUT)
@@ -73,7 +82,7 @@ impl ChatGptClient {
     }
 
     #[cfg(not(test))]
-    fn with_base_url(base_url: &str) -> Result<Self, String> {
+    pub(crate) fn with_base_url(base_url: &str) -> Result<Self, String> {
         install_crypto_provider();
         let client = Client::builder()
             .timeout(REQUEST_TIMEOUT)
@@ -101,6 +110,14 @@ impl ChatGptClient {
             reset_credit_details,
             detail_failure,
         })
+    }
+
+    pub(crate) fn account_check(&self, credential: &Value) -> Result<Value, RequestFailure> {
+        let snapshot = credential_snapshot(credential).map_err(|_| RequestFailure {
+            kind: RequestFailureKind::Authentication,
+            status: Some(401),
+        })?;
+        self.get_json("/wham/accounts/check", &snapshot)
     }
 
     #[cfg(test)]
@@ -203,6 +220,68 @@ pub(crate) fn validate_response_identity(
         }
     }
     Ok(())
+}
+
+pub(crate) fn normalize_account_metadata(
+    credential: &Value,
+    expected: &AccountIdentity,
+    response: &Value,
+) -> Result<AccountMetadataProjection, String> {
+    let AccountIdentity::ChatGpt { workspace_id, .. } = expected else {
+        return Err("Account metadata is available only for ChatGPT accounts".to_string());
+    };
+    if derive_identity(&AccountKind::ChatGpt, credential)? != *expected {
+        return Err(
+            "The saved account credentials do not match their recorded identity".to_string(),
+        );
+    }
+
+    let mut entries = Vec::new();
+    if let Some(accounts) = response.get("accounts").and_then(Value::as_array) {
+        for entry in accounts.iter().filter(|value| value.is_object()) {
+            if let Some(id) = string_at(entry, &["id", "account_id", "accountId"]) {
+                entries.push((id, entry));
+            }
+        }
+    } else if let Some(accounts) = response.get("accounts").and_then(Value::as_object) {
+        for (map_id, value) in accounts {
+            let account = value.get("account").unwrap_or(value);
+            let id = string_at(account, &["account_id", "accountId", "id"])
+                .unwrap_or_else(|| map_id.to_string());
+            entries.push((id, account));
+        }
+    }
+
+    let selected = match workspace_id.as_deref() {
+        Some(workspace_id) => entries
+            .iter()
+            .find(|(id, _)| id == workspace_id)
+            .map(|(id, value)| (id.clone(), *value)),
+        None => response
+            .get("default_account_id")
+            .and_then(Value::as_str)
+            .and_then(|default_id| {
+                entries
+                    .iter()
+                    .find(|(id, _)| id == default_id)
+                    .map(|(id, value)| (id.clone(), *value))
+            })
+            .or_else(|| {
+                (entries.len() == 1).then(|| {
+                    let (id, value) = &entries[0];
+                    (id.clone(), *value)
+                })
+            }),
+    }
+    .ok_or_else(|| "ChatGPT did not return the expected account workspace".to_string())?;
+
+    Ok(AccountMetadataProjection {
+        account_id: selected.0,
+        email: crate::identity::email_from_credential(credential),
+        workspace_name: string_at(selected.1, &["name", "workspace_name", "account_name"]),
+        account_structure: string_at(selected.1, &["structure", "account_structure"]),
+        plan_type: string_at(selected.1, &["plan_type", "planType"]),
+    })
 }
 
 pub(crate) fn merge_reset_credit_details(usage: &Value, details: Option<&Value>) -> Value {
@@ -333,6 +412,19 @@ mod tests {
     }
 
     #[test]
+    fn uses_the_current_accounts_check_route_for_read_only_metadata() {
+        let (base_url, handle) = fixture(
+            200,
+            r#"{"accounts":[{"id":"workspace","name":"Personal","structure":"workspace","plan_type":"plus"}]}"#,
+        );
+        let client = ChatGptClient::with_base_url(&base_url).expect("client");
+        let response = client.account_check(&credential()).expect("accounts");
+        assert_eq!(response["accounts"][0]["id"], "workspace");
+        let request = handle.join().expect("server");
+        assert!(request.starts_with("GET /wham/accounts/check HTTP/1.1"));
+    }
+
+    #[test]
     fn only_authentication_failures_are_refresh_candidates() {
         let (base_url, handle) = fixture(401, "{}");
         let client = ChatGptClient::with_base_url(&base_url).expect("client");
@@ -345,6 +437,20 @@ mod tests {
         let client = ChatGptClient::with_base_url(&base_url).expect("client");
         let error = client.get_usage(&credential()).expect_err("rate limit");
         assert_eq!(error.kind, RequestFailureKind::RateLimited);
+        assert!(!error.can_fallback_to_managed_refresh());
+        handle.join().expect("server");
+
+        let (base_url, handle) = fixture(500, "{}");
+        let client = ChatGptClient::with_base_url(&base_url).expect("client");
+        let error = client.get_usage(&credential()).expect_err("server error");
+        assert_eq!(error.kind, RequestFailureKind::Http);
+        assert!(!error.can_fallback_to_managed_refresh());
+        handle.join().expect("server");
+
+        let (base_url, handle) = fixture(200, "not-json");
+        let client = ChatGptClient::with_base_url(&base_url).expect("client");
+        let error = client.get_usage(&credential()).expect_err("parse error");
+        assert_eq!(error.kind, RequestFailureKind::InvalidJson);
         assert!(!error.can_fallback_to_managed_refresh());
         handle.join().expect("server");
     }
@@ -362,6 +468,47 @@ mod tests {
         assert_eq!(
             merged["rate_limit_reset_credits"]["credits"][0]["id"],
             "opaque"
+        );
+    }
+
+    #[test]
+    fn normalizes_only_the_expected_workspace_from_the_current_accounts_contract() {
+        let credential = credential();
+        let expected = AccountIdentity::ChatGpt {
+            user_id: "user".to_string(),
+            workspace_id: Some("workspace".to_string()),
+        };
+        let response = json!({
+            "accounts": [
+                {"id": "other", "name": "Other", "structure": "workspace", "plan_type": "free"},
+                {"id": "workspace", "name": "Personal", "structure": "workspace", "plan_type": "plus"}
+            ],
+            "default_account_id": "workspace"
+        });
+        let metadata =
+            normalize_account_metadata(&credential, &expected, &response).expect("metadata");
+        assert_eq!(metadata.account_id, "workspace");
+        assert_eq!(metadata.workspace_name.as_deref(), Some("Personal"));
+        assert_eq!(metadata.account_structure.as_deref(), Some("workspace"));
+        assert_eq!(metadata.plan_type.as_deref(), Some("plus"));
+    }
+
+    #[test]
+    fn rejects_an_accounts_check_workspace_mismatch() {
+        let credential = credential();
+        let expected = AccountIdentity::ChatGpt {
+            user_id: "user".to_string(),
+            workspace_id: Some("workspace".to_string()),
+        };
+        let error = normalize_account_metadata(
+            &credential,
+            &expected,
+            &json!({"accounts": [{"id": "different", "name": "Wrong"}]}),
+        )
+        .expect_err("mismatch");
+        assert_eq!(
+            error,
+            "ChatGPT did not return the expected account workspace"
         );
     }
 }

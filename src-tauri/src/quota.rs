@@ -37,7 +37,7 @@ pub fn refresh_quota(state: &AppState, account_id: &str) -> Result<QuotaView, St
         return Ok(not_applicable(&account));
     }
     let identity = verified_chatgpt_identity(&account)?;
-    let live_credential = live_credential_for_target(&account, &identity)?;
+    let live_credential = live_credential_for_identity(&identity)?;
     if let Some(credential) = live_credential {
         return refresh_active_read_only(state, &operation, &account, &identity, credential);
     }
@@ -61,7 +61,7 @@ fn refresh_active_read_only(
     match refresh_read_only(state, operation, account, identity, &initial_credential) {
         Ok(view) => Ok(view),
         Err(ReadOnlyRefreshFailure::Provider(error)) if error.can_fallback_to_managed_refresh() => {
-            let latest = live_credential_for_target(account, identity)?.ok_or_else(|| {
+            let latest = live_credential_for_identity(identity)?.ok_or_else(|| {
                 "Codex is running and GSwitch could not reread its active account credential"
                     .to_string()
             })?;
@@ -460,8 +460,7 @@ pub(crate) fn verified_chatgpt_identity(
 /// When Codex is running, identify the active file-backed account immediately
 /// before the provider request. A matching account gets a live token snapshot;
 /// a different account remains eligible for a read-only saved snapshot.
-fn live_credential_for_target(
-    account: &StoredAccount,
+pub(crate) fn live_credential_for_identity(
     identity: &AccountIdentity,
 ) -> Result<Option<Value>, String> {
     if !runtime::external_codex_running(&[])? {
@@ -483,17 +482,13 @@ fn live_credential_for_target(
     let live_identity = derive_identity(&live_kind, &live).map_err(|_| {
         "Codex is running and GSwitch cannot safely identify its active account".to_string()
     })?;
-    if quota_refresh_conflicts_with_live_identity(
-        &account.kind,
-        identity,
-        &live_kind,
-        &live_identity,
-    ) {
+    if live_kind == AccountKind::ChatGpt && &live_identity == identity {
         return Ok(Some(live));
     }
     Ok(None)
 }
 
+#[cfg(test)]
 fn quota_refresh_conflicts_with_live_identity(
     target_kind: &AccountKind,
     target_identity: &AccountIdentity,

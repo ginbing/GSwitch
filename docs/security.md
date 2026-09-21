@@ -86,11 +86,12 @@ ephemeral credentials, bypass managed policy, or assume that writing
 
 ## Isolated-operation invariants
 
-OAuth, import validation, quota, reset redemption, and Wake use short-lived
-GSwitch-owned Codex profiles. Before persisting any refreshed credential, verify
-that its account kind and identity are unchanged. Delete the isolated profile
-after success unless it must be retained as a last-resort protected recovery
-copy.
+OAuth, managed import fallback, quota fallback, reset redemption, and Wake use
+short-lived GSwitch-owned Codex profiles. Ordinary ChatGPT import validation
+and account metadata use the Rust-only read-only backend client first. Before
+persisting any refreshed credential, verify that its account kind and identity
+are unchanged. Delete the isolated profile after success unless it must be
+retained as a last-resort protected recovery copy.
 
 Ordinary quota refresh is a read-only provider projection. When Codex is
 running, GSwitch rereads the file-backed live credential immediately before

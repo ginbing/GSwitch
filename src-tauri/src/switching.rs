@@ -110,10 +110,14 @@ pub fn save_current_account(state: &AppState) -> Result<AccountView, String> {
         &identity,
         "Codex credentials changed while saving the current account",
     )?;
-    let default_label = metadata.email.clone().unwrap_or_else(|| match kind {
-        AccountKind::ChatGpt => "Current Codex account".to_string(),
-        AccountKind::ApiKey => "Current API key".to_string(),
-    });
+    let default_label = metadata
+        .email
+        .clone()
+        .or_else(|| metadata.workspace_name.clone())
+        .unwrap_or_else(|| match kind {
+            AccountKind::ChatGpt => "Current Codex account".to_string(),
+            AccountKind::ApiKey => "Current API key".to_string(),
+        });
     let recovery_credential = credential.clone();
 
     let result = state.upsert_under_operation(
@@ -124,6 +128,8 @@ pub fn save_current_account(state: &AppState) -> Result<AccountView, String> {
             kind,
             email: metadata.email,
             plan_type: metadata.plan_type,
+            workspace_name: metadata.workspace_name,
+            account_structure: metadata.account_structure,
             identity,
             credential,
         },

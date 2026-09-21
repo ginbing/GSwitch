@@ -27,7 +27,8 @@ credential document.
 | Credential-store policy | Effective Codex configuration or managed policy | Read and verify it; never silently override it |
 | Saved account profiles | Rust-owned GSwitch account store | Persist credentials plus minimum identity and cached provider projections |
 | Account-store health | Rust-owned recovery state | Open a recovery-only workspace when the store cannot be read; never infer an empty library |
-| OAuth and token refresh | Codex | Use official flows and preserve refreshed complete documents |
+| OAuth and managed token refresh | Codex | Use official flows and preserve refreshed complete documents |
+| Read-only account metadata | ChatGPT backend response | Match the returned workspace entry and cache only normalized fields |
 | Quota and reset-credit facts | Codex/OpenAI response | Normalize and cache them without inventing missing values |
 | External Codex process state | Operating system | Detect known or uninspectable runtimes before sensitive operations |
 | Pending switch/reset recovery | GSwitch account store | Persist enough intent to resume safely and idempotently |

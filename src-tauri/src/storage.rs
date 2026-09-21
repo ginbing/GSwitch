@@ -185,6 +185,8 @@ mod tests {
             kind: AccountKind::ChatGpt,
             email: Some("user@example.com".into()),
             plan_type: Some("pro".into()),
+            workspace_name: Some("Personal".into()),
+            account_structure: Some("workspace".into()),
             identity: Some(AccountIdentity::ChatGpt {
                 user_id: "user".into(),
                 workspace_id: Some("workspace".into()),

@@ -14,6 +14,7 @@ use serde_json::{json, Value};
 use crate::{
     accounts::{AccountDraft, AppState, OperationGuard},
     app_server::{account_metadata, AccountMetadata, AppServer, TempCodexHome},
+    chatgpt::{self, ChatGptClient, RequestFailure, RequestFailureKind},
     identity,
     types::{
         AccountIdentity, AccountKind, AccountView, ImportResult, OAuthLoginStart, OAuthLoginStatus,
@@ -126,8 +127,10 @@ fn monitor_oauth(
     }
 
     let operation = state.acquire_operation()?;
-    let result = server.account_read(2, false)?;
-    let metadata = account_metadata(&result)?;
+    let credential = profile.read_auth()?;
+    let expected_identity = identity::derive_identity(&AccountKind::ChatGpt, &credential)?;
+    let metadata = read_chatgpt_metadata(&credential, &expected_identity)
+        .map_err(SnapshotMetadataFailure::message)?;
     persist_validated(
         state,
         &operation,
@@ -205,6 +208,16 @@ fn import_credential(
         return Ok(existing);
     }
 
+    if expected_kind == AccountKind::ChatGpt {
+        return import_chatgpt_snapshot(
+            state,
+            &operation,
+            credential,
+            expected_identity,
+            clean_label(label),
+        );
+    }
+
     let mut profile = TempCodexHome::create(&state.isolated_profile_root()?)?;
     profile.write_auth(&credential)?;
     let mut server = AppServer::start(&profile.path)?;
@@ -223,6 +236,158 @@ fn import_credential(
         clean_label(label),
         "Imported account".to_string(),
     )
+}
+
+fn import_chatgpt_snapshot(
+    state: &AppState,
+    operation: &OperationGuard<'_>,
+    credential: Value,
+    expected_identity: AccountIdentity,
+    label: Option<String>,
+) -> Result<AccountView, String> {
+    let client = ChatGptClient::new()?;
+    import_chatgpt_snapshot_with_client(
+        state,
+        operation,
+        credential,
+        expected_identity,
+        label,
+        &client,
+    )
+}
+
+fn import_chatgpt_snapshot_with_client(
+    state: &AppState,
+    operation: &OperationGuard<'_>,
+    credential: Value,
+    expected_identity: AccountIdentity,
+    label: Option<String>,
+    client: &ChatGptClient,
+) -> Result<AccountView, String> {
+    let mut profile = TempCodexHome::create(&state.isolated_profile_root()?)?;
+    profile.write_auth(&credential)?;
+    let live = crate::quota::live_credential_for_identity(&expected_identity)?;
+    let snapshot = live.clone().unwrap_or_else(|| credential.clone());
+    if live.is_some() {
+        // The active account's live document is the newest complete snapshot;
+        // keep that document in the isolated validation profile so a
+        // successful same-identity retry cannot save an older token chain.
+        profile.write_auth(&snapshot)?;
+    }
+
+    match read_chatgpt_metadata_with_client(client, &snapshot, &expected_identity) {
+        Ok(metadata) => persist_validated(
+            state,
+            operation,
+            &mut profile,
+            metadata,
+            Some(expected_identity),
+            label,
+            "Imported account".to_string(),
+        ),
+        Err(SnapshotMetadataFailure::Provider(error))
+            if error.can_fallback_to_managed_refresh() && live.is_some() =>
+        {
+            let latest = crate::quota::live_credential_for_identity(&expected_identity)?
+                .ok_or_else(|| {
+                    "Codex is running and GSwitch could not reread its active account credential"
+                        .to_string()
+                })?;
+            if latest == snapshot {
+                return Err(SnapshotMetadataFailure::Provider(error).message());
+            }
+            profile.write_auth(&latest)?;
+            match read_chatgpt_metadata_with_client(client, &latest, &expected_identity) {
+                Ok(metadata) => persist_validated(
+                    state,
+                    operation,
+                    &mut profile,
+                    metadata,
+                    Some(expected_identity),
+                    label,
+                    "Imported account".to_string(),
+                ),
+                Err(error) => Err(error.message()),
+            }
+        }
+        Err(SnapshotMetadataFailure::Provider(error))
+            if error.can_fallback_to_managed_refresh() =>
+        {
+            let mut server = AppServer::start(&profile.path)?;
+            let result = server.account_read(1, true)?;
+            let metadata = account_metadata(&result)?;
+            if metadata.kind != AccountKind::ChatGpt {
+                return Err(
+                    "The imported credential changed account type during validation".to_string(),
+                );
+            }
+            persist_validated(
+                state,
+                operation,
+                &mut profile,
+                metadata,
+                Some(expected_identity),
+                label,
+                "Imported account".to_string(),
+            )
+        }
+        Err(error) => Err(error.message()),
+    }
+}
+
+fn read_chatgpt_metadata(
+    credential: &Value,
+    expected_identity: &AccountIdentity,
+) -> Result<AccountMetadata, SnapshotMetadataFailure> {
+    let client = ChatGptClient::new().map_err(SnapshotMetadataFailure::Message)?;
+    read_chatgpt_metadata_with_client(&client, credential, expected_identity)
+}
+
+fn read_chatgpt_metadata_with_client(
+    client: &ChatGptClient,
+    credential: &Value,
+    expected_identity: &AccountIdentity,
+) -> Result<AccountMetadata, SnapshotMetadataFailure> {
+    let response = client
+        .account_check(credential)
+        .map_err(SnapshotMetadataFailure::Provider)?;
+    let projection = chatgpt::normalize_account_metadata(credential, expected_identity, &response)
+        .map_err(SnapshotMetadataFailure::Message)?;
+    Ok(AccountMetadata {
+        kind: AccountKind::ChatGpt,
+        email: projection.email,
+        plan_type: projection.plan_type,
+        workspace_name: projection.workspace_name,
+        account_structure: projection.account_structure,
+    })
+}
+
+enum SnapshotMetadataFailure {
+    Provider(RequestFailure),
+    Message(String),
+}
+
+impl SnapshotMetadataFailure {
+    fn message(self) -> String {
+        match self {
+            Self::Message(message) => message,
+            Self::Provider(error) => match error.kind {
+                RequestFailureKind::Authentication => {
+                    "ChatGPT rejected the read-only account check".to_string()
+                }
+                RequestFailureKind::RateLimited => {
+                    "ChatGPT rate-limited the account check; try again later".to_string()
+                }
+                RequestFailureKind::Http => "ChatGPT account service returned an error".to_string(),
+                RequestFailureKind::Transport => {
+                    "Unable to reach ChatGPT account service".to_string()
+                }
+                RequestFailureKind::InvalidJson => {
+                    "ChatGPT returned an invalid account response".to_string()
+                }
+            },
+        }
+    }
 }
 
 pub fn import_api_key(
@@ -604,7 +769,11 @@ fn persist_validated(
         return Err("The validated credentials do not match the imported account".to_string());
     }
 
-    let default_label = metadata.email.clone().unwrap_or(fallback_label);
+    let default_label = metadata
+        .email
+        .clone()
+        .or_else(|| metadata.workspace_name.clone())
+        .unwrap_or(fallback_label);
     let result = state.upsert_under_operation(
         operation,
         AccountDraft {
@@ -613,6 +782,8 @@ fn persist_validated(
             kind: metadata.kind,
             email: metadata.email,
             plan_type: metadata.plan_type,
+            workspace_name: metadata.workspace_name,
+            account_structure: metadata.account_structure,
             identity,
             credential: credential.clone(),
         },
@@ -644,6 +815,10 @@ fn clean_label(label: Option<String>) -> Option<String> {
 mod tests {
     use super::*;
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+    };
 
     fn id_token(user: &str, workspace: &str) -> String {
         let payload = json!({
@@ -656,6 +831,25 @@ mod tests {
             "header.{}.signature",
             URL_SAFE_NO_PAD.encode(serde_json::to_vec(&payload).expect("payload"))
         )
+    }
+
+    fn account_check_fixture() -> (String, std::thread::JoinHandle<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
+        let address = listener.local_addr().expect("address");
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("request");
+            let mut request = [0; 4096];
+            let size = stream.read(&mut request).expect("read request");
+            let request = String::from_utf8_lossy(&request[..size]).to_string();
+            let body = r#"{"accounts":[{"id":"workspace","name":"Personal","structure":"workspace","plan_type":"plus"}]}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).expect("response");
+            request
+        });
+        (format!("http://{address}"), handle)
     }
 
     #[test]
@@ -883,5 +1077,51 @@ mod tests {
         });
         let parsed = parse_export(document.clone()).expect("auth document");
         assert_eq!(parsed.candidates[0].credential, document);
+    }
+
+    #[test]
+    fn valid_chatgpt_import_uses_the_snapshot_and_preserves_unknown_fields() {
+        let path = std::env::temp_dir().join(format!(
+            "gswitch-snapshot-intake-{}.json",
+            uuid::Uuid::new_v4()
+        ));
+        let state = AppState::new(path.clone()).expect("state");
+        let credential = json!({
+            "OPENAI_API_KEY": null,
+            "tokens": {
+                "id_token": id_token("user", "workspace"),
+                "access_token": "access-token",
+                "refresh_token": "refresh-token"
+            },
+            "auth_mode": "chatgpt",
+            "future_field": {"must_survive": true}
+        });
+        let expected_identity =
+            identity::derive_identity(&AccountKind::ChatGpt, &credential).expect("identity");
+        let (base_url, server) = account_check_fixture();
+        let client = ChatGptClient::with_base_url(&base_url).expect("client");
+        let operation = state.acquire_operation().expect("operation");
+        let account = import_chatgpt_snapshot_with_client(
+            &state,
+            &operation,
+            credential.clone(),
+            expected_identity,
+            None,
+            &client,
+        )
+        .expect("import");
+        drop(operation);
+
+        let saved = state.account_by_id(&account.id).expect("saved account");
+        assert_eq!(saved.credential, credential);
+        assert_eq!(saved.workspace_name.as_deref(), Some("Personal"));
+        assert_eq!(saved.account_structure.as_deref(), Some("workspace"));
+        assert_eq!(saved.plan_type.as_deref(), Some("plus"));
+        assert_eq!(saved.email, None);
+        assert!(server
+            .join()
+            .expect("server")
+            .starts_with("GET /wham/accounts/check HTTP/1.1"));
+        let _ = std::fs::remove_dir_all(path.parent().expect("parent"));
     }
 }

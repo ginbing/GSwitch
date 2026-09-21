@@ -14,8 +14,9 @@ the user's live Codex identity.
 1. Create an isolated GSwitch-owned `CODEX_HOME`.
 2. Ask the official Codex App Server to start ChatGPT login.
 3. Open or copy the returned HTTPS authorization URL.
-4. Wait for the matching completion event, then confirm the account through
-   Codex and read the complete resulting credential document.
+4. Wait for the matching completion event, read the complete resulting
+   credential document, and use its fresh access-token snapshot for the
+   read-only account metadata check. Do not request a proactive refresh.
 5. Persist the verified profile only after its identity is known.
 
 Cancellation and timeout end the isolated login. OAuth is the default login
@@ -24,8 +25,13 @@ experience; GSwitch does not implement a parallel OAuth protocol.
 ### JSON or file import
 
 A complete Codex auth document is migration input, not an editable GSwitch
-schema. Preserve unknown fields, validate it through an isolated official Codex
-runtime, and require the validated identity to match the imported document.
+schema. Derive its stable identity locally, preserve unknown fields, and use
+the existing access-token snapshot for the current ChatGPT account metadata
+check. Require the returned workspace entry to match the imported identity.
+Only an authentication-specific failure for an inactive ChatGPT identity may
+fall back to the isolated official Codex runtime; network, timeout, 5xx, and
+parse failures never trigger managed refresh. A current externally owned
+identity gets one live-credential reread/retry and never enters that fallback.
 
 Pasted JSON is transient form input and is cleared after submission. A selected
 or dropped file is read by Rust; its contents are not returned to the WebView.
