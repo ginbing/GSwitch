@@ -26,8 +26,11 @@ current user without an administrator prompt, and places its shortcut in a
 GSwitch Start menu folder. These assets are presentation only; installation
 must not collect account data or alter Codex credentials.
 
-The repository's current Tauri configuration is authoritative for which bundles
-and architectures a particular revision actually produces.
+`src-tauri/tauri.conf.json` is the product version source and enables standard
+bundles. Platform-specific Tauri configuration selects NSIS on Windows, DMG on
+macOS, and AppImage plus Debian package on Linux. The repository's current
+Tauri configuration is authoritative for which bundles and architectures a
+particular revision actually produces.
 
 Linux builds use the Tauri-supported AppImage and Debian formats. Build them on
 an Ubuntu 22.04 baseline, which supplies Tauri's required WebKitGTK 4.1
@@ -75,10 +78,16 @@ Default release posture:
 
 ## Versioning
 
-Use SemVer. `src-tauri/tauri.conf.json` is the application version source; keep
-JavaScript and Cargo package metadata synchronized during release preparation.
-Run the repository's version-sync command when it is present, then review the
-resulting diff and lockfile before committing.
+Use SemVer. `src-tauri/tauri.conf.json` is the application version source. Keep
+the JavaScript package, Cargo package, and Cargo lock metadata synchronized by
+running:
+
+```bash
+pnpm run version:sync
+pnpm run version:check
+```
+
+Review the resulting diff and lockfile before committing.
 
 Do not add channels, a release train, or a compatibility matrix until a real
 distribution need requires one.

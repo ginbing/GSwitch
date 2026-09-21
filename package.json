@@ -1,7 +1,7 @@
 {
   "name": "gswitch",
   "private": true,
-  "version": "0.1.0",
+  "version": "1.0.0",
   "type": "module",
   "packageManager": "pnpm@10.17.1",
   "scripts": {
@@ -9,7 +9,9 @@
     "build": "tsc --noEmit && vite build",
     "test": "vitest run",
     "tauri": "tauri",
-    "bundle:linux": "tauri build --bundles appimage,deb"
+    "bundle:linux": "tauri build --bundles appimage,deb",
+    "version:sync": "node scripts/sync-version.mjs",
+    "version:check": "node scripts/sync-version.mjs --check"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.8.0",

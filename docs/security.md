@@ -19,6 +19,10 @@ product behavior, not optional implementation polish.
   password, 2FA, note, phone, tag, group, provider, and mail-setting fields.
 - Do not write credentials, raw provider payloads, reset-credit IDs, or account
   secrets to logs, telemetry, issue-report output, or user-facing errors.
+- The production WebView CSP permits bundled local assets and Tauri IPC only.
+  It does not grant browser-network, shell, filesystem, or path-opening access.
+  OAuth URLs are opened by a Rust command after the corresponding in-memory
+  login is checked.
 - Credential-bearing files use atomic replacement and restrictive permissions
   where the operating system and filesystem support them.
 
