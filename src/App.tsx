@@ -361,7 +361,7 @@ export default function App() {
       const initial = await api.appSnapshot();
       const nextAccounts = initial.accounts;
       const quotaPairs = initial.storage.status === "ready"
-        ? await Promise.all(
+        ? await Promise.allSettled(
             nextAccounts
               .filter((account) => account.kind === "chat_gpt")
               .map(async (account) => [account.id, await api.accountQuota(account.id)] as const),
@@ -371,7 +371,11 @@ export default function App() {
       setStorage(initial.storage);
       setLive(initial.live || null);
       setRuntime(initial.runtime || null);
-      setQuotas(Object.fromEntries(quotaPairs));
+      setQuotas(
+        Object.fromEntries(
+          quotaPairs.flatMap((result) => result.status === "fulfilled" ? [result.value] : []),
+        ),
+      );
     } catch (error) {
       setNotice({
         kind: "error",
@@ -648,10 +652,17 @@ export default function App() {
     await runVoidTask(
       "refresh-all",
       async () => {
-        for (const account of accounts) {
-          if (account.kind === "chat_gpt") {
-            await api.refreshAccountQuota(account.id);
-          }
+        const results = await Promise.allSettled(
+          accounts
+            .filter((account) => account.kind === "chat_gpt")
+            .map((account) => api.refreshAccountQuota(account.id)),
+        );
+        const failures = results.filter((result) => result.status === "rejected").length;
+        if (failures) {
+          setNotice({
+            kind: "info",
+            text: String(failures) + " quota result" + (failures === 1 ? " was" : "s were") + " unavailable. Your account selection was not changed.",
+          });
         }
       },
       true,
