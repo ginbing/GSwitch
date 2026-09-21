@@ -26,6 +26,12 @@ Desktop compilation without producing an installer:
 pnpm tauri build --no-bundle
 ```
 
+Linux distribution bundles, on a Linux host with the current Tauri prerequisites:
+
+```bash
+pnpm run bundle:linux
+```
+
 Run focused tests while editing, then the full relevant path before handoff.
 
 ## CI coverage
@@ -33,8 +39,9 @@ Run focused tests while editing, then the full relevant path before handoff.
 GitHub Actions runs:
 
 - frontend tests and a production frontend build on Linux;
-- Rust formatting and tests on Windows and macOS;
-- a no-bundle Tauri build on Windows and macOS.
+- Rust formatting, Clippy, and tests on Windows and macOS;
+- frontend, Rust, no-bundle Tauri, AppImage, and Debian-package checks on an
+  Ubuntu 22.04 Linux runner.
 
 The CI workflow has read-only repository permissions. A passing CI run proves
 that the checked-in revision passed those commands on those runners; it does
@@ -84,6 +91,8 @@ Standard CI does not by itself prove:
 - process detection against every Codex/IDE version;
 - a signed or notarized installer;
 - clean install, upgrade, uninstall, or OS security-dialog behavior;
+- actual Linux desktop launch, OAuth browser handoff, Codex credential-store
+  behavior, or package-manager integration outside the Linux runner;
 - the exact permissions of a packaged artifact;
 - public-release readiness.
 

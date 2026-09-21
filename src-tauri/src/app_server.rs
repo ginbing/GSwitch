@@ -450,8 +450,19 @@ fn configured_codex_binary() -> Option<PathBuf> {
 
     #[cfg(not(windows))]
     {
-        None
+        // OpenAI's supported macOS/Linux installer places the executable here.
+        // Desktop launchers do not inherit shell dotfiles, so PATH alone is not
+        // a reliable way to find that otherwise standard installation.
+        env::var_os("HOME")
+            .map(PathBuf::from)
+            .map(|home| official_unix_codex_binary(&home))
+            .filter(|path| path.is_file())
     }
+}
+
+#[cfg(not(windows))]
+fn official_unix_codex_binary(home: &Path) -> PathBuf {
+    home.join(".local").join("bin").join("codex")
 }
 
 fn spawn_reader(
@@ -653,6 +664,15 @@ pub fn account_metadata(result: &Value) -> Result<AccountMetadata, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(not(windows))]
+    #[test]
+    fn derives_the_official_unix_installer_location() {
+        assert_eq!(
+            official_unix_codex_binary(Path::new("/home/alice")),
+            PathBuf::from("/home/alice/.local/bin/codex")
+        );
+    }
 
     #[test]
     fn parses_chatgpt_account_metadata() {
