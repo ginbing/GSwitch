@@ -92,6 +92,8 @@ files or use tools; it never spends a reset credit or Reserve.
   credential, previous active profile, and transaction stage.
 - A pending reset records the account, exact credit, idempotency key, and start
   time so retry cannot intentionally double-consume.
+- The WebView receives only whether reset recovery is pending. It cannot read
+  the recorded account, provider credit, or idempotency key.
 - Ambiguous external changes are preserved, not overwritten.
 - A failed account-store write must not silently discard a credential refreshed
   by Codex; retain a protected recovery copy.

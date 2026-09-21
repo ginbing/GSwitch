@@ -198,6 +198,17 @@ impl AppState {
         Ok(store.pending_switch.is_some())
     }
 
+    /// Exposes only whether reset recovery needs the user's attention. The
+    /// selected provider credit and idempotency key never leave Rust-owned
+    /// storage.
+    pub fn has_pending_reset_credit(&self) -> Result<bool, String> {
+        let store = self
+            .store
+            .lock()
+            .map_err(|_| "Account store lock is unavailable".to_string())?;
+        Ok(store.pending_reset_credit.is_some())
+    }
+
     /// Codex 0.144.5 refuses a CODEX_HOME under the system temporary folder.
     /// Keep short-lived isolated profiles in GSwitch-owned application storage
     /// instead; each profile is still independently deleted after its task.

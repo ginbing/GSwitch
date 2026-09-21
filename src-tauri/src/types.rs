@@ -119,6 +119,10 @@ pub struct AppSnapshot {
     pub storage: StorageView,
     #[serde(default)]
     pub accounts: Vec<AccountView>,
+    /// A deliberately coarse recovery signal. The corresponding account,
+    /// provider credit, and idempotency key must remain in Rust-owned storage.
+    #[serde(default)]
+    pub pending_reset_credit: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime: Option<RuntimeInfo>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -352,4 +356,28 @@ pub enum OAuthLoginStatus {
     Complete { account: AccountView },
     Cancelled,
     Failed { message: String },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn app_snapshot_exposes_reset_recovery_as_a_boolean_only() {
+        let snapshot = AppSnapshot {
+            storage: StorageView {
+                status: StorageStatus::Ready,
+                message: None,
+            },
+            accounts: Vec::new(),
+            pending_reset_credit: true,
+            runtime: None,
+            live: None,
+        };
+
+        let serialized = serde_json::to_string(&snapshot).expect("serialize snapshot");
+        assert!(serialized.contains("\"pending_reset_credit\":true"));
+        assert!(!serialized.contains("credit_id"));
+        assert!(!serialized.contains("idempotency_key"));
+    }
 }

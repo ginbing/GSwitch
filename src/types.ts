@@ -32,6 +32,7 @@ export interface StorageView {
 export interface AppSnapshot {
   storage: StorageView;
   accounts: AccountView[];
+  pending_reset_credit: boolean;
   runtime?: RuntimeInfo;
   live?: LiveAccountView;
 }

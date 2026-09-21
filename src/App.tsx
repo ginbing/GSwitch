@@ -50,6 +50,7 @@ type Dialog =
   | "settings"
   | "enable-switching"
   | "recover-switch"
+  | "recover-reset-credit"
   | "storage-recovery"
   | "reset"
   | "remove"
@@ -201,6 +202,7 @@ function AccountCard({
   onWake,
   onRefresh,
   onReset,
+  resetRecoveryRequired,
   onRemove,
 }: {
   account: AccountView;
@@ -211,6 +213,7 @@ function AccountCard({
   onWake: () => void;
   onRefresh: () => void;
   onReset: () => void;
+  resetRecoveryRequired: boolean;
   onRemove: () => void;
 }) {
   const credits = quota?.snapshot?.reset_credits;
@@ -269,7 +272,7 @@ function AccountCard({
             {credits?.nearest_expiry ? <small>Earliest {formatDate(credits.nearest_expiry)}</small> : null}
             {credits?.available_count && credits.available_count > 0 ? (
               <button className="text-button" onClick={onReset} type="button">
-                Details
+                {resetRecoveryRequired ? "Recovery required" : "Details"}
                 <ChevronRight size={15} />
               </button>
             ) : null}
@@ -340,6 +343,7 @@ export default function App() {
   const [live, setLive] = useState<LiveAccountView | null>(null);
   const [runtime, setRuntime] = useState<RuntimeInfo | null>(null);
   const [storage, setStorage] = useState<StorageView | null>(null);
+  const [pendingResetCredit, setPendingResetCredit] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [dialog, setDialog] = useState<Dialog>(null);
@@ -369,6 +373,7 @@ export default function App() {
         : [];
       setAccounts(nextAccounts);
       setStorage(initial.storage);
+      setPendingResetCredit(initial.pending_reset_credit);
       setLive(initial.live || null);
       setRuntime(initial.runtime || null);
       setQuotas(
@@ -722,6 +727,20 @@ export default function App() {
     }
   };
 
+  const recoverPendingResetCredit = async () => {
+    const result = await runTask("recover-reset-credit", api.recoverPendingResetCredit);
+    if (result) {
+      const confirmed = result.outcome === "reset" || result.outcome === "already_redeemed";
+      setNotice({
+        kind: confirmed ? "success" : "info",
+        text: result.refresh_warning || (confirmed
+          ? "The original reset-credit result was recovered."
+          : "The original reset credit was not consumed."),
+      });
+      setDialog(null);
+    }
+  };
+
   const removeSavedAccount = async () => {
     if (!removeAccount) {
       return;
@@ -775,6 +794,15 @@ export default function App() {
         },
       };
     }
+    if (pendingResetCredit) {
+      return {
+        icon: <CircleAlert size={20} />,
+        title: "A reset-credit request needs recovery",
+        body: "A previous explicit reset did not finish locally. Recovering it reuses only the original provider credit and request key.",
+        action: "Review reset recovery",
+        onAction: () => setDialog("recover-reset-credit"),
+      };
+    }
     if (!live) {
       return null;
     }
@@ -811,7 +839,7 @@ export default function App() {
       };
     }
     return null;
-  }, [live, runTask, storage]);
+  }, [live, pendingResetCredit, runTask, storage]);
 
   return (
     <main className="app-shell">
@@ -926,10 +954,15 @@ export default function App() {
                     setDialog("remove");
                   }}
                   onReset={() => {
+                    if (pendingResetCredit) {
+                      setDialog("recover-reset-credit");
+                      return;
+                    }
                     setResetAccount(account);
                     setResetConfirmation(false);
                     setDialog("reset");
                   }}
+                  resetRecoveryRequired={pendingResetCredit}
                   onSwitch={() => void switchAccount(account)}
                   onWake={() => void startWake(account.id)}
                   quota={quotas[account.id]}
@@ -1153,6 +1186,29 @@ export default function App() {
                 type="button"
               >
                 Recover safely
+              </button>
+            </div>
+          </div>
+        </Modal>
+      ) : null}
+
+      {dialog === "recover-reset-credit" ? (
+        <Modal onClose={() => setDialog(null)} title="Recover reset credit">
+          <div className="confirm-panel">
+            <CircleAlert size={26} />
+            <h3>Finish the original request safely</h3>
+            <p>A previous reset-credit request did not finish locally. GSwitch retained its original provider credit and idempotency key in private Rust storage.</p>
+            <p>Recovery resends only that exact request. It never chooses a replacement credit or starts a new reset.</p>
+            <div className="modal-actions">
+              <button className="button button-secondary" onClick={() => setDialog(null)} type="button">Cancel</button>
+              <button
+                className="button button-primary"
+                disabled={busy !== null}
+                onClick={() => void recoverPendingResetCredit()}
+                type="button"
+              >
+                {busy === "recover-reset-credit" ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />}
+                Recover original request
               </button>
             </div>
           </div>
