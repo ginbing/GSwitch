@@ -46,6 +46,13 @@ GSwitch-owned isolated App Server children are scoped to their operation and
 excluded only from that operation's external-process check. They are terminated
 when the operation ends.
 
+Saving the current file-backed account does not replace or rewrite live
+credentials. It copies the document into an isolated GSwitch profile for
+validation, checks that the live identity is still the same, and then writes
+only GSwitch-owned account storage. It remains available while Codex is
+running. Switching and every other live credential mutation retain the external
+process guard.
+
 ## Storage and concurrency
 
 Credential-affecting operations are serialized by an in-process mutex and a
@@ -84,6 +91,12 @@ GSwitch-owned Codex profiles. Before persisting any refreshed credential, verify
 that its account kind and identity are unchanged. Delete the isolated profile
 after success unless it must be retained as a last-resort protected recovery
 copy.
+
+Quota refresh may coexist with a running Codex instance only when the current
+file-backed live identity is safely identifiable and differs from the saved
+account being refreshed. The same identity remains cached until Codex exits;
+GSwitch does not attempt to coordinate a concurrent token refresh across
+processes.
 
 Wake also uses an empty workspace, read-only sandbox, no approvals, and an
 ephemeral thread. It does not load the user's project, MCP servers, Skills, or

@@ -102,6 +102,15 @@ discarding the refreshed credential. A snapshot is fresh for five minutes and
 then visibly stale. API-key accounts show quota as not applicable. Quota is
 operational account state, not usage analytics.
 
+The workspace renders its cached quota immediately and refreshes unknown or
+stale ChatGPT accounts in the background. A manual refresh joins that account's
+existing request rather than starting another one. Adding, importing, or saving
+an account follows the same refresh path. When a running Codex instance is
+identified as using that same file-backed account, GSwitch leaves the cache in
+place and asks the user to quit Codex before refreshing; it never races a
+possible token refresh. A running Codex instance on another saved identity does
+not prevent that isolated quota read.
+
 ## Reset credits
 
 The provider's available count is authoritative. Individual credit details stay

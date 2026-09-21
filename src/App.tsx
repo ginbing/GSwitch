@@ -93,7 +93,7 @@ function fileFilters(t: Translator) {
 
 function friendlyError(t: Translator, error: unknown, fallback = t("error.actionIncomplete")) {
   const message = String(error);
-  if (/Codex is running|external Codex/i.test(message)) {
+  if (/Quit Codex|Codex is running|external Codex|Unable to reliably inspect/i.test(message)) {
     return t("error.quitCodex");
   }
   if (/recovery/i.test(message)) {
@@ -106,6 +106,13 @@ function friendlyError(t: Translator, error: unknown, fallback = t("error.action
     return t("error.importUnsupported");
   }
   return `${fallback} ${t("error.currentUnchanged")}`;
+}
+
+function quotaRefreshMessage(t: Translator, error: unknown) {
+  if (/currently using this account|cannot safely identify its active account/i.test(String(error))) {
+    return t("quota.runningCodex");
+  }
+  return undefined;
 }
 
 function primaryWindow(quota: QuotaView | undefined, kind: "five_hour" | "weekly") {
@@ -318,6 +325,7 @@ function AccountCard({
             <QuotaMeter formatLocale={formatLocale} label={t("quota.fiveHour")} status={quota?.status} t={t} window={primaryWindow(quota, "five_hour")} />
             <QuotaMeter formatLocale={formatLocale} label={t("quota.weekly")} status={quota?.status} t={t} window={primaryWindow(quota, "weekly")} />
           </div>
+          {quota?.message ? <p className="quota-status-message">{quota.message}</p> : null}
           <div className="credit-row">
             <span>
               {t("credit.resetCredits")}
@@ -479,6 +487,7 @@ export default function App() {
   const apiKeyRef = useRef<HTMLInputElement>(null);
   const dismissedUpdateVersions = useRef(new Set<string>());
   const updateCheckInFlight = useRef(false);
+  const quotaRefreshes = useRef(new Map<string, Promise<QuotaView>>());
   const [label, setLabel] = useState("");
   const locale = useMemo(() => resolveLocale(languagePreference), [languagePreference]);
   const t = useMemo(() => createTranslator(locale.language), [locale.language]);
@@ -488,28 +497,72 @@ export default function App() {
     saveLanguagePreference(preference);
   };
 
+  const requestQuotaRefresh = useCallback((accountId: string): Promise<QuotaView> => {
+    const inFlight = quotaRefreshes.current.get(accountId);
+    if (inFlight) {
+      return inFlight;
+    }
+
+    const request = api.refreshAccountQuota(accountId).then(
+      (quota) => {
+        setQuotas((current) => ({ ...current, [accountId]: quota }));
+        return quota;
+      },
+      (error) => {
+        const message = quotaRefreshMessage(t, error);
+        if (message) {
+          setQuotas((current) => {
+            const previous = current[accountId];
+            return {
+              ...current,
+              [accountId]: {
+                account_id: accountId,
+                status: previous?.snapshot ? "stale" : "unknown",
+                snapshot: previous?.snapshot,
+                message,
+              },
+            };
+          });
+        }
+        throw error;
+      },
+    );
+    quotaRefreshes.current.set(accountId, request);
+    void request.then(
+      () => quotaRefreshes.current.get(accountId) === request && quotaRefreshes.current.delete(accountId),
+      () => quotaRefreshes.current.get(accountId) === request && quotaRefreshes.current.delete(accountId),
+    );
+    return request;
+  }, [t]);
+
   const loadSnapshot = useCallback(async () => {
     setLoading(true);
     try {
       const initial = await api.appSnapshot();
       const nextAccounts = initial.accounts;
-      const quotaPairs = initial.storage.status === "ready"
-        ? await Promise.allSettled(
-            nextAccounts
-              .filter((account) => account.kind === "chat_gpt")
-              .map(async (account) => [account.id, await api.accountQuota(account.id)] as const),
-          )
-        : [];
       setAccounts(nextAccounts);
       setStorage(initial.storage);
       setPendingResetCredit(initial.pending_reset_credit);
       setLive(initial.live || null);
       setRuntime(initial.runtime || null);
-      setQuotas(
-        Object.fromEntries(
-          quotaPairs.flatMap((result) => result.status === "fulfilled" ? [result.value] : []),
-        ),
-      );
+      setQuotas({});
+      if (initial.storage.status === "ready") {
+        void Promise.allSettled(
+          nextAccounts
+            .filter((account) => account.kind === "chat_gpt")
+            .map(async (account) => [account.id, await api.accountQuota(account.id)] as const),
+        ).then((quotaPairs) => {
+          const cached = Object.fromEntries(
+            quotaPairs.flatMap((result) => result.status === "fulfilled" ? [result.value] : []),
+          ) as Record<string, QuotaView>;
+          setQuotas(cached);
+          for (const quota of Object.values(cached)) {
+            if (quota.status === "unknown" || quota.status === "stale") {
+              void requestQuotaRefresh(quota.account_id).catch(() => undefined);
+            }
+          }
+        });
+      }
     } catch (error) {
       setNotice({
         kind: "error",
@@ -518,7 +571,7 @@ export default function App() {
     } finally {
       setLoading(false);
     }
-  }, [t]);
+  }, [requestQuotaRefresh, t]);
 
   useEffect(() => {
     void loadSnapshot();
@@ -875,7 +928,7 @@ export default function App() {
         const results = await Promise.allSettled(
           accounts
             .filter((account) => account.kind === "chat_gpt")
-            .map((account) => api.refreshAccountQuota(account.id)),
+            .map((account) => requestQuotaRefresh(account.id)),
         );
         const failures = results.filter((result) => result.status === "rejected").length;
         if (failures) {
@@ -900,7 +953,7 @@ export default function App() {
   };
 
   const refreshAccount = async (account: AccountView) => {
-    const result = await runTask("refresh:" + account.id, () => api.refreshAccountQuota(account.id));
+    const result = await runTask("refresh:" + account.id, () => requestQuotaRefresh(account.id));
     if (result) {
       setNotice({ kind: "success", text: t("notice.quotaRefreshed", { name: account.label }) });
     }
