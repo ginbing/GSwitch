@@ -33,6 +33,8 @@ or dropped file is read by Rust; its contents are not returned to the WebView.
 GSwitch can import a complete official Codex auth document and explicitly
 user-selected public exports from Cockpit Tools, Sub2API, and CPA. It never
 searches for, reads, or decrypts Cockpit Tools private application storage.
+One Cockpit Tools export may contain multiple selected Codex accounts; choose
+that single user-exported file and GSwitch imports each supported account once.
 Portable exports are converted only to the minimum complete Codex credential
 shape needed for validation. Cockpit-specific private metadata such as 2FA
 secrets, passwords, phone fields, notes, labels, tags, and mail settings is

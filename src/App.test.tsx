@@ -210,11 +210,15 @@ describe("GSwitch account workspace", () => {
 
     expect(await screen.findByRole("heading", { name: "0 saved accounts" })).toBeInTheDocument();
     expect(screen.getByText(/never reads another app/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Import accounts" })).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: "Add manually" }));
-    expect(await screen.findByRole("dialog", { name: "Add a Codex account" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Paste auth JSON/ })).toBeInTheDocument();
-    expect(screen.getByText(/does not access Cockpit Tools/i)).toBeInTheDocument();
+    const dialog = await screen.findByRole("dialog", { name: "Add a Codex account" });
+    expect(dialog).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: /Paste auth JSON/ })).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: /Cockpit Tools export, Codex auth\.json/i })).toBeInTheDocument();
+    expect(within(dialog).getByText(/select the Codex accounts you want/i)).toBeInTheDocument();
+    expect(within(dialog).getByText(/does not access Cockpit Tools/i)).toBeInTheDocument();
   });
 
   it("contains a damaged account library until the user explicitly resets only GSwitch storage", async () => {

@@ -1291,6 +1291,7 @@ export default function App() {
                 <span><strong>{t("add.fileTitle")}</strong><small>{t("add.fileDescription")}</small></span>
                 <ChevronRight size={18} />
               </button>
+              <p className="dialog-footnote">{t("add.cockpitHelper")}</p>
               <button className="add-method-card" onClick={() => setAddMethod("api-key")} type="button">
                 <span className="method-icon"><KeyRound size={22} /></span>
                 <span><strong>{t("add.apiKeyTitle")}</strong><small>{t("add.apiKeyDescription")}</small></span>
