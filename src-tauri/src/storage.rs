@@ -7,6 +7,7 @@ use std::{
 use atomic_write_file::OpenOptions;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
+use uuid::Uuid;
 
 use crate::types::{PendingResetCredit, PendingSwitch, StoredAccount};
 
@@ -65,6 +66,50 @@ pub fn save_atomic(path: &Path, store: &AccountStore) -> Result<(), String> {
     let content = serde_json::to_vec_pretty(&current)
         .map_err(|_| "Unable to serialize the GSwitch account store".to_string())?;
     write_private_bytes_atomic(path, &content, "GSwitch account store")
+}
+
+/// Moves an unreadable or unsupported GSwitch account library aside before a
+/// user-confirmed reset. The recovery directory always sits beside the store,
+/// so the move stays on one filesystem. This function never touches Codex's
+/// own credentials.
+pub fn preserve_damaged_store(path: &Path, recovery_dir: &Path) -> Result<(), String> {
+    match fs::metadata(path) {
+        Ok(metadata) => {
+            if !metadata.is_file() {
+                return Err("Unable to preserve the damaged GSwitch account store".to_string());
+            }
+            fs::create_dir_all(recovery_dir)
+                .map_err(|_| "Unable to prepare GSwitch recovery storage".to_string())?;
+            let preserved = recovery_dir.join(format!("accounts-damaged-{}.json", Uuid::new_v4()));
+            fs::rename(path, preserved)
+                .map_err(|_| "Unable to preserve the damaged GSwitch account store".to_string())
+        }
+        // A prior reset attempt may already have moved the damaged file but
+        // failed before the fresh empty store was written. Never require the
+        // user to recreate or overwrite that preserved source to retry.
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            let preserved_exists = fs::read_dir(recovery_dir)
+                .ok()
+                .and_then(|entries| {
+                    entries.flatten().find(|entry| {
+                        entry
+                            .file_name()
+                            .to_string_lossy()
+                            .starts_with("accounts-damaged-")
+                    })
+                })
+                .is_some();
+            if preserved_exists {
+                Ok(())
+            } else {
+                Err(
+                    "The damaged GSwitch account store is no longer available to preserve"
+                        .to_string(),
+                )
+            }
+        }
+        Err(_) => Err("Unable to preserve the damaged GSwitch account store".to_string()),
+    }
 }
 
 pub fn read_json(path: &Path, label: &str) -> Result<Value, String> {

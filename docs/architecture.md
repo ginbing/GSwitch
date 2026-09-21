@@ -26,6 +26,7 @@ credential document.
 | Live file-backed credential | `CODEX_HOME/auth.json` | Preserve the complete document and replace it only through the switch transaction |
 | Credential-store policy | Effective Codex configuration or managed policy | Read and verify it; never silently override it |
 | Saved account profiles | Rust-owned GSwitch account store | Persist credentials plus minimum identity and cached provider projections |
+| Account-store health | Rust-owned recovery state | Open a recovery-only workspace when the store cannot be read; never infer an empty library |
 | OAuth and token refresh | Codex | Use official flows and preserve refreshed complete documents |
 | Quota and reset-credit facts | Codex/OpenAI response | Normalize and cache them without inventing missing values |
 | External Codex process state | Operating system | Detect known or uninspectable runtimes before sensitive operations |
@@ -42,7 +43,8 @@ Keep the backend flat and organized by concrete responsibility:
 - `lib.rs`: Tauri setup, managed state, plugins, and command registration;
 - `commands.rs`: thin IPC adapters and sanitized application snapshots;
 - `accounts.rs`: saved profiles, operation serialization, store coordination,
-  pending credential recovery, and in-memory operation state;
+  damaged-store recovery, pending credential recovery, and in-memory operation
+  state;
 - `app_server.rs`: lifecycle and protocol boundary for the official Codex App
   Server;
 - `codex.rs`: `CODEX_HOME`, effective storage mode, and live auth-file access;

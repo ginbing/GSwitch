@@ -172,4 +172,6 @@ protected recovery copy instead of discarding it.
 
 A damaged GSwitch account store starts in recovery mode. Resetting it preserves
 the damaged file under a recovery name and creates an empty GSwitch store; it
-never deletes or rewrites the live Codex credential.
+never deletes or rewrites the live Codex credential. The recovery workspace
+does not show an empty-state onboarding flow or allow account actions: the user
+must explicitly confirm the GSwitch-only reset before normal intake resumes.

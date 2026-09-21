@@ -7,7 +7,9 @@ import type { AccountView, QuotaView } from "./types";
 
 const mocks = vi.hoisted(() => ({
   runtimeInfo: vi.fn(),
+  appSnapshot: vi.fn(),
   listAccounts: vi.fn(),
+  resetDamagedAccountStore: vi.fn(),
   liveAccount: vi.fn(),
   startOAuth: vi.fn(),
   oauthStatus: vi.fn(),
@@ -92,6 +94,13 @@ function prepareDefaults() {
     status: "not_signed_in",
     credential_store: "file",
   });
+  mocks.appSnapshot.mockImplementation(async () => ({
+    storage: { status: "ready" },
+    accounts: await mocks.listAccounts(),
+    runtime: await mocks.runtimeInfo(),
+    live: await mocks.liveAccount(),
+  }));
+  mocks.resetDamagedAccountStore.mockResolvedValue(undefined);
   mocks.accountQuota.mockResolvedValue({
     account_id: "unused",
     status: "unknown",
@@ -151,6 +160,30 @@ describe("GSwitch account workspace", () => {
     expect(await screen.findByRole("dialog", { name: "Add a Codex account" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Paste auth JSON/ })).toBeInTheDocument();
     expect(screen.getByText(/does not access Cockpit Tools/i)).toBeInTheDocument();
+  });
+
+  it("contains a damaged account library until the user explicitly resets only GSwitch storage", async () => {
+    mocks.appSnapshot.mockResolvedValue({
+      storage: {
+        status: "recovery_required",
+        message: "GSwitch could not safely read its saved account library. Codex credentials were not changed.",
+      },
+      accounts: [],
+    });
+    render(<App />);
+
+    expect(await screen.findByText("Saved accounts are protected until recovery")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add account" })).toBeDisabled();
+    expect(screen.queryByText("Add your first Codex account")).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getAllByRole("button", { name: "Review recovery" })[0]);
+    expect(await screen.findByRole("dialog", { name: "Recover GSwitch account storage" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
+    expect(mocks.resetDamagedAccountStore).not.toHaveBeenCalled();
+    expect(screen.getByText("Reset only GSwitch's saved account library?")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Reset GSwitch storage" }));
+    await waitFor(() => expect(mocks.resetDamagedAccountStore).toHaveBeenCalledOnce());
   });
 
   it("clears pasted auth JSON before the import request completes", async () => {

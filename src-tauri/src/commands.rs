@@ -5,8 +5,9 @@ use crate::{
     accounts::AppState,
     codex, intake, quota, switching,
     types::{
-        AccountView, ImportResult, LiveAccountView, OAuthLoginStart, OAuthLoginStatus, QuotaView,
-        ResetCreditOutcome, RuntimeInfo, SwitchOutcome, WakeOperationView, WakeStart,
+        AccountView, AppSnapshot, ImportResult, LiveAccountView, OAuthLoginStart, OAuthLoginStatus,
+        QuotaView, ResetCreditOutcome, RuntimeInfo, StorageStatus, SwitchOutcome,
+        WakeOperationView, WakeStart,
     },
     wake,
 };
@@ -16,9 +17,38 @@ pub fn get_runtime_info() -> Result<RuntimeInfo, String> {
     codex::runtime_info()
 }
 
+/// Supplies one credential-free initial workspace projection. When GSwitch's
+/// own account store is damaged, this deliberately
+/// avoids touching Codex configuration or credentials so the recovery screen
+/// can still open safely.
+#[tauri::command]
+pub fn get_app_snapshot(state: State<'_, AppState>) -> Result<AppSnapshot, String> {
+    let storage = state.storage_view();
+    if storage.status == StorageStatus::RecoveryRequired {
+        return Ok(AppSnapshot {
+            storage,
+            accounts: Vec::new(),
+            runtime: None,
+            live: None,
+        });
+    }
+
+    Ok(AppSnapshot {
+        storage,
+        accounts: state.list()?,
+        runtime: Some(codex::runtime_info()?),
+        live: Some(switching::live_account(state.inner())?),
+    })
+}
+
 #[tauri::command]
 pub fn list_accounts(state: State<'_, AppState>) -> Result<Vec<AccountView>, String> {
     state.list()
+}
+
+#[tauri::command]
+pub fn reset_damaged_account_store(state: State<'_, AppState>) -> Result<(), String> {
+    state.reset_damaged_store()
 }
 
 #[tauri::command]

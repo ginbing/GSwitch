@@ -16,7 +16,8 @@ use crate::{
     storage::{self, AccountStore},
     types::{
         AccountIdentity, AccountKind, AccountView, OAuthLoginStatus, PendingResetCredit,
-        PendingSwitch, StoredAccount, StoredResetCredits, WakeOperationStatus, WakeOperationView,
+        PendingSwitch, StorageStatus, StorageView, StoredAccount, StoredResetCredits,
+        WakeOperationStatus, WakeOperationView,
     },
 };
 
@@ -24,7 +25,9 @@ use crate::{
 pub struct AppState {
     store_path: Arc<PathBuf>,
     recovery_dir: Arc<PathBuf>,
+    store_recovery_dir: Arc<PathBuf>,
     store: Arc<Mutex<AccountStore>>,
+    store_recovery_required: Arc<AtomicBool>,
     operation_lock: Arc<Mutex<()>>,
     oauth_logins: Arc<Mutex<HashMap<String, OAuthLoginControl>>>,
     wake_operations: Arc<Mutex<HashMap<String, WakeControl>>>,
@@ -66,20 +69,85 @@ pub struct AccountDraft {
 
 impl AppState {
     pub fn new(store_path: PathBuf) -> Result<Self, String> {
-        let store = storage::load(&store_path)?;
-        let recovery_dir = store_path
+        let storage_root = store_path
             .parent()
             .ok_or_else(|| "Invalid GSwitch storage path".to_string())?
-            .join("pending-credentials");
+            .to_path_buf();
+        let (store, store_recovery_required) = match storage::load(&store_path) {
+            Ok(store) => (store, false),
+            // Do not prevent the desktop application from opening because
+            // GSwitch's own account file is unreadable. The replacement
+            // default is intentionally unusable until the user confirms a
+            // recovery reset; it can never authorize a credential mutation.
+            Err(_) => (AccountStore::default(), true),
+        };
 
         Ok(Self {
             store_path: Arc::new(store_path),
-            recovery_dir: Arc::new(recovery_dir),
+            recovery_dir: Arc::new(storage_root.join("pending-credentials")),
+            store_recovery_dir: Arc::new(storage_root.join("damaged-account-stores")),
             store: Arc::new(Mutex::new(store)),
+            store_recovery_required: Arc::new(AtomicBool::new(store_recovery_required)),
             operation_lock: Arc::new(Mutex::new(())),
             oauth_logins: Arc::new(Mutex::new(HashMap::new())),
             wake_operations: Arc::new(Mutex::new(HashMap::new())),
         })
+    }
+
+    pub fn storage_view(&self) -> StorageView {
+        if self.store_recovery_required.load(Ordering::SeqCst) {
+            StorageView {
+                status: StorageStatus::RecoveryRequired,
+                message: Some(
+                    "GSwitch could not safely read its saved account library. Codex credentials were not changed."
+                        .to_string(),
+                ),
+            }
+        } else {
+            StorageView {
+                status: StorageStatus::Ready,
+                message: None,
+            }
+        }
+    }
+
+    pub fn recovery_required(&self) -> bool {
+        self.store_recovery_required.load(Ordering::SeqCst)
+    }
+
+    pub fn ensure_store_ready(&self) -> Result<(), String> {
+        if self.recovery_required() {
+            return Err(
+                "GSwitch account storage needs recovery before it can make changes".to_string(),
+            );
+        }
+        Ok(())
+    }
+
+    /// Resets only GSwitch-owned account storage after an explicit user
+    /// confirmation. The unreadable source is moved to a private recovery
+    /// directory before a fresh empty store is written. No Codex file is read,
+    /// deleted, or replaced by this operation.
+    pub fn reset_damaged_store(&self) -> Result<(), String> {
+        if !self.recovery_required() {
+            return Err("GSwitch account storage does not need recovery".to_string());
+        }
+        let _operation = self.acquire_recovery_operation()?;
+        if !self.recovery_required() {
+            return Err("GSwitch account storage does not need recovery".to_string());
+        }
+
+        storage::preserve_damaged_store(&self.store_path, &self.store_recovery_dir)?;
+        let fresh_store = AccountStore::default();
+        storage::save_atomic(&self.store_path, &fresh_store)?;
+
+        let mut store = self
+            .store
+            .lock()
+            .map_err(|_| "Account store lock is unavailable".to_string())?;
+        *store = fresh_store;
+        self.store_recovery_required.store(false, Ordering::SeqCst);
+        Ok(())
     }
 
     pub fn list(&self) -> Result<Vec<AccountView>, String> {
@@ -144,6 +212,15 @@ impl AppState {
     /// windows/processes. The file lock has no authority over Codex itself;
     /// switching performs its own external-runtime checks.
     pub fn acquire_operation(&self) -> Result<OperationGuard<'_>, String> {
+        self.ensure_store_ready()?;
+        self.acquire_operation_lock()
+    }
+
+    fn acquire_recovery_operation(&self) -> Result<OperationGuard<'_>, String> {
+        self.acquire_operation_lock()
+    }
+
+    fn acquire_operation_lock(&self) -> Result<OperationGuard<'_>, String> {
         let in_process = self
             .operation_lock
             .try_lock()
@@ -529,6 +606,7 @@ impl AppState {
         auth_url: String,
         cancelled: Arc<AtomicBool>,
     ) -> Result<(), String> {
+        self.ensure_store_ready()?;
         let mut sessions = self
             .oauth_logins
             .lock()
@@ -764,6 +842,50 @@ mod tests {
         assert!(operation.is_err());
         assert!(state.list().expect("list").is_empty());
         let _ = fs::remove_file(parent);
+    }
+
+    #[test]
+    fn damaged_store_requires_explicit_reset_and_never_touches_other_files() {
+        let path = temp_path("damaged-store");
+        let parent = path.parent().expect("parent");
+        fs::create_dir_all(parent).expect("create parent");
+        fs::write(&path, "{ private-token").expect("write damaged store");
+        let live_credential = parent.join("unrelated-live-auth.json");
+        fs::write(&live_credential, "live Codex credential").expect("write live sentinel");
+
+        let state = AppState::new(path.clone()).expect("recovery state");
+        assert_eq!(state.storage_view().status, StorageStatus::RecoveryRequired);
+        assert!(state.list().expect("empty recovery projection").is_empty());
+        match state.acquire_operation() {
+            Ok(_) => panic!("recovery must block credential operations"),
+            Err(error) => assert_eq!(
+                error,
+                "GSwitch account storage needs recovery before it can make changes"
+            ),
+        }
+
+        state.reset_damaged_store().expect("explicit reset");
+        assert_eq!(state.storage_view().status, StorageStatus::Ready);
+        assert!(crate::storage::load(&path)
+            .expect("fresh store")
+            .accounts
+            .is_empty());
+        assert_eq!(
+            fs::read_to_string(&live_credential).expect("live credential remains"),
+            "live Codex credential"
+        );
+        let preserved = fs::read_dir(parent.join("damaged-account-stores"))
+            .expect("recovery directory")
+            .flatten()
+            .any(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("accounts-damaged-")
+            });
+        assert!(preserved);
+
+        let _ = fs::remove_dir_all(parent);
     }
 
     #[test]

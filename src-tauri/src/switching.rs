@@ -15,6 +15,18 @@ use crate::{
 const CONFIG_STORE_KEY: &str = "cli_auth_credentials_store";
 
 pub fn live_account(state: &AppState) -> Result<LiveAccountView, String> {
+    if state.recovery_required() {
+        return Ok(LiveAccountView {
+            status: LiveAccountStatus::RecoveryRequired,
+            credential_store: CredentialStoreMode::Unknown,
+            account: None,
+            message: Some(
+                "GSwitch account storage needs recovery before it can inspect or change Codex accounts"
+                    .into(),
+            ),
+        });
+    }
+
     let codex_home = codex::codex_home()?;
     let credential_store = codex::credential_store_mode(&codex_home)?;
 
