@@ -39,10 +39,15 @@ macOS artifacts use Tauri ad-hoc signing (`bundle.macOS.signingIdentity` is
 `"-"`). They do not use an Apple Developer certificate or notarization. macOS
 may require a user to allow GSwitch manually in Privacy & Security.
 
-Windows Authenticode signing remains optional: it is used only when the
-configured Windows certificate is available. Linux artifacts are distributed as
-the AppImage and Debian files produced by the workflow; no RPM, Snap, Flatpak,
-AUR package, or Linux repository is provided.
+The current Windows installer is not Authenticode-signed. The release workflow
+does not import a Windows certificate or PFX file. Stage A prepares a possible
+SignPath Foundation application; application, approval, and future SignPath
+configuration are external TBD work. Linux artifacts are distributed as the
+AppImage and Debian files produced by the workflow; no RPM, Snap, Flatpak, AUR
+package, or Linux repository is provided.
+
+Microsoft Store/MSIX is intentionally deferred. It is a separate distribution
+and update decision and is not part of the current GitHub Releases path.
 
 CI artifacts are build evidence, not a public release, signing result, or proof
 of interactive installation behavior. Linux builds use Ubuntu 22.04 with
@@ -66,6 +71,10 @@ maintainer reviews the exact assets and user-facing notes, then explicitly
 publishes it. Missing Apple Developer credentials cannot block either macOS
 build.
 
+See the repository's [Code signing policy](code-signing-policy.md) for the
+current roles, privacy statement, SignPath application facts, and future
+Windows signing order.
+
 The updater requires `TAURI_UPDATER_PUBLIC_KEY` as a repository variable and
 the matching `TAURI_SIGNING_PRIVATE_KEY` secret. If the private key is
 passphrase-protected, the workflow also needs
@@ -87,6 +96,13 @@ page instead.
 Each release draft must contain `latest.json` and four updater signatures:
 Windows NSIS, two macOS archives, and the AppImage. The Debian package is a
 download fallback, not an in-app updater artifact.
+
+When a trusted Windows signing path exists, the release order remains: build
+the Windows bundle from the release commit, Authenticode-sign the final
+installer through the approved SignPath path, generate the Tauri updater
+signature from those final bytes, generate `latest.json`, and then publish the
+reviewed draft assets. The updater signature must not be created before
+Authenticode changes the installer.
 
 ## Permissions and privacy
 
