@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   AccountView,
+  AppSnapshot,
   ImportResult,
   LiveAccountView,
   OAuthLoginStart,
@@ -17,7 +18,10 @@ import type {
 // small, display-oriented capacity view.
 export const api = {
   runtimeInfo: () => invoke<RuntimeInfo>("get_runtime_info"),
+  appSnapshot: () => invoke<AppSnapshot>("get_app_snapshot"),
   listAccounts: () => invoke<AccountView[]>("list_accounts"),
+  resetDamagedAccountStore: () =>
+    invoke<void>("reset_damaged_account_store"),
   liveAccount: () => invoke<LiveAccountView>("get_live_account_state"),
   startOAuth: () => invoke<OAuthLoginStart>("start_oauth_login"),
   oauthStatus: (loginId: string) =>

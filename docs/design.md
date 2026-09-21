@@ -45,6 +45,10 @@ or add an account manually. It states plainly that GSwitch does not read
 Cockpit Tools private storage. The add dialog offers official browser sign-in,
 pasted auth JSON, selected export file, and API key without a separate page.
 
+A damaged GSwitch account library is not an empty state. It replaces the cards
+with one recovery-only surface, disables account actions, and explains that an
+explicit reset preserves GSwitch's damaged file without touching Codex.
+
 ## Interaction states
 
 - Do not optimistically display a switch or redemption as complete.

@@ -34,6 +34,7 @@ struct ParsedImport {
 }
 
 pub fn start_oauth(state: AppState) -> Result<OAuthLoginStart, String> {
+    state.ensure_store_ready()?;
     let profile = TempCodexHome::create(&state.isolated_profile_root()?)?;
     let mut server = AppServer::start(&profile.path)?;
 

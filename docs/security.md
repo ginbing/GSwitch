@@ -96,7 +96,9 @@ files or use tools; it never spends a reset credit or Reserve.
 - A failed account-store write must not silently discard a credential refreshed
   by Codex; retain a protected recovery copy.
 - A corrupt GSwitch store blocks mutation. Reset preserves the damaged file and
-  never changes `CODEX_HOME/auth.json`.
+  never changes `CODEX_HOME/auth.json`. The recovery-only UI disables account
+  intake, switching, quota refresh, reset credits, and Wake until the user
+  explicitly confirms that GSwitch-only reset.
 - Removing a saved account never removes the live Codex login.
 
 Unknown, missing, stale, timed-out, or conflicting state remains unknown. Never

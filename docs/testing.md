@@ -51,6 +51,8 @@ as applicable:
 - single-operation and cross-process serialization;
 - failed persistence leaving the in-memory owner unchanged;
 - malformed or unreadable state failing closed without leaking contents;
+- a damaged account store opening a recovery-only workspace, preserving its
+  source on explicit reset, and leaving unrelated live Codex files untouched;
 - external or uninspectable Codex runtimes blocking sensitive mutation;
 - current live credentials being reconciled before replacement;
 - target identity confirmation before switch success;

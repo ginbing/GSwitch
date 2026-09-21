@@ -90,6 +90,7 @@ pub fn start_one(
     account_id: String,
     model: Option<String>,
 ) -> Result<WakeStart, String> {
+    state.ensure_store_ready()?;
     let account = state.account_by_id(&account_id)?;
     start(
         state,
@@ -104,6 +105,7 @@ pub fn start_one(
 /// Starts a sequential Wake queue for every saved ChatGPT account. API-key
 /// accounts do not participate because they have no subscription window.
 pub fn start_all(state: AppState) -> Result<WakeStart, String> {
+    state.ensure_store_ready()?;
     let targets = state
         .list()?
         .into_iter()

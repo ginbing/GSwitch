@@ -26,7 +26,9 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_runtime_info,
+            commands::get_app_snapshot,
             commands::list_accounts,
+            commands::reset_damaged_account_store,
             commands::start_oauth_login,
             commands::get_oauth_login_status,
             commands::cancel_oauth_login,

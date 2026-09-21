@@ -22,6 +22,20 @@ export interface RuntimeInfo {
   credential_store: CredentialStoreMode;
 }
 
+export type StorageStatus = "ready" | "recovery_required";
+
+export interface StorageView {
+  status: StorageStatus;
+  message?: string;
+}
+
+export interface AppSnapshot {
+  storage: StorageView;
+  accounts: AccountView[];
+  runtime?: RuntimeInfo;
+  live?: LiveAccountView;
+}
+
 export type LiveAccountStatus =
   | "ready"
   | "not_signed_in"

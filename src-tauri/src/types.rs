@@ -95,6 +95,36 @@ pub struct RuntimeInfo {
     pub credential_store: CredentialStoreMode,
 }
 
+/// The health of GSwitch-owned account storage. This deliberately says
+/// nothing about the live Codex credential file: a damaged GSwitch library
+/// must never be mistaken for a damaged Codex installation.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum StorageStatus {
+    Ready,
+    RecoveryRequired,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StorageView {
+    pub status: StorageStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+/// A single read-only view for the initial workspace render. Credential
+/// documents and raw storage errors remain on the Rust side.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AppSnapshot {
+    pub storage: StorageView,
+    #[serde(default)]
+    pub accounts: Vec<AccountView>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<RuntimeInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live: Option<LiveAccountView>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum LiveAccountStatus {

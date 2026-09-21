@@ -41,6 +41,7 @@ import type {
   QuotaView,
   QuotaWindow,
   RuntimeInfo,
+  StorageView,
   WakeOperationView,
 } from "./types";
 
@@ -49,6 +50,7 @@ type Dialog =
   | "settings"
   | "enable-switching"
   | "recover-switch"
+  | "storage-recovery"
   | "reset"
   | "remove"
   | "wake"
@@ -337,6 +339,7 @@ export default function App() {
   const [quotas, setQuotas] = useState<Record<string, QuotaView>>({});
   const [live, setLive] = useState<LiveAccountView | null>(null);
   const [runtime, setRuntime] = useState<RuntimeInfo | null>(null);
+  const [storage, setStorage] = useState<StorageView | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [dialog, setDialog] = useState<Dialog>(null);
@@ -347,6 +350,7 @@ export default function App() {
   const [resetAccount, setResetAccount] = useState<AccountView | null>(null);
   const [removeAccount, setRemoveAccount] = useState<AccountView | null>(null);
   const [resetConfirmation, setResetConfirmation] = useState(false);
+  const [storageResetConfirmation, setStorageResetConfirmation] = useState(false);
   const jsonRef = useRef<HTMLTextAreaElement>(null);
   const apiKeyRef = useRef<HTMLInputElement>(null);
   const [label, setLabel] = useState("");
@@ -354,16 +358,19 @@ export default function App() {
   const loadSnapshot = useCallback(async () => {
     setLoading(true);
     try {
-      const initial = await Promise.all([api.listAccounts(), api.liveAccount(), api.runtimeInfo()]);
-      const nextAccounts = initial[0];
-      const quotaPairs = await Promise.all(
-        nextAccounts
-          .filter((account) => account.kind === "chat_gpt")
-          .map(async (account) => [account.id, await api.accountQuota(account.id)] as const),
-      );
+      const initial = await api.appSnapshot();
+      const nextAccounts = initial.accounts;
+      const quotaPairs = initial.storage.status === "ready"
+        ? await Promise.all(
+            nextAccounts
+              .filter((account) => account.kind === "chat_gpt")
+              .map(async (account) => [account.id, await api.accountQuota(account.id)] as const),
+          )
+        : [];
       setAccounts(nextAccounts);
-      setLive(initial[1]);
-      setRuntime(initial[2]);
+      setStorage(initial.storage);
+      setLive(initial.live || null);
+      setRuntime(initial.runtime || null);
       setQuotas(Object.fromEntries(quotaPairs));
     } catch (error) {
       setNotice({
@@ -719,12 +726,44 @@ export default function App() {
     }
   };
 
+  const resetDamagedAccountStore = async () => {
+    if (!storageResetConfirmation) {
+      setStorageResetConfirmation(true);
+      return;
+    }
+    const completed = await runVoidTask(
+      "reset-damaged-store",
+      api.resetDamagedAccountStore,
+    );
+    if (completed) {
+      setStorageResetConfirmation(false);
+      setDialog(null);
+      setNotice({
+        kind: "success",
+        text: "GSwitch started with a new empty account library. Your live Codex account was not changed.",
+      });
+    }
+  };
+
   const currentActiveId = live?.account?.id;
   const liveAccountLabel = live?.account?.label || "Current Codex account";
   const chatGptAccounts = accounts.filter((account) => account.kind === "chat_gpt");
   const resetCredits = resetAccount ? quotas[resetAccount.id]?.snapshot?.reset_credits : undefined;
+  const storageRecovery = storage?.status === "recovery_required";
 
   const safetyNotice = useMemo(() => {
+    if (storage?.status === "recovery_required") {
+      return {
+        icon: <ShieldAlert size={20} />,
+        title: "GSwitch account storage needs recovery",
+        body: storage.message || "No Codex credential was changed. Review the safe recovery step before continuing.",
+        action: "Review recovery",
+        onAction: () => {
+          setStorageResetConfirmation(false);
+          setDialog("storage-recovery");
+        },
+      };
+    }
     if (!live) {
       return null;
     }
@@ -761,7 +800,7 @@ export default function App() {
       };
     }
     return null;
-  }, [live, runTask]);
+  }, [live, runTask, storage]);
 
   return (
     <main className="app-shell">
@@ -777,13 +816,13 @@ export default function App() {
           </div>
         </div>
         <div className="toolbar-actions">
-          <button className="button button-quiet" disabled={loading || busy !== null} onClick={() => void refreshAll()} type="button">
+          <button className="button button-quiet" disabled={loading || busy !== null || storageRecovery} onClick={() => void refreshAll()} type="button">
             <RefreshCw className={busy === "refresh-all" ? "spin" : ""} size={16} />
             Refresh
           </button>
           <button
             className="button button-secondary"
-            disabled={loading || busy !== null || chatGptAccounts.length === 0}
+            disabled={loading || busy !== null || storageRecovery || chatGptAccounts.length === 0}
             onClick={() => void startWake()}
             type="button"
           >
@@ -792,7 +831,7 @@ export default function App() {
           </button>
           <button
             className="button button-primary"
-            disabled={loading || busy !== null}
+            disabled={loading || busy !== null || storageRecovery}
             onClick={() => {
               setOauth(null);
               setAddMethod("start");
@@ -839,11 +878,29 @@ export default function App() {
                 {loading ? "Loading workspace" : String(accounts.length) + " saved account" + (accounts.length === 1 ? "" : "s")}
               </h2>
             </div>
-            <p>Switch an account only when you are ready to change Codex.</p>
+            <p>{storageRecovery ? "Recovery is required before account actions can continue." : "Switch an account only when you are ready to change Codex."}</p>
           </div>
 
           {loading ? (
             <div className="loading-state"><LoaderCircle className="spin" size={24} />Reading local account state…</div>
+          ) : storageRecovery ? (
+            <section className="storage-recovery-state" aria-labelledby="storage-recovery-title">
+              <ShieldAlert size={28} />
+              <div>
+                <h3 id="storage-recovery-title">Saved accounts are protected until recovery</h3>
+                <p>GSwitch could not safely read its local account library. It has not read, deleted, or changed your live Codex credentials.</p>
+              </div>
+              <button
+                className="button button-primary"
+                onClick={() => {
+                  setStorageResetConfirmation(false);
+                  setDialog("storage-recovery");
+                }}
+                type="button"
+              >
+                Review recovery
+              </button>
+            </section>
           ) : accounts.length ? (
             <div className="account-grid">
               {accounts.map((account) => (
@@ -990,8 +1047,47 @@ export default function App() {
         <Modal onClose={() => setDialog(null)} title="Settings">
           <div className="settings-list">
             <div><span>Credential store</span><strong>{runtime?.credential_store || "Checking…"}</strong></div>
-            <div><span>Account records</span><strong>Stored locally</strong></div>
+            <div><span>Account records</span><strong>{storage?.status === "recovery_required" ? "Recovery required" : "Stored locally"}</strong></div>
             <p>Credentials, provider responses, and reset-credit identifiers never enter this window.</p>
+          </div>
+        </Modal>
+      ) : null}
+
+      {dialog === "storage-recovery" ? (
+        <Modal
+          onClose={() => {
+            setStorageResetConfirmation(false);
+            setDialog(null);
+          }}
+          title="Recover GSwitch account storage"
+        >
+          <div className="confirm-panel">
+            <ShieldAlert size={26} />
+            <h3>Keep Codex untouched</h3>
+            <p>GSwitch could not safely read its saved account library. It has not changed your live Codex credential.</p>
+            <p>Resetting preserves the damaged GSwitch file in its private recovery folder and creates an empty GSwitch account library. It does not delete, replace, or log out Codex.</p>
+            {storageResetConfirmation ? (
+              <div className="confirm-copy">
+                <strong>Reset only GSwitch&apos;s saved account library?</strong>
+                <p>You will need to add saved accounts again afterward. Your current Codex sign-in remains unchanged.</p>
+              </div>
+            ) : null}
+            <div className="modal-actions">
+              <button
+                className="button button-secondary"
+                onClick={() => {
+                  setStorageResetConfirmation(false);
+                  setDialog(null);
+                }}
+                type="button"
+              >
+                Cancel
+              </button>
+              <button className="button button-danger" disabled={busy !== null} onClick={() => void resetDamagedAccountStore()} type="button">
+                {busy === "reset-damaged-store" ? <LoaderCircle className="spin" size={16} /> : <ShieldAlert size={16} />}
+                {storageResetConfirmation ? "Reset GSwitch storage" : "Continue"}
+              </button>
+            </div>
           </div>
         </Modal>
       ) : null}
