@@ -169,7 +169,7 @@ pub fn import_file(state: &AppState, path: &str) -> Result<ImportResult, String>
         .map_err(|_| "Unable to read the selected account file".to_string())?;
     let value: Value = serde_json::from_str(&raw)
         .map_err(|_| "The selected account file is not valid JSON".to_string())?;
-    let parsed = parse_export(value)?;
+    let parsed = deduplicate_candidates(parse_export(value)?);
 
     let mut imported = Vec::new();
     let mut skipped_count = parsed.skipped_count;
@@ -263,6 +263,12 @@ pub fn import_api_key(
 }
 
 fn parse_export(value: Value) -> Result<ParsedImport, String> {
+    if let Some(candidate) = current_cockpit_candidate(&value) {
+        return Ok(ParsedImport {
+            candidates: vec![candidate],
+            skipped_count: 0,
+        });
+    }
     if let Some(candidate) = direct_auth_candidate(&value) {
         return Ok(ParsedImport {
             candidates: vec![candidate],
@@ -290,7 +296,9 @@ fn parse_portable_entries(entries: Vec<Value>) -> Result<ParsedImport, String> {
     let mut candidates = Vec::new();
     let mut skipped_count: u32 = 0;
     for entry in entries {
-        let candidate = direct_auth_candidate(&entry).or_else(|| portable_candidate(&entry, None));
+        let candidate = current_cockpit_candidate(&entry)
+            .or_else(|| direct_auth_candidate(&entry))
+            .or_else(|| portable_candidate(&entry, None));
         if let Some(candidate) = candidate {
             candidates.push(candidate);
         } else {
@@ -359,11 +367,79 @@ fn direct_auth_candidate(value: &Value) -> Option<ImportCandidate> {
     })
 }
 
+/// Current Cockpit Tools exports a public `CodexAccount` record with tokens
+/// nested under `tokens`. Keep this path explicit so a complete official
+/// auth.json document with a similar token shape remains untouched.
+fn current_cockpit_candidate(value: &Value) -> Option<ImportCandidate> {
+    let record = value.as_object()?;
+    let token_record = record.get("tokens")?.as_object()?;
+    let has_cockpit_marker = ["account_name", "account_id", "chatgpt_account_id", "email"]
+        .iter()
+        .any(|key| record.contains_key(*key));
+    if !has_cockpit_marker {
+        return None;
+    }
+
+    let id_token = token_record
+        .get("id_token")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|token| !token.is_empty())?;
+    let access_token = token_record
+        .get("access_token")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|token| !token.is_empty())?;
+
+    let mut tokens = serde_json::Map::new();
+    tokens.insert("id_token".to_string(), Value::String(id_token.to_string()));
+    tokens.insert(
+        "access_token".to_string(),
+        Value::String(access_token.to_string()),
+    );
+    if let Some(refresh_token) = token_record
+        .get("refresh_token")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+    {
+        tokens.insert(
+            "refresh_token".to_string(),
+            Value::String(refresh_token.to_string()),
+        );
+    }
+    if let Some(account_id) = record
+        .get("account_id")
+        .or_else(|| record.get("chatgpt_account_id"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    {
+        tokens.insert(
+            "account_id".to_string(),
+            Value::String(account_id.to_string()),
+        );
+    }
+
+    Some(ImportCandidate {
+        credential: json!({
+            "OPENAI_API_KEY": null,
+            "tokens": tokens,
+            "type": "codex"
+        }),
+        label: source_label(value),
+    })
+}
+
 fn looks_like_cockpit_portable_record(value: &Value) -> bool {
     let Some(record) = value.as_object() else {
         return false;
     };
-    record.contains_key("id_token")
+    (record.contains_key("tokens")
+        && ["account_name", "account_id", "chatgpt_account_id", "email"]
+            .iter()
+            .any(|key| record.contains_key(*key)))
+        || record.contains_key("id_token")
         || record.contains_key("access_token")
         || record.contains_key("refresh_token")
         || [
@@ -450,21 +526,35 @@ fn portable_candidate(value: &Value, label: Option<String>) -> Option<ImportCand
     credential.insert("OPENAI_API_KEY".to_string(), Value::Null);
     credential.insert("tokens".to_string(), Value::Object(tokens));
     credential.insert("type".to_string(), Value::String("codex".to_string()));
-    if let Some(last_refresh) = record
-        .get("last_refresh")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        credential.insert(
-            "last_refresh".to_string(),
-            Value::String(last_refresh.to_string()),
-        );
-    }
     Some(ImportCandidate {
         credential: Value::Object(credential),
         label,
     })
+}
+
+fn deduplicate_candidates(parsed: ParsedImport) -> ParsedImport {
+    let mut seen = Vec::<AccountIdentity>::new();
+    let mut candidates = Vec::with_capacity(parsed.candidates.len());
+    let mut skipped_count = parsed.skipped_count;
+
+    for candidate in parsed.candidates {
+        let identity = identity::document_kind(&candidate.credential)
+            .ok()
+            .and_then(|kind| identity::derive_identity(&kind, &candidate.credential).ok());
+        if let Some(identity) = identity {
+            if seen.contains(&identity) {
+                skipped_count = skipped_count.saturating_add(1);
+                continue;
+            }
+            seen.push(identity);
+        }
+        candidates.push(candidate);
+    }
+
+    ParsedImport {
+        candidates,
+        skipped_count,
+    }
 }
 
 fn sub2api_key_candidate(value: &Value, label: Option<String>) -> Option<ImportCandidate> {
@@ -613,6 +703,136 @@ mod tests {
         assert!(candidate.credential.get("two_factor_secret").is_none());
         assert!(candidate.credential.get("account_password").is_none());
         assert!(candidate.credential.get("tags").is_none());
+    }
+
+    #[test]
+    fn parses_current_cockpit_bulk_export_once_and_drops_unrelated_fields() {
+        let parsed = parse_export(json!([
+            {
+                "email": "one@example.com",
+                "account_id": "workspace-one",
+                "account_name": "One",
+                "tokens": {
+                    "id_token": id_token("user-one", "workspace-one"),
+                    "access_token": "access-one",
+                    "refresh_token": "refresh-one"
+                },
+                "quota": {"five_hour": 99},
+                "quota_error": "private error",
+                "tags": ["private"],
+                "notes": "private note",
+                "password": "private password",
+                "two_factor_secret": "private 2fa",
+                "phone_number": "private phone",
+                "mail_url": "private mail",
+                "api_provider_name": "private provider",
+                "created_at": "private timestamp",
+                "history": ["private history"],
+                "routing": {"private": true},
+                "settings": {"private": true},
+                "active": true
+            },
+            {
+                "email": "two@example.com",
+                "account_id": "workspace-two",
+                "account_name": "Two",
+                "tokens": {
+                    "id_token": id_token("user-two", "workspace-two"),
+                    "access_token": "access-two"
+                }
+            },
+            {
+                "email": "duplicate@example.com",
+                "account_id": "workspace-one",
+                "account_name": "Duplicate",
+                "tokens": {
+                    "id_token": id_token("user-one", "workspace-one"),
+                    "access_token": "access-new"
+                }
+            },
+            {
+                "email": "unsupported@example.com",
+                "account_id": "workspace-unsupported",
+                "account_name": "Unsupported",
+                "tokens": {"id_token": "missing-access-token"}
+            }
+        ]))
+        .expect("current cockpit export");
+
+        assert_eq!(parsed.candidates.len(), 3);
+        assert_eq!(parsed.skipped_count, 1);
+
+        let parsed = deduplicate_candidates(parsed);
+        assert_eq!(parsed.candidates.len(), 2);
+        assert_eq!(parsed.skipped_count, 2);
+        assert_eq!(parsed.candidates[0].label.as_deref(), Some("One"));
+        assert_eq!(parsed.candidates[1].label.as_deref(), Some("Two"));
+
+        let credential = &parsed.candidates[0].credential;
+        let object = credential.as_object().expect("canonical credential");
+        assert_eq!(object.len(), 3);
+        assert!(object.contains_key("OPENAI_API_KEY"));
+        assert!(object.contains_key("tokens"));
+        assert!(object.contains_key("type"));
+        for field in [
+            "quota",
+            "quota_error",
+            "tags",
+            "notes",
+            "password",
+            "two_factor_secret",
+            "phone_number",
+            "mail_url",
+            "api_provider_name",
+            "created_at",
+            "history",
+            "routing",
+            "settings",
+            "active",
+            "email",
+            "account_name",
+        ] {
+            assert!(object.get(field).is_none(), "unexpected field: {field}");
+        }
+        let tokens = object
+            .get("tokens")
+            .and_then(Value::as_object)
+            .expect("canonical tokens");
+        assert_eq!(tokens.len(), 4);
+        assert_eq!(
+            tokens.get("account_id").and_then(Value::as_str),
+            Some("workspace-one")
+        );
+        assert!(tokens.get("id_token").is_some());
+        assert_eq!(
+            tokens.get("access_token").and_then(Value::as_str),
+            Some("access-one")
+        );
+        assert_eq!(
+            tokens.get("refresh_token").and_then(Value::as_str),
+            Some("refresh-one")
+        );
+    }
+
+    #[test]
+    fn parses_a_single_current_cockpit_record_without_importing_its_metadata() {
+        let parsed = parse_export(json!({
+            "email": "person@example.com",
+            "account_id": "workspace",
+            "account_name": "Personal",
+            "tokens": {
+                "id_token": id_token("user", "workspace"),
+                "access_token": "access-token",
+                "refresh_token": "refresh-token"
+            },
+            "notes": "must not migrate"
+        }))
+        .expect("single current cockpit record");
+
+        assert_eq!(parsed.candidates.len(), 1);
+        assert_eq!(parsed.candidates[0].label.as_deref(), Some("Personal"));
+        assert!(parsed.candidates[0].credential.get("notes").is_none());
+        assert!(parsed.candidates[0].credential.get("email").is_none());
     }
 
     #[test]
