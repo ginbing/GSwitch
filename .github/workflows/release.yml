@@ -21,7 +21,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Require the tag to match the application version
         run: |
-          version="$(node -p \"require('./src-tauri/tauri.conf.json').version\")"
+          version="$(node -p "require('./src-tauri/tauri.conf.json').version")"
           test "$GITHUB_REF_NAME" = "v$version"
       - name: Require signed updater configuration
         env:
