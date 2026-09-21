@@ -13,3 +13,12 @@ src-tauri/icons/*
 !src-tauri/icons/gswitch-icon-source.png
 .DS_Store
 *.log
+
+# Local release credentials. Public updater configuration remains tracked.
+.env
+.env.*
+!.env.example
+*.key
+!*.key.pub
+*.pfx
+*.p12
