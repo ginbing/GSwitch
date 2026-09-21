@@ -102,6 +102,12 @@ function friendlyError(t: Translator, error: unknown, fallback = t("error.action
   if (/file-backed|file store|required/i.test(message)) {
     return t("error.enableFileStore");
   }
+  if (/No account files were selected/i.test(message)) {
+    return t("error.importNoFiles");
+  }
+  if (/no more than 64|64 MiB batch limit/i.test(message)) {
+    return t("error.importBatchLimit");
+  }
   if (/No supported|not valid JSON|Invalid auth/i.test(message)) {
     return t("error.importUnsupported");
   }
@@ -684,23 +690,17 @@ export default function App() {
     [loadSnapshot, t],
   );
 
-  const importPath = useCallback(
-    async (path: string) => {
-      const result = await runTask("import", () => api.importAuthFile(path));
+  const importPaths = useCallback(
+    async (paths: string[]) => {
+      const result = await runTask("import", () => api.importAuthFiles(paths));
       if (result) {
-        const suffix = result.imported.length === 1 ? "" : "s";
-        const skippedSuffix = result.skipped_count
-          ? t("notice.unsupportedSkipped", {
-              count: formatNumber(result.skipped_count, locale.formatLocale),
-              suffix: result.skipped_count === 1 ? "" : "s",
-            })
-          : "";
+        const skippedCount = result.unsupported_count + result.failed_count;
         setNotice({
-          kind: "success",
-          text: t("notice.imported", {
-            count: formatNumber(result.imported.length, locale.formatLocale),
-            suffix,
-            skipped: skippedSuffix,
+          kind: result.imported.length ? "success" : "info",
+          text: t("notice.importBatch", {
+            imported: formatNumber(result.imported.length, locale.formatLocale),
+            duplicates: formatNumber(result.duplicate_count, locale.formatLocale),
+            skipped: formatNumber(skippedCount, locale.formatLocale),
           }),
         });
         setDialog(null);
@@ -714,15 +714,15 @@ export default function App() {
       const selected = await open({
         title: t("add.fileTitle"),
         filters: fileFilters(t),
-        multiple: false,
+        multiple: true,
       });
-      if (typeof selected === "string") {
-        await importPath(selected);
+      if (selected?.length) {
+        await importPaths(selected);
       }
     } catch (error) {
       setNotice({ kind: "error", text: friendlyError(t, error, t("error.filePicker")) });
     }
-  }, [importPath, t]);
+  }, [importPaths, t]);
 
   useEffect(() => {
     if (!("__TAURI_INTERNALS__" in window)) {
@@ -734,9 +734,9 @@ export default function App() {
         if (event.payload.type !== "drop") {
           return;
         }
-        const path = event.payload.paths[0];
-        if (path) {
-          void importPath(path);
+        const paths = event.payload.paths;
+        if (paths.length) {
+          void importPaths(paths);
         }
       })
       .then((stop) => {
@@ -746,7 +746,7 @@ export default function App() {
         // File selection remains available if drag-and-drop cannot register.
       });
     return () => unlisten?.();
-  }, [importPath]);
+  }, [importPaths]);
 
   useEffect(() => {
     if (!oauth || oauth.status.status !== "pending") {

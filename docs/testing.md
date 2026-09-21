@@ -87,7 +87,11 @@ as applicable:
 - frontend clearing secret inputs, confirming reset consumption, and disabling
   conflicting actions;
 - browser-login cancellation, selected-file import boundaries, account-space
-  empty state, quota stale state, and visible Wake progress.
+  empty state, quota stale state, and visible Wake progress;
+- multi-file import picker and drop paths, one-file compatibility, cross-file
+  identity deduplication, saved-identity duplicates, mixed parse outcomes,
+  batch file/byte limits, sequential validation, sanitized aggregate results,
+  and successful persistence when post-import quota refresh fails.
 - system-language selection, unsupported-locale fallback, immediate manual
   language selection, language preference persistence, locale-aware reset-time
   formatting, and the main account flow in Simplified Chinese.

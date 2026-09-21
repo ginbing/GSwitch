@@ -123,6 +123,14 @@ pub fn import_auth_file(state: State<'_, AppState>, path: String) -> Result<Impo
 }
 
 #[tauri::command]
+pub fn import_auth_files(
+    state: State<'_, AppState>,
+    paths: Vec<String>,
+) -> Result<ImportResult, String> {
+    intake::import_files(state.inner(), paths)
+}
+
+#[tauri::command]
 pub fn import_api_key(
     state: State<'_, AppState>,
     api_key: String,

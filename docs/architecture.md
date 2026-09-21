@@ -56,7 +56,7 @@ Keep the backend flat and organized by concrete responsibility:
 - `codex.rs`: `CODEX_HOME`, effective storage mode, and live auth-file access;
 - `identity.rs`: credential classification, stable non-secret identity, and
   fingerprints used for comparisons;
-- `intake.rs`: OAuth, auth-document import, and API-key intake;
+- `intake.rs`: OAuth, bounded auth-document batch import, and API-key intake;
 - `switching.rs`: live-account reconciliation, file-store enablement, switching,
   removal, and interrupted-switch recovery;
 - `quota.rs`: quota normalization/cache, reset-credit selection, redemption,
@@ -79,10 +79,12 @@ instead of copies, props for controlled child views, and local state for dialogs
 and forms. A global store, router, component framework, or generic API client
 requires a demonstrated current need.
 
-The native dialog is used only to choose an account-export path. Rust reads that
-path and returns a sanitized import result; raw file bytes and credential
-documents do not cross the WebView boundary. OAuth links are short-lived,
-user-visible links associated with an in-memory login session.
+The native dialog is used only to choose one or more account-export paths. Rust
+reads those paths and returns one sanitized aggregate import result; raw file
+bytes and credential documents do not cross the WebView boundary. File-count,
+per-file, and aggregate-size limits plus identity deduplication belong to the
+Rust batch command rather than React. OAuth links are short-lived, user-visible
+links associated with an in-memory login session.
 
 The WebView may persist its selected display language only. Language selection
 is not account state and must not share storage with credentials, provider data,

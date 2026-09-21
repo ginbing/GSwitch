@@ -69,7 +69,9 @@ export type OAuthLoginStatus =
 
 export interface ImportResult {
   imported: AccountView[];
-  skipped_count: number;
+  duplicate_count: number;
+  unsupported_count: number;
+  failed_count: number;
 }
 
 export type QuotaStatus = "fresh" | "stale" | "unknown" | "not_applicable";

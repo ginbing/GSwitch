@@ -36,6 +36,8 @@ export const api = {
     invoke<AccountView>("import_auth_json", { rawJson, label }),
   importAuthFile: (path: string) =>
     invoke<ImportResult>("import_auth_file", { path }),
+  importAuthFiles: (paths: string[]) =>
+    invoke<ImportResult>("import_auth_files", { paths }),
   importApiKey: (apiKey: string, label?: string) =>
     invoke<AccountView>("import_api_key", { apiKey, label }),
   saveCurrentAccount: () => invoke<AccountView>("save_current_account"),
