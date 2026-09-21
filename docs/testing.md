@@ -69,6 +69,9 @@ as applicable:
   conflicting actions;
 - browser-login cancellation, selected-file import boundaries, account-space
   empty state, quota stale state, and visible Wake progress.
+- system-language selection, unsupported-locale fallback, immediate manual
+  language selection, language preference persistence, locale-aware reset-time
+  formatting, and the main account flow in Simplified Chinese.
 
 Prefer behavior assertions over broad snapshots. Mock protocol payloads prove
 normalization and local policy; they do not prove the current remote provider.

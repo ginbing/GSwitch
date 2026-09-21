@@ -82,6 +82,10 @@ path and returns a sanitized import result; raw file bytes and credential
 documents do not cross the WebView boundary. OAuth links are short-lived,
 user-visible links associated with an in-memory login session.
 
+The WebView may persist its selected display language only. Language selection
+is not account state and must not share storage with credentials, provider data,
+or recovery records.
+
 ## Isolated Codex profiles
 
 OAuth, imported-account validation, quota refresh, reset redemption, and Wake

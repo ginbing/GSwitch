@@ -33,6 +33,17 @@ import {
 } from "react";
 
 import { api } from "./api";
+import {
+  createTranslator,
+  formatDateTimeWithRelative,
+  formatNumber,
+  formatPercent,
+  readLanguagePreference,
+  resolveLocale,
+  saveLanguagePreference,
+  type LanguagePreference,
+  type Translator,
+} from "./i18n";
 import type {
   AccountView,
   LiveAccountView,
@@ -68,33 +79,25 @@ interface OAuthFlow extends OAuthLoginStart {
   status: OAuthLoginStatus;
 }
 
-const FILE_FILTERS = [{ name: "Account exports", extensions: ["json"] }];
-
-function friendlyError(error: unknown, fallback = "The action did not complete.") {
-  const message = String(error);
-  if (/Codex is running|external Codex/i.test(message)) {
-    return "GSwitch did not make a change. Quit the other Codex session, then try again.";
-  }
-  if (/recovery/i.test(message)) {
-    return "GSwitch did not make a change. Resolve the protected recovery step before continuing.";
-  }
-  if (/file-backed|file store|required/i.test(message)) {
-    return "GSwitch did not make a change. Enable file-backed switching before trying again.";
-  }
-  if (/No supported|not valid JSON|Invalid auth/i.test(message)) {
-    return "That account file could not be imported. Choose a complete supported export and try again.";
-  }
-  return fallback + " Your current Codex account was not changed.";
+function fileFilters(t: Translator) {
+  return [{ name: t("file.accountExports"), extensions: ["json"] }];
 }
 
-function formatDate(timestamp?: number) {
-  if (!timestamp) {
-    return "Unknown";
+function friendlyError(t: Translator, error: unknown, fallback = t("error.actionIncomplete")) {
+  const message = String(error);
+  if (/Codex is running|external Codex/i.test(message)) {
+    return t("error.quitCodex");
   }
-  return new Intl.DateTimeFormat(undefined, {
-    dateStyle: "medium",
-    timeStyle: "short",
-  }).format(new Date(timestamp * 1000));
+  if (/recovery/i.test(message)) {
+    return t("error.resolveRecovery");
+  }
+  if (/file-backed|file store|required/i.test(message)) {
+    return t("error.enableFileStore");
+  }
+  if (/No supported|not valid JSON|Invalid auth/i.test(message)) {
+    return t("error.importUnsupported");
+  }
+  return `${fallback} ${t("error.currentUnchanged")}`;
 }
 
 function primaryWindow(quota: QuotaView | undefined, kind: "five_hour" | "weekly") {
@@ -104,19 +107,54 @@ function primaryWindow(quota: QuotaView | undefined, kind: "five_hour" | "weekly
     .find((window) => window.kind === kind);
 }
 
-function accountPlan(account: AccountView) {
-  return account.kind === "api_key" ? "API key" : account.plan_type || "ChatGPT";
+function accountPlan(account: AccountView, t: Translator) {
+  return account.kind === "api_key" ? t("account.apiKey") : account.plan_type || t("account.chatGpt");
+}
+
+function credentialStoreLabel(store: RuntimeInfo["credential_store"] | undefined, t: Translator) {
+  const labels = {
+    file: "credentialStore.file",
+    keyring: "credentialStore.keyring",
+    auto: "credentialStore.auto",
+    ephemeral: "credentialStore.ephemeral",
+    unknown: "credentialStore.unknown",
+  } as const;
+  return t(labels[store || "unknown"]);
+}
+
+function wakeStatusLabel(status: WakeOperationView["status"], t: Translator) {
+  const key = `wake.status${status.slice(0, 1).toUpperCase()}${status.slice(1)}` as
+    | "wake.statusRunning"
+    | "wake.statusCompleted"
+    | "wake.statusCancelled"
+    | "wake.statusFailed";
+  return t(key);
+}
+
+function wakeResultLabel(result: WakeOperationView["results"][number]["result"], t: Translator) {
+  const labels = {
+    already_active: "wake.alreadyActive",
+    window_started: "wake.windowStarted",
+    request_completed_unconfirmed: "wake.unconfirmed",
+    needs_model_selection: "wake.chooseModel",
+    failed: "wake.failed",
+    skipped: "wake.skipped",
+    cancelled: "wake.cancelled",
+  } as const;
+  return t(labels[result]);
 }
 
 function Modal({
   title,
   children,
   onClose,
+  t,
   wide = false,
 }: {
   title: string;
   children: ReactNode;
   onClose: () => void;
+  t: Translator;
   wide?: boolean;
 }) {
   return (
@@ -138,7 +176,7 @@ function Modal({
       >
         <div className="modal-header">
           <h2 id="modal-title">{title}</h2>
-          <button aria-label={"Close " + title} className="icon-button" onClick={onClose} type="button">
+          <button aria-label={t("common.closeDialog", { title })} className="icon-button" onClick={onClose} type="button">
             <X size={18} strokeWidth={2} />
           </button>
         </div>
@@ -152,10 +190,14 @@ function QuotaMeter({
   label,
   window,
   status,
+  t,
+  formatLocale,
 }: {
   label: string;
   window?: QuotaWindow;
   status?: QuotaView["status"];
+  t: Translator;
+  formatLocale: string;
 }) {
   const known = status === "fresh" || status === "stale";
   const remaining = window?.remaining_percent;
@@ -165,10 +207,10 @@ function QuotaMeter({
     <div className="quota-meter">
       <div className="quota-heading">
         <span>{label}</span>
-        <strong>{value === undefined || !known ? "—" : Math.round(value) + "%"}</strong>
+        <strong>{value === undefined || !known ? "—" : formatPercent(value, formatLocale)}</strong>
       </div>
       <div
-        aria-label={label + " remaining"}
+        aria-label={t("quota.remaining", { label })}
         aria-valuemax={100}
         aria-valuemin={0}
         aria-valuenow={value}
@@ -182,12 +224,12 @@ function QuotaMeter({
       </div>
       <small>
         {!known
-          ? "Not available"
+          ? t("quota.notAvailable")
           : status === "stale"
-            ? "Last result is stale"
+            ? t("quota.lastResultStale")
             : window?.resets_at
-              ? "Resets " + formatDate(window.resets_at)
-              : "Reset time unavailable"}
+              ? t("quota.resets", { time: formatDateTimeWithRelative(window.resets_at, formatLocale) })
+              : t("quota.resetTimeUnavailable")}
       </small>
     </div>
   );
@@ -204,6 +246,8 @@ function AccountCard({
   onReset,
   resetRecoveryRequired,
   onRemove,
+  t,
+  formatLocale,
 }: {
   account: AccountView;
   quota?: QuotaView;
@@ -215,6 +259,8 @@ function AccountCard({
   onReset: () => void;
   resetRecoveryRequired: boolean;
   onRemove: () => void;
+  t: Translator;
+  formatLocale: string;
 }) {
   const credits = quota?.snapshot?.reset_credits;
   const isApiKey = account.kind === "api_key";
@@ -228,51 +274,51 @@ function AccountCard({
           </div>
           <div className="account-copy">
             <h3>{account.label}</h3>
-            <p>{account.email || (isApiKey ? "Stored locally" : "Verified Codex account")}</p>
+            <p>{account.email || (isApiKey ? t("account.storedLocally") : t("account.verifiedCodex"))}</p>
           </div>
         </div>
         <details className="card-menu">
-          <summary aria-label={"More actions for " + account.label}>
+          <summary aria-label={t("account.moreActions", { name: account.label })}>
             <MoreHorizontal size={18} />
           </summary>
           <div className="card-menu-popover">
             <button disabled={active || busy} onClick={onRemove} type="button">
               <Trash2 size={15} />
-              Remove account
+              {t("common.removeAccount")}
             </button>
           </div>
         </details>
       </div>
 
       <div className="account-badges">
-        {active ? <span className="badge badge-active"><Check size={13} /> Active</span> : null}
-        <span className="badge">{accountPlan(account)}</span>
-        {quota?.status === "stale" ? <span className="badge badge-muted">Stale</span> : null}
+        {active ? <span className="badge badge-active"><Check size={13} /> {t("account.active")}</span> : null}
+        <span className="badge">{accountPlan(account, t)}</span>
+        {quota?.status === "stale" ? <span className="badge badge-muted">{t("account.stale")}</span> : null}
       </div>
 
       {isApiKey ? (
         <div className="api-key-state">
           <KeyRound size={18} />
           <div>
-            <strong>Saved without a billable check</strong>
-            <p>Subscription quota, reset credits, and Wake do not apply to API-key accounts.</p>
+            <strong>{t("account.savedNoBillableCheck")}</strong>
+            <p>{t("account.apiKeyDescription")}</p>
           </div>
         </div>
       ) : (
         <>
           <div className="quota-pair">
-            <QuotaMeter label="5-hour" status={quota?.status} window={primaryWindow(quota, "five_hour")} />
-            <QuotaMeter label="Weekly" status={quota?.status} window={primaryWindow(quota, "weekly")} />
+            <QuotaMeter formatLocale={formatLocale} label={t("quota.fiveHour")} status={quota?.status} t={t} window={primaryWindow(quota, "five_hour")} />
+            <QuotaMeter formatLocale={formatLocale} label={t("quota.weekly")} status={quota?.status} t={t} window={primaryWindow(quota, "weekly")} />
           </div>
           <div className="credit-row">
             <span>
-              Reset credits
-              <strong>{credits ? credits.available_count : "—"}</strong>
+              {t("credit.resetCredits")}
+              <strong>{credits ? formatNumber(credits.available_count, formatLocale) : "—"}</strong>
             </span>
-            {credits?.nearest_expiry ? <small>Earliest {formatDate(credits.nearest_expiry)}</small> : null}
+            {credits?.nearest_expiry ? <small>{t("credit.earliest", { time: formatDateTimeWithRelative(credits.nearest_expiry, formatLocale) })}</small> : null}
             {credits?.available_count && credits.available_count > 0 ? (
               <button className="text-button" onClick={onReset} type="button">
-                {resetRecoveryRequired ? "Recovery required" : "Details"}
+                {resetRecoveryRequired ? t("common.recoveryRequired") : t("common.details")}
                 <ChevronRight size={15} />
               </button>
             ) : null}
@@ -282,7 +328,7 @@ function AccountCard({
 
       <div className="card-footer">
         <button
-          aria-label={"Refresh " + account.label}
+          aria-label={t("account.refresh", { name: account.label })}
           className="icon-button"
           disabled={busy || isApiKey}
           onClick={onRefresh}
@@ -294,12 +340,12 @@ function AccountCard({
           {!isApiKey ? (
             <button className="button button-secondary" disabled={busy} onClick={onWake} type="button">
               <Zap size={15} />
-              Wake
+              {t("common.wake")}
             </button>
           ) : null}
           <button className="button button-primary" disabled={busy || active} onClick={onSwitch} type="button">
             {busy ? <LoaderCircle className="spin" size={15} /> : <ArrowRightLeft size={15} />}
-            {active ? "Current" : "Switch"}
+            {active ? t("common.current") : t("common.switch")}
           </button>
         </div>
       </div>
@@ -307,37 +353,37 @@ function AccountCard({
   );
 }
 
-function FirstRun({ onImport, onAdd }: { onImport: () => void; onAdd: () => void }) {
+function FirstRun({ onImport, onAdd, t }: { onImport: () => void; onAdd: () => void; t: Translator }) {
   return (
     <section className="first-run">
       <div className="first-run-primary">
-        <span className="eyebrow">GET STARTED</span>
-        <h2>Bring your Codex accounts into one calm workspace.</h2>
+        <span className="eyebrow">{t("firstRun.eyebrow")}</span>
+        <h2>{t("firstRun.title")}</h2>
         <p>
-          Import an export you choose, or add an account directly. GSwitch never reads another
-          app&apos;s private account storage.
+          {t("firstRun.body")}
         </p>
         <div className="first-run-actions">
           <button className="button button-primary" onClick={onImport} type="button">
             <Upload size={16} />
-            Import an export
+            {t("firstRun.importExport")}
           </button>
           <button className="button button-secondary" onClick={onAdd} type="button">
             <Plus size={16} />
-            Add manually
+            {t("firstRun.addManually")}
           </button>
         </div>
       </div>
       <div className="first-run-methods">
-        <div><Globe2 size={18} /><span>Browser sign-in</span></div>
-        <div><FileJson size={18} /><span>Codex auth.json or supported export</span></div>
-        <div><KeyRound size={18} /><span>API key</span></div>
+        <div><Globe2 size={18} /><span>{t("firstRun.browserSignIn")}</span></div>
+        <div><FileJson size={18} /><span>{t("firstRun.authJson")}</span></div>
+        <div><KeyRound size={18} /><span>{t("account.apiKey")}</span></div>
       </div>
     </section>
   );
 }
 
 export default function App() {
+  const [languagePreference, setLanguagePreference] = useState<LanguagePreference>(() => readLanguagePreference());
   const [accounts, setAccounts] = useState<AccountView[]>([]);
   const [quotas, setQuotas] = useState<Record<string, QuotaView>>({});
   const [live, setLive] = useState<LiveAccountView | null>(null);
@@ -358,6 +404,13 @@ export default function App() {
   const jsonRef = useRef<HTMLTextAreaElement>(null);
   const apiKeyRef = useRef<HTMLInputElement>(null);
   const [label, setLabel] = useState("");
+  const locale = useMemo(() => resolveLocale(languagePreference), [languagePreference]);
+  const t = useMemo(() => createTranslator(locale.language), [locale.language]);
+
+  const changeLanguage = (preference: LanguagePreference) => {
+    setLanguagePreference(preference);
+    saveLanguagePreference(preference);
+  };
 
   const loadSnapshot = useCallback(async () => {
     setLoading(true);
@@ -384,12 +437,12 @@ export default function App() {
     } catch (error) {
       setNotice({
         kind: "error",
-        text: friendlyError(error, "GSwitch could not read the current account state."),
+        text: friendlyError(t, error, t("error.snapshot")),
       });
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [t]);
 
   useEffect(() => {
     void loadSnapshot();
@@ -405,13 +458,13 @@ export default function App() {
         }
         return result;
       } catch (error) {
-        setNotice({ kind: "error", text: friendlyError(error) });
+        setNotice({ kind: "error", text: friendlyError(t, error) });
         return undefined;
       } finally {
         setBusy(null);
       }
     },
-    [loadSnapshot],
+    [loadSnapshot, t],
   );
 
   const runVoidTask = useCallback(
@@ -424,13 +477,13 @@ export default function App() {
         }
         return true;
       } catch (error) {
-        setNotice({ kind: "error", text: friendlyError(error) });
+        setNotice({ kind: "error", text: friendlyError(t, error) });
         return false;
       } finally {
         setBusy(null);
       }
     },
-    [loadSnapshot],
+    [loadSnapshot, t],
   );
 
   const importPath = useCallback(
@@ -439,32 +492,39 @@ export default function App() {
       if (result) {
         const suffix = result.imported.length === 1 ? "" : "s";
         const skippedSuffix = result.skipped_count
-          ? " " + result.skipped_count + " unsupported item" + (result.skipped_count === 1 ? "" : "s") + " skipped."
+          ? t("notice.unsupportedSkipped", {
+              count: formatNumber(result.skipped_count, locale.formatLocale),
+              suffix: result.skipped_count === 1 ? "" : "s",
+            })
           : "";
         setNotice({
           kind: "success",
-          text: String(result.imported.length) + " account" + suffix + " imported safely." + skippedSuffix,
+          text: t("notice.imported", {
+            count: formatNumber(result.imported.length, locale.formatLocale),
+            suffix,
+            skipped: skippedSuffix,
+          }),
         });
         setDialog(null);
       }
     },
-    [runTask],
+    [locale.formatLocale, runTask, t],
   );
 
   const chooseImportFile = useCallback(async () => {
     try {
       const selected = await open({
-        title: "Choose a Codex account export",
-        filters: FILE_FILTERS,
+        title: t("add.fileTitle"),
+        filters: fileFilters(t),
         multiple: false,
       });
       if (typeof selected === "string") {
         await importPath(selected);
       }
     } catch (error) {
-      setNotice({ kind: "error", text: friendlyError(error, "GSwitch could not open the file picker.") });
+      setNotice({ kind: "error", text: friendlyError(t, error, t("error.filePicker")) });
     }
-  }, [importPath]);
+  }, [importPath, t]);
 
   useEffect(() => {
     if (!("__TAURI_INTERNALS__" in window)) {
@@ -506,7 +566,7 @@ export default function App() {
           current?.login_id === oauth.login_id ? { ...current, status } : current,
         );
         if (status.status === "complete") {
-          setNotice({ kind: "success", text: status.account.label + " was added safely." });
+          setNotice({ kind: "success", text: t("notice.importedAccount", { name: status.account.label }) });
           setDialog(null);
           void loadSnapshot();
         } else if (status.status === "pending") {
@@ -516,7 +576,7 @@ export default function App() {
         if (!closed) {
           setOauth((current) =>
             current?.login_id === oauth.login_id
-              ? { ...current, status: { status: "failed", message: "Unable to read sign-in result." } }
+              ? { ...current, status: { status: "failed", message: t("error.oauthStatus") } }
               : current,
           );
         }
@@ -529,7 +589,7 @@ export default function App() {
         window.clearTimeout(timer);
       }
     };
-  }, [loadSnapshot, oauth]);
+  }, [loadSnapshot, oauth, t]);
 
   useEffect(() => {
     if (!wake || wake.status !== "running") {
@@ -551,7 +611,7 @@ export default function App() {
         }
       } catch {
         if (!closed) {
-          setNotice({ kind: "error", text: "Wake stopped before GSwitch could read its final result." });
+          setNotice({ kind: "error", text: t("error.wakeStatus") });
         }
       }
     };
@@ -562,7 +622,7 @@ export default function App() {
         window.clearTimeout(timer);
       }
     };
-  }, [loadSnapshot, wake]);
+  }, [loadSnapshot, t, wake]);
 
   useEffect(() => {
     const closeOnEscape = (event: KeyboardEvent) => {
@@ -584,7 +644,7 @@ export default function App() {
     try {
       await api.openOAuth(result.login_id);
     } catch {
-      setNotice({ kind: "info", text: "Your sign-in link is ready. Copy it and open it in your preferred browser." });
+      setNotice({ kind: "info", text: t("notice.oauthReady") });
     }
   };
 
@@ -611,9 +671,9 @@ export default function App() {
     }
     try {
       await navigator.clipboard.writeText(oauth.auth_url);
-      setNotice({ kind: "success", text: "Sign-in link copied." });
+      setNotice({ kind: "success", text: t("notice.oauthCopied") });
     } catch {
-      setNotice({ kind: "info", text: "Select the sign-in link below and copy it manually." });
+      setNotice({ kind: "info", text: t("notice.copyManually") });
     }
   };
 
@@ -624,14 +684,14 @@ export default function App() {
       jsonRef.current.value = "";
     }
     if (!rawJson.trim()) {
-      setNotice({ kind: "error", text: "Paste a complete auth JSON document before adding it." });
+      setNotice({ kind: "error", text: t("notice.pasteAuth") });
       return;
     }
     const result = await runTask("import-json", () => api.importAuthJson(rawJson, label || undefined));
     if (result) {
       setLabel("");
       setDialog(null);
-      setNotice({ kind: "success", text: result.label + " was imported safely." });
+      setNotice({ kind: "success", text: t("notice.importedAccount", { name: result.label }) });
     }
   };
 
@@ -642,14 +702,14 @@ export default function App() {
       apiKeyRef.current.value = "";
     }
     if (!apiKey.trim()) {
-      setNotice({ kind: "error", text: "Enter an API key before adding it." });
+      setNotice({ kind: "error", text: t("notice.enterApiKey") });
       return;
     }
     const result = await runTask("import-key", () => api.importApiKey(apiKey, label || undefined));
     if (result) {
       setLabel("");
       setDialog(null);
-      setNotice({ kind: "success", text: result.label + " was saved without a billable check." });
+      setNotice({ kind: "success", text: t("notice.savedApiKey", { name: result.label }) });
     }
   };
 
@@ -666,7 +726,10 @@ export default function App() {
         if (failures) {
           setNotice({
             kind: "info",
-            text: String(failures) + " quota result" + (failures === 1 ? " was" : "s were") + " unavailable. Your account selection was not changed.",
+            text: t("notice.quotaUnavailable", {
+              count: formatNumber(failures, locale.formatLocale),
+              suffix: failures === 1 ? " was" : "s were",
+            }),
           });
         }
       },
@@ -677,14 +740,14 @@ export default function App() {
   const switchAccount = async (account: AccountView) => {
     const result = await runTask("switch:" + account.id, () => api.switchAccount(account.id));
     if (result) {
-      setNotice({ kind: "success", text: account.label + " is now the active Codex account." });
+      setNotice({ kind: "success", text: t("notice.switched", { name: account.label }) });
     }
   };
 
   const refreshAccount = async (account: AccountView) => {
     const result = await runTask("refresh:" + account.id, () => api.refreshAccountQuota(account.id));
     if (result) {
-      setNotice({ kind: "success", text: account.label + " quota was refreshed." });
+      setNotice({ kind: "success", text: t("notice.quotaRefreshed", { name: account.label }) });
     }
   };
 
@@ -718,8 +781,8 @@ export default function App() {
       setNotice({
         kind: complete ? "success" : "info",
         text: complete
-          ? result.refresh_warning || "The earliest eligible reset credit was used."
-          : "No reset credit was used.",
+          ? result.refresh_warning ? t("notice.resetRefreshWarning") : t("notice.resetUsed")
+          : t("notice.noResetUsed"),
       });
       setResetAccount(null);
       setResetConfirmation(false);
@@ -733,9 +796,9 @@ export default function App() {
       const confirmed = result.outcome === "reset" || result.outcome === "already_redeemed";
       setNotice({
         kind: confirmed ? "success" : "info",
-        text: result.refresh_warning || (confirmed
-          ? "The original reset-credit result was recovered."
-          : "The original reset credit was not consumed."),
+        text: result.refresh_warning ? t("notice.resetRefreshWarning") : (confirmed
+          ? t("notice.recoveredReset")
+          : t("notice.resetNotConsumed")),
       });
       setDialog(null);
     }
@@ -750,7 +813,7 @@ export default function App() {
       () => api.removeSavedAccount(removeAccount.id),
     );
     if (completed) {
-      setNotice({ kind: "success", text: removeAccount.label + " was removed from GSwitch." });
+      setNotice({ kind: "success", text: t("notice.removed", { name: removeAccount.label }) });
       setRemoveAccount(null);
       setDialog(null);
     }
@@ -770,13 +833,13 @@ export default function App() {
       setDialog(null);
       setNotice({
         kind: "success",
-        text: "GSwitch started with a new empty account library. Your live Codex account was not changed.",
+        text: t("notice.storageReset"),
       });
     }
   };
 
   const currentActiveId = live?.account?.id;
-  const liveAccountLabel = live?.account?.label || "Current Codex account";
+  const liveAccountLabel = live?.account?.label || t("toolbar.currentAccount");
   const chatGptAccounts = accounts.filter((account) => account.kind === "chat_gpt");
   const resetCredits = resetAccount ? quotas[resetAccount.id]?.snapshot?.reset_credits : undefined;
   const storageRecovery = storage?.status === "recovery_required";
@@ -785,9 +848,9 @@ export default function App() {
     if (storage?.status === "recovery_required") {
       return {
         icon: <ShieldAlert size={20} />,
-        title: "GSwitch account storage needs recovery",
-        body: storage.message || "No Codex credential was changed. Review the safe recovery step before continuing.",
-        action: "Review recovery",
+        title: t("safety.storageTitle"),
+        body: t("safety.storageBody"),
+        action: t("safety.reviewRecovery"),
         onAction: () => {
           setStorageResetConfirmation(false);
           setDialog("storage-recovery");
@@ -797,9 +860,9 @@ export default function App() {
     if (pendingResetCredit) {
       return {
         icon: <CircleAlert size={20} />,
-        title: "A reset-credit request needs recovery",
-        body: "A previous explicit reset did not finish locally. Recovering it reuses only the original provider credit and request key.",
-        action: "Review reset recovery",
+        title: t("safety.resetTitle"),
+        body: t("safety.resetBody"),
+        action: t("safety.reviewReset"),
         onAction: () => setDialog("recover-reset-credit"),
       };
     }
@@ -809,13 +872,13 @@ export default function App() {
     if (live.status === "unknown_account") {
       return {
         icon: <ShieldAlert size={20} />,
-        title: "This Codex account is not saved",
-        body: "Save it before switching so its current credentials are never overwritten.",
-        action: "Save current account",
+        title: t("safety.currentTitle"),
+        body: t("safety.currentBody"),
+        action: t("safety.saveCurrent"),
         onAction: () =>
           void runTask("save-current", api.saveCurrentAccount).then((account) => {
             if (account) {
-              setNotice({ kind: "success", text: account.label + " was saved safely." });
+              setNotice({ kind: "success", text: t("notice.savedCurrent", { name: account.label }) });
             }
           }),
       };
@@ -823,23 +886,23 @@ export default function App() {
     if (live.status === "file_store_required") {
       return {
         icon: <ShieldAlert size={20} />,
-        title: "Switching needs file-backed Codex credentials",
-        body: "GSwitch will not try to extract credentials from keychain, auto, or ephemeral storage.",
-        action: "Enable account switching",
+        title: t("safety.fileTitle"),
+        body: t("safety.fileBody"),
+        action: t("safety.enable"),
         onAction: () => setDialog("enable-switching"),
       };
     }
     if (live.status === "recovery_required") {
       return {
         icon: <CircleAlert size={20} />,
-        title: "A protected switch needs recovery",
-        body: "No credential change will run until the previous switch is safely resolved.",
-        action: "Review recovery",
+        title: t("safety.switchTitle"),
+        body: t("safety.switchBody"),
+        action: t("safety.reviewRecovery"),
         onAction: () => setDialog("recover-switch"),
       };
     }
     return null;
-  }, [live, pendingResetCredit, runTask, storage]);
+  }, [live, pendingResetCredit, runTask, storage, t]);
 
   return (
     <main className="app-shell">
@@ -857,7 +920,7 @@ export default function App() {
         <div className="toolbar-actions">
           <button className="button button-quiet" disabled={loading || busy !== null || storageRecovery} onClick={() => void refreshAll()} type="button">
             <RefreshCw className={busy === "refresh-all" ? "spin" : ""} size={16} />
-            Refresh
+            {t("common.refresh")}
           </button>
           <button
             className="button button-secondary"
@@ -866,7 +929,7 @@ export default function App() {
             type="button"
           >
             <Zap size={16} />
-            Wake all
+            {t("toolbar.wakeAll")}
           </button>
           <button
             className="button button-primary"
@@ -879,9 +942,9 @@ export default function App() {
             type="button"
           >
             <Plus size={16} />
-            Add account
+            {t("common.addAccount")}
           </button>
-          <button aria-label="Open settings" className="icon-button" onClick={() => setDialog("settings")} type="button">
+          <button aria-label={t("toolbar.openSettings")} className="icon-button" onClick={() => setDialog("settings")} type="button">
             <Settings size={18} />
           </button>
         </div>
@@ -892,7 +955,7 @@ export default function App() {
           <div className={"toast toast-" + notice.kind} role="status">
             {notice.kind === "success" ? <CircleCheck size={17} /> : <CircleAlert size={17} />}
             <span>{notice.text}</span>
-            <button aria-label="Dismiss message" onClick={() => setNotice(null)} type="button"><X size={15} /></button>
+            <button aria-label={t("common.dismissMessage")} onClick={() => setNotice(null)} type="button"><X size={15} /></button>
           </div>
         ) : null}
 
@@ -912,22 +975,26 @@ export default function App() {
         <section className="accounts-section" aria-labelledby="accounts-heading">
           <div className="section-heading">
             <div>
-              <span className="eyebrow">ACCOUNTS</span>
+              <span className="eyebrow">{t("accounts.eyebrow")}</span>
               <h2 id="accounts-heading">
-                {loading ? "Loading workspace" : String(accounts.length) + " saved account" + (accounts.length === 1 ? "" : "s")}
+                {loading
+                  ? t("accounts.loading")
+                  : accounts.length === 1
+                    ? t("accounts.savedOne")
+                    : t("accounts.savedMany", { count: formatNumber(accounts.length, locale.formatLocale) })}
               </h2>
             </div>
-            <p>{storageRecovery ? "Recovery is required before account actions can continue." : "Switch an account only when you are ready to change Codex."}</p>
+            <p>{storageRecovery ? t("accounts.recoveryDescription") : t("accounts.readyDescription")}</p>
           </div>
 
           {loading ? (
-            <div className="loading-state"><LoaderCircle className="spin" size={24} />Reading local account state…</div>
+            <div className="loading-state"><LoaderCircle className="spin" size={24} />{t("accounts.reading")}</div>
           ) : storageRecovery ? (
             <section className="storage-recovery-state" aria-labelledby="storage-recovery-title">
               <ShieldAlert size={28} />
               <div>
-                <h3 id="storage-recovery-title">Saved accounts are protected until recovery</h3>
-                <p>GSwitch could not safely read its local account library. It has not read, deleted, or changed your live Codex credentials.</p>
+                <h3 id="storage-recovery-title">{t("accounts.protectedTitle")}</h3>
+                <p>{t("accounts.protectedBody")}</p>
               </div>
               <button
                 className="button button-primary"
@@ -937,7 +1004,7 @@ export default function App() {
                 }}
                 type="button"
               >
-                Review recovery
+                {t("safety.reviewRecovery")}
               </button>
             </section>
           ) : accounts.length ? (
@@ -947,6 +1014,7 @@ export default function App() {
                   account={account}
                   active={account.active || account.id === currentActiveId}
                   busy={busy !== null}
+                  formatLocale={locale.formatLocale}
                   key={account.id}
                   onRefresh={() => void refreshAccount(account)}
                   onRemove={() => {
@@ -966,6 +1034,7 @@ export default function App() {
                   onSwitch={() => void switchAccount(account)}
                   onWake={() => void startWake(account.id)}
                   quota={quotas[account.id]}
+                  t={t}
                 />
               ))}
             </div>
@@ -977,38 +1046,37 @@ export default function App() {
                 setDialog("add");
               }}
               onImport={() => void chooseImportFile()}
+              t={t}
             />
           )}
         </section>
       </div>
 
       {dialog === "add" ? (
-        <Modal onClose={closeAddDialog} title="Add a Codex account" wide>
+        <Modal onClose={closeAddDialog} t={t} title={t("add.title")} wide>
           {addMethod === "start" ? (
             <div className="add-methods">
               <button className="add-method-card" onClick={() => void startOAuth()} type="button">
                 <span className="method-icon"><Globe2 size={22} /></span>
-                <span><strong>Sign in with your browser</strong><small>Use the official Codex sign-in flow.</small></span>
+                <span><strong>{t("add.browserTitle")}</strong><small>{t("add.browserDescription")}</small></span>
                 <ChevronRight size={18} />
               </button>
               <button className="add-method-card" onClick={() => setAddMethod("json")} type="button">
                 <span className="method-icon"><FileJson size={22} /></span>
-                <span><strong>Paste auth JSON</strong><small>Submit a complete Codex auth document.</small></span>
+                <span><strong>{t("add.jsonTitle")}</strong><small>{t("add.jsonDescription")}</small></span>
                 <ChevronRight size={18} />
               </button>
               <button className="add-method-card" onClick={() => void chooseImportFile()} type="button">
                 <span className="method-icon"><FolderOpen size={22} /></span>
-                <span><strong>Choose an export file</strong><small>Codex auth.json, Cockpit, Sub2API, or CPA export.</small></span>
+                <span><strong>{t("add.fileTitle")}</strong><small>{t("add.fileDescription")}</small></span>
                 <ChevronRight size={18} />
               </button>
               <button className="add-method-card" onClick={() => setAddMethod("api-key")} type="button">
                 <span className="method-icon"><KeyRound size={22} /></span>
-                <span><strong>Add an API key</strong><small>Saved without a billable validation request.</small></span>
+                <span><strong>{t("add.apiKeyTitle")}</strong><small>{t("add.apiKeyDescription")}</small></span>
                 <ChevronRight size={18} />
               </button>
-              <p className="dialog-footnote">
-                GSwitch reads only the file you select. It does not access Cockpit Tools&apos; private storage.
-              </p>
+              <p className="dialog-footnote">{t("add.privateStorage")}</p>
             </div>
           ) : null}
 
@@ -1018,30 +1086,30 @@ export default function App() {
                 <>
                   <div className="oauth-hero">
                     <LoaderCircle className="spin" size={26} />
-                    <div><h3>Finish sign-in in your browser</h3><p>GSwitch adds the verified account when Codex confirms the sign-in.</p></div>
+                    <div><h3>{t("oauth.finishTitle")}</h3><p>{t("oauth.finishBody")}</p></div>
                   </div>
-                  <label className="field-label" htmlFor="oauth-link">Sign-in link</label>
+                  <label className="field-label" htmlFor="oauth-link">{t("oauth.link")}</label>
                   <div className="copy-field">
                     <input id="oauth-link" readOnly value={oauth.auth_url} />
-                    <button aria-label="Copy sign-in link" className="icon-button" onClick={() => void copyOAuthUrl()} type="button"><Copy size={17} /></button>
+                    <button aria-label={t("oauth.copyLink")} className="icon-button" onClick={() => void copyOAuthUrl()} type="button"><Copy size={17} /></button>
                   </div>
                   <div className="modal-actions">
-                    <button className="button button-secondary" onClick={() => void cancelOAuth()} type="button">Cancel sign-in</button>
-                    <button className="button button-primary" onClick={() => void api.openOAuth(oauth.login_id)} type="button"><Globe2 size={16} />Open browser</button>
+                    <button className="button button-secondary" onClick={() => void cancelOAuth()} type="button">{t("oauth.cancel")}</button>
+                    <button className="button button-primary" onClick={() => void api.openOAuth(oauth.login_id)} type="button"><Globe2 size={16} />{t("oauth.openBrowser")}</button>
                   </div>
                 </>
               ) : oauth.status.status === "complete" ? (
                 <div className="outcome-panel">
                   <CircleCheck size={26} />
-                  <h3>{oauth.status.account.label} was added</h3>
-                  <button className="button button-primary" onClick={closeAddDialog} type="button">Done</button>
+                  <h3>{t("oauth.added", { name: oauth.status.account.label })}</h3>
+                  <button className="button button-primary" onClick={closeAddDialog} type="button">{t("common.done")}</button>
                 </div>
               ) : (
                 <div className="outcome-panel">
                   <CircleAlert size={26} />
-                  <h3>{oauth.status.status === "cancelled" ? "Sign-in cancelled" : "Sign-in did not complete"}</h3>
-                  <p>{oauth.status.status === "failed" ? "Try the official browser sign-in again." : "No account was changed."}</p>
-                  <button className="button button-primary" onClick={() => void startOAuth()} type="button">Try again</button>
+                  <h3>{oauth.status.status === "cancelled" ? t("oauth.cancelled") : t("oauth.incomplete")}</h3>
+                  <p>{oauth.status.status === "failed" ? t("oauth.retryBody") : t("oauth.unchanged")}</p>
+                  <button className="button button-primary" onClick={() => void startOAuth()} type="button">{t("oauth.retry")}</button>
                 </div>
               )}
             </div>
@@ -1049,18 +1117,18 @@ export default function App() {
 
           {addMethod === "json" ? (
             <form className="credential-form" onSubmit={submitJson}>
-              <button className="back-link" onClick={() => setAddMethod("start")} type="button">← All methods</button>
-              <h3>Paste a complete auth document</h3>
-              <p>It is submitted directly to Rust and cleared from this field immediately.</p>
-              <label className="field-label" htmlFor="account-label">Display name <span>optional</span></label>
+              <button className="back-link" onClick={() => setAddMethod("start")} type="button">{t("form.allMethods")}</button>
+              <h3>{t("form.pasteTitle")}</h3>
+              <p>{t("form.pasteBody")}</p>
+              <label className="field-label" htmlFor="account-label">{t("form.displayName")} <span>{t("common.optional")}</span></label>
               <input id="account-label" onChange={(event) => setLabel(event.target.value)} value={label} />
               <label className="field-label" htmlFor="auth-json">auth.json</label>
               <textarea id="auth-json" ref={jsonRef} required spellCheck={false} />
               <div className="modal-actions">
-                <button className="button button-secondary" onClick={() => setAddMethod("start")} type="button">Cancel</button>
+                <button className="button button-secondary" onClick={() => setAddMethod("start")} type="button">{t("common.cancel")}</button>
                 <button className="button button-primary" disabled={busy !== null} type="submit">
                   {busy === "import-json" ? <LoaderCircle className="spin" size={16} /> : <FileJson size={16} />}
-                  Add account
+                  {t("common.addAccount")}
                 </button>
               </div>
             </form>
@@ -1068,18 +1136,18 @@ export default function App() {
 
           {addMethod === "api-key" ? (
             <form className="credential-form" onSubmit={submitApiKey}>
-              <button className="back-link" onClick={() => setAddMethod("start")} type="button">← All methods</button>
-              <h3>Add an API-key account</h3>
-              <p>GSwitch does not use the key for an unrequested billable validation call.</p>
-              <label className="field-label" htmlFor="api-label">Display name <span>optional</span></label>
+              <button className="back-link" onClick={() => setAddMethod("start")} type="button">{t("form.allMethods")}</button>
+              <h3>{t("form.apiKeyTitle")}</h3>
+              <p>{t("form.apiKeyBody")}</p>
+              <label className="field-label" htmlFor="api-label">{t("form.displayName")} <span>{t("common.optional")}</span></label>
               <input id="api-label" onChange={(event) => setLabel(event.target.value)} value={label} />
-              <label className="field-label" htmlFor="api-key">API key</label>
+              <label className="field-label" htmlFor="api-key">{t("account.apiKey")}</label>
               <input autoComplete="off" id="api-key" ref={apiKeyRef} required spellCheck={false} type="password" />
               <div className="modal-actions">
-                <button className="button button-secondary" onClick={() => setAddMethod("start")} type="button">Cancel</button>
+                <button className="button button-secondary" onClick={() => setAddMethod("start")} type="button">{t("common.cancel")}</button>
                 <button className="button button-primary" disabled={busy !== null} type="submit">
                   {busy === "import-key" ? <LoaderCircle className="spin" size={16} /> : <KeyRound size={16} />}
-                  Add account
+                  {t("common.addAccount")}
                 </button>
               </div>
             </form>
@@ -1088,11 +1156,23 @@ export default function App() {
       ) : null}
 
       {dialog === "settings" ? (
-        <Modal onClose={() => setDialog(null)} title="Settings">
+        <Modal onClose={() => setDialog(null)} t={t} title={t("settings.title")}>
           <div className="settings-list">
-            <div><span>Credential store</span><strong>{runtime?.credential_store || "Checking…"}</strong></div>
-            <div><span>Account records</span><strong>{storage?.status === "recovery_required" ? "Recovery required" : "Stored locally"}</strong></div>
-            <p>Credentials, provider responses, and reset-credit identifiers never enter this window.</p>
+            <div className="settings-language">
+              <label htmlFor="language-preference">{t("settings.language")}</label>
+              <select
+                id="language-preference"
+                onChange={(event) => changeLanguage(event.target.value as LanguagePreference)}
+                value={languagePreference}
+              >
+                <option value="system">{t("settings.system")}</option>
+                <option value="en">{t("settings.english")}</option>
+                <option value="zh-CN">{t("settings.chinese")}</option>
+              </select>
+            </div>
+            <div><span>{t("settings.credentialStore")}</span><strong>{runtime ? credentialStoreLabel(runtime.credential_store, t) : t("settings.checking")}</strong></div>
+            <div><span>{t("settings.accountRecords")}</span><strong>{storage?.status === "recovery_required" ? t("settings.recoveryRequired") : t("settings.storedLocally")}</strong></div>
+            <p>{t("settings.secretBoundary")}</p>
           </div>
         </Modal>
       ) : null}
@@ -1103,17 +1183,18 @@ export default function App() {
             setStorageResetConfirmation(false);
             setDialog(null);
           }}
-          title="Recover GSwitch account storage"
+          t={t}
+          title={t("recovery.storageTitle")}
         >
           <div className="confirm-panel">
             <ShieldAlert size={26} />
-            <h3>Keep Codex untouched</h3>
-            <p>GSwitch could not safely read its saved account library. It has not changed your live Codex credential.</p>
-            <p>Resetting preserves the damaged GSwitch file in its private recovery folder and creates an empty GSwitch account library. It does not delete, replace, or log out Codex.</p>
+            <h3>{t("recovery.keepCodex")}</h3>
+            <p>{t("recovery.storageBody")}</p>
+            <p>{t("recovery.storageExplanation")}</p>
             {storageResetConfirmation ? (
               <div className="confirm-copy">
-                <strong>Reset only GSwitch&apos;s saved account library?</strong>
-                <p>You will need to add saved accounts again afterward. Your current Codex sign-in remains unchanged.</p>
+                <strong>{t("recovery.resetQuestion")}</strong>
+                <p>{t("recovery.resetExplanation")}</p>
               </div>
             ) : null}
             <div className="modal-actions">
@@ -1125,11 +1206,11 @@ export default function App() {
                 }}
                 type="button"
               >
-                Cancel
+                {t("common.cancel")}
               </button>
               <button className="button button-danger" disabled={busy !== null} onClick={() => void resetDamagedAccountStore()} type="button">
                 {busy === "reset-damaged-store" ? <LoaderCircle className="spin" size={16} /> : <ShieldAlert size={16} />}
-                {storageResetConfirmation ? "Reset GSwitch storage" : "Continue"}
+                {storageResetConfirmation ? t("recovery.resetStorage") : t("common.continue")}
               </button>
             </div>
           </div>
@@ -1137,13 +1218,13 @@ export default function App() {
       ) : null}
 
       {dialog === "enable-switching" ? (
-        <Modal onClose={() => setDialog(null)} title="Enable account switching">
+        <Modal onClose={() => setDialog(null)} t={t} title={t("switching.title")}>
           <div className="confirm-panel">
             <ShieldAlert size={26} />
-            <h3>Prepare file-backed credentials</h3>
-            <p>GSwitch asks Codex to use its supported file-backed credential store. It will not extract credentials from a keychain or private store.</p>
+            <h3>{t("switching.prepare")}</h3>
+            <p>{t("switching.body")}</p>
             <div className="modal-actions">
-              <button className="button button-secondary" onClick={() => setDialog(null)} type="button">Cancel</button>
+              <button className="button button-secondary" onClick={() => setDialog(null)} type="button">{t("common.cancel")}</button>
               <button
                 className="button button-primary"
                 disabled={busy !== null}
@@ -1151,13 +1232,13 @@ export default function App() {
                   void runTask("enable-switching", api.enableAccountSwitching).then((enabled) => {
                     if (enabled) {
                       setDialog(null);
-                      setNotice({ kind: "success", text: "Account switching is ready." });
+                      setNotice({ kind: "success", text: t("notice.switchingReady") });
                     }
                   })
                 }
                 type="button"
               >
-                Enable switching
+                {t("switching.enable")}
               </button>
             </div>
           </div>
@@ -1165,13 +1246,13 @@ export default function App() {
       ) : null}
 
       {dialog === "recover-switch" ? (
-        <Modal onClose={() => setDialog(null)} title="Recover protected switch">
+        <Modal onClose={() => setDialog(null)} t={t} title={t("recovery.switchTitle")}>
           <div className="confirm-panel">
             <CircleAlert size={26} />
-            <h3>Resolve the incomplete switch first</h3>
-            <p>GSwitch restores credentials only when the live file still matches its own previous write. If another program changed it, recovery stops safely.</p>
+            <h3>{t("recovery.switchHeading")}</h3>
+            <p>{t("recovery.switchBody")}</p>
             <div className="modal-actions">
-              <button className="button button-secondary" onClick={() => setDialog(null)} type="button">Cancel</button>
+              <button className="button button-secondary" onClick={() => setDialog(null)} type="button">{t("common.cancel")}</button>
               <button
                 className="button button-primary"
                 disabled={busy !== null}
@@ -1179,13 +1260,13 @@ export default function App() {
                   void runVoidTask("recover-switch", api.recoverPendingSwitch).then((recovered) => {
                     if (recovered) {
                       setDialog(null);
-                      setNotice({ kind: "success", text: "The protected switch was recovered." });
+                      setNotice({ kind: "success", text: t("notice.switchRecovered") });
                     }
                   })
                 }
                 type="button"
               >
-                Recover safely
+                {t("recovery.recoverSafely")}
               </button>
             </div>
           </div>
@@ -1193,14 +1274,14 @@ export default function App() {
       ) : null}
 
       {dialog === "recover-reset-credit" ? (
-        <Modal onClose={() => setDialog(null)} title="Recover reset credit">
+        <Modal onClose={() => setDialog(null)} t={t} title={t("recovery.resetTitle")}>
           <div className="confirm-panel">
             <CircleAlert size={26} />
-            <h3>Finish the original request safely</h3>
-            <p>A previous reset-credit request did not finish locally. GSwitch retained its original provider credit and idempotency key in private Rust storage.</p>
-            <p>Recovery resends only that exact request. It never chooses a replacement credit or starts a new reset.</p>
+            <h3>{t("recovery.resetHeading")}</h3>
+            <p>{t("recovery.resetBody")}</p>
+            <p>{t("recovery.pendingResetExplanation")}</p>
             <div className="modal-actions">
-              <button className="button button-secondary" onClick={() => setDialog(null)} type="button">Cancel</button>
+              <button className="button button-secondary" onClick={() => setDialog(null)} type="button">{t("common.cancel")}</button>
               <button
                 className="button button-primary"
                 disabled={busy !== null}
@@ -1208,7 +1289,7 @@ export default function App() {
                 type="button"
               >
                 {busy === "recover-reset-credit" ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />}
-                Recover original request
+                {t("recovery.originalRequest")}
               </button>
             </div>
           </div>
@@ -1221,32 +1302,33 @@ export default function App() {
             setResetConfirmation(false);
             setDialog(null);
           }}
-          title={"Reset credits · " + resetAccount.label}
+          t={t}
+          title={t("reset.title", { name: resetAccount.label })}
         >
           <div className="reset-details">
             <p>
-              {resetCredits?.available_count ?? 0} available. GSwitch refreshes this account, selects the earliest eligible credit in Rust, and never exposes a credit ID here.
+              {t("reset.available", { count: formatNumber(resetCredits?.available_count ?? 0, locale.formatLocale) })}
             </p>
             {resetCredits?.details_available ? (
               <ul className="credit-list">
                 {resetCredits.usable_credits.map((credit, index) => (
                   <li key={String(credit.expires_at ?? "unknown") + "-" + index}>
-                    <span>Eligible credit {index + 1}</span>
-                    <strong>{credit.expires_at ? "Expires " + formatDate(credit.expires_at) : "Expiry unknown"}</strong>
+                    <span>{t("reset.eligible", { number: formatNumber(index + 1, locale.formatLocale) })}</span>
+                    <strong>{credit.expires_at ? t("reset.expires", { time: formatDateTimeWithRelative(credit.expires_at, locale.formatLocale) }) : t("reset.expiryUnknown")}</strong>
                   </li>
                 ))}
               </ul>
             ) : (
-              <div className="inline-warning"><CircleAlert size={17} />Details are unavailable, so GSwitch cannot safely redeem a reset credit.</div>
+              <div className="inline-warning"><CircleAlert size={17} />{t("reset.detailsUnavailable")}</div>
             )}
             {resetConfirmation ? (
-              <div className="confirm-copy"><strong>Use the earliest eligible reset credit?</strong><p>This consumes one provider credit and cannot be undone.</p></div>
+              <div className="confirm-copy"><strong>{t("reset.question")}</strong><p>{t("reset.warning")}</p></div>
             ) : null}
             <div className="modal-actions">
-              <button className="button button-secondary" onClick={() => setDialog(null)} type="button">Cancel</button>
+              <button className="button button-secondary" onClick={() => setDialog(null)} type="button">{t("common.cancel")}</button>
               <button className="button button-danger" disabled={!resetCredits?.can_redeem || busy !== null} onClick={() => void redeemReset()} type="button">
                 {busy?.startsWith("reset:") ? <LoaderCircle className="spin" size={16} /> : <Zap size={16} />}
-                {resetConfirmation ? "Use earliest credit" : "Use reset credit"}
+                {resetConfirmation ? t("reset.useEarliest") : t("reset.use")}
               </button>
             </div>
           </div>
@@ -1254,27 +1336,27 @@ export default function App() {
       ) : null}
 
       {dialog === "remove" && removeAccount ? (
-        <Modal onClose={() => setDialog(null)} title={"Remove " + removeAccount.label + "?"}>
+        <Modal onClose={() => setDialog(null)} t={t} title={t("remove.title", { name: removeAccount.label })}>
           <div className="confirm-panel">
             <Trash2 size={26} />
-            <h3>Remove this saved account from GSwitch?</h3>
-            <p>This does not log out or change the live Codex account.</p>
+            <h3>{t("remove.heading")}</h3>
+            <p>{t("remove.body")}</p>
             <div className="modal-actions">
-              <button className="button button-secondary" onClick={() => setDialog(null)} type="button">Cancel</button>
-              <button className="button button-danger" disabled={busy !== null} onClick={() => void removeSavedAccount()} type="button"><Trash2 size={16} />Remove account</button>
+              <button className="button button-secondary" onClick={() => setDialog(null)} type="button">{t("common.cancel")}</button>
+              <button className="button button-danger" disabled={busy !== null} onClick={() => void removeSavedAccount()} type="button"><Trash2 size={16} />{t("common.removeAccount")}</button>
             </div>
           </div>
         </Modal>
       ) : null}
 
       {dialog === "wake" && wake ? (
-        <Modal onClose={() => setDialog(null)} title="Wake">
+        <Modal onClose={() => setDialog(null)} t={t} title={t("wake.title")}>
           <div className="wake-panel">
             <div className="wake-status">
               {wake.status === "running" ? <LoaderCircle className="spin" size={21} /> : <CircleCheck size={21} />}
               <div>
-                <strong>{wake.status === "running" ? "Wake is running safely" : "Wake " + wake.status}</strong>
-                <p>{wake.current_account_id ? "One isolated account is being processed. The live Codex credential is untouched." : "Each result is shown separately; failed or skipped accounts do not stop the rest."}</p>
+                <strong>{wake.status === "running" ? t("wake.running") : t("wake.status", { status: wakeStatusLabel(wake.status, t) })}</strong>
+                <p>{wake.current_account_id ? t("wake.oneProcessing") : t("wake.perAccount")}</p>
               </div>
             </div>
             <ul className="wake-results">
@@ -1283,24 +1365,24 @@ export default function App() {
                   <span className={"wake-result-dot wake-" + result.result} />
                   <div>
                     <strong>{result.label}</strong>
-                    <p>{result.message}</p>
+                    <p>{wakeResultLabel(result.result, t)}</p>
                     {result.result === "needs_model_selection" && result.available_models?.length ? (
                       <div className="model-choices">
                         {result.available_models.map((model) => (
-                          <button className="button button-secondary" key={model} onClick={() => void startWake(result.account_id, model)} type="button">Use {model}</button>
+                          <button className="button button-secondary" key={model} onClick={() => void startWake(result.account_id, model)} type="button">{t("wake.useModel", { model })}</button>
                         ))}
                       </div>
                     ) : null}
                   </div>
                 </li>
               ))}
-              {wake.status === "running" && wake.results.length === 0 ? <li className="wake-empty">Preparing an isolated Codex session…</li> : null}
+              {wake.status === "running" && wake.results.length === 0 ? <li className="wake-empty">{t("wake.preparing")}</li> : null}
             </ul>
             <div className="modal-actions">
               {wake.status === "running" ? (
-                <button className="button button-secondary" onClick={() => void runVoidTask("cancel-wake", () => api.cancelWake(wake.id), false)} type="button">Cancel remaining</button>
+                <button className="button button-secondary" onClick={() => void runVoidTask("cancel-wake", () => api.cancelWake(wake.id), false)} type="button">{t("wake.cancelRemaining")}</button>
               ) : null}
-              <button className="button button-primary" onClick={() => setDialog(null)} type="button">Done</button>
+              <button className="button button-primary" onClick={() => setDialog(null)} type="button">{t("common.done")}</button>
             </div>
           </div>
         </Modal>

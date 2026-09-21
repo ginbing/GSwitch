@@ -148,7 +148,33 @@ function prepareDefaults() {
 describe("GSwitch account workspace", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    window.localStorage.clear();
+    Object.defineProperty(window.navigator, "language", { configurable: true, value: "en-US" });
     prepareDefaults();
+  });
+
+  it("uses the Simplified Chinese system locale and keeps the main account flow localized", async () => {
+    Object.defineProperty(window.navigator, "language", { configurable: true, value: "zh-CN" });
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "已保存 0 个账户" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "添加账户" }));
+    expect(await screen.findByRole("dialog", { name: "添加 Codex 账户" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /粘贴 auth JSON/ })).toBeInTheDocument();
+  });
+
+  it("applies and remembers a manual language choice immediately", async () => {
+    const first = render(<App />);
+    await screen.findByRole("heading", { name: "0 saved accounts" });
+
+    await userEvent.click(screen.getByRole("button", { name: "Open settings" }));
+    await userEvent.selectOptions(screen.getByLabelText("Language"), "zh-CN");
+    expect(screen.getByRole("button", { name: "添加账户" })).toBeInTheDocument();
+    expect(window.localStorage.getItem("gswitch.language")).toBe("zh-CN");
+
+    first.unmount();
+    render(<App />);
+    expect(await screen.findByRole("heading", { name: "已保存 0 个账户" })).toBeInTheDocument();
   });
 
   it("guides a first-time user to an explicit import or manual add", async () => {
