@@ -821,13 +821,14 @@ mod tests {
         let root = temp_dir("encrypted");
         let cockpit = root.join("cockpit");
         write_index(&cockpit, "account-1", "person@example.com", "team");
-        let mut key = [0u8; 32];
-        key[..16].copy_from_slice(Uuid::new_v4().as_bytes());
-        key[16..].copy_from_slice(Uuid::new_v4().as_bytes());
-        fs::write(cockpit.join(COCKPIT_KEY_NAME), STANDARD.encode(key)).expect("key");
+        let key_uuid_a = Uuid::new_v4();
+        let key_uuid_b = Uuid::new_v4();
+        let mut key = Vec::with_capacity(32);
+        key.extend_from_slice(key_uuid_a.as_bytes());
+        key.extend_from_slice(key_uuid_b.as_bytes());
+        fs::write(cockpit.join(COCKPIT_KEY_NAME), STANDARD.encode(&key)).expect("key");
         let nonce_uuid = Uuid::new_v4();
-        let mut nonce = [0u8; 12];
-        nonce.copy_from_slice(&nonce_uuid.as_bytes()[..12]);
+        let nonce = nonce_uuid.as_bytes()[..12].to_vec();
         let plaintext = credential("user", "workspace", "person@example.com", "access-secret");
         let cipher = Aes256Gcm::new_from_slice(&key).expect("cipher");
         let ciphertext = cipher
