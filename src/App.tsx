@@ -76,6 +76,7 @@ type Dialog =
   | null;
 
 type AddMethod = "start" | "oauth" | "json" | "api-key" | "migration";
+type AccountBusyAction = "refresh" | "wake" | "switch";
 
 interface Notice {
   kind: "success" | "error" | "info";
@@ -164,6 +165,24 @@ function quotaRefreshMessage(t: Translator, error: unknown) {
     return t("quota.runningCodex");
   }
   return undefined;
+}
+
+function accountGridHasGlobalMutation(busy: string | null) {
+  if (!busy) {
+    return false;
+  }
+
+  return [
+    "import",
+    "migration-import",
+    "import-json",
+    "import-key",
+    "save-current",
+    "enable-switching",
+    "recover-switch",
+    "recover-reset-credit",
+    "reset-damaged-store",
+  ].includes(busy) || busy.startsWith("switch:") || busy.startsWith("reset:") || busy.startsWith("remove:");
 }
 
 function primaryWindow(quota: QuotaView | undefined, kind: "five_hour" | "weekly") {
@@ -339,7 +358,8 @@ function AccountCard({
   account,
   quota,
   active,
-  busy,
+  busyAction,
+  globalBusy,
   onSwitch,
   onWake,
   onRefresh,
@@ -355,7 +375,8 @@ function AccountCard({
   account: AccountView;
   quota?: QuotaView;
   active: boolean;
-  busy: boolean;
+  busyAction?: AccountBusyAction;
+  globalBusy: boolean;
   onSwitch: () => void;
   onWake: () => void;
   onRefresh: () => void;
@@ -372,6 +393,7 @@ function AccountCard({
   const isApiKey = account.kind === "api_key";
   const primaryName = accountPrimaryName(account);
   const secondaryName = accountSecondaryName(account, primaryName, t);
+  const controlsBusy = globalBusy || busyAction !== undefined;
 
   return (
     <article className={"account-card" + (active ? " account-active" : "") + (selected ? " account-selected" : "")}>
@@ -403,7 +425,7 @@ function AccountCard({
             <div className="card-menu-popover">
               <button
                 aria-label={t("account.remove", { name: primaryName })}
-                disabled={active || busy}
+                disabled={active || controlsBusy}
                 onClick={onRemove}
                 type="button"
               >
@@ -456,33 +478,33 @@ function AccountCard({
         <button
           aria-label={t("account.refresh", { name: primaryName })}
           className="icon-button"
-          disabled={busy || isApiKey}
+          disabled={controlsBusy || isApiKey}
           onClick={onRefresh}
           type="button"
         >
-          <RefreshCw className={busy ? "spin" : ""} size={17} />
+          <RefreshCw className={busyAction === "refresh" ? "spin" : ""} size={17} />
         </button>
         <div className="card-footer-actions">
           {!isApiKey ? (
             <button
               aria-label={t("account.wake", { name: primaryName })}
               className="button button-secondary"
-              disabled={busy}
+              disabled={controlsBusy}
               onClick={onWake}
               type="button"
             >
-              <Zap size={15} />
+              {busyAction === "wake" ? <LoaderCircle className="spin" size={15} /> : <Zap size={15} />}
               {t("common.wake")}
             </button>
           ) : null}
           <button
             aria-label={t(active ? "account.current" : "account.switch", { name: primaryName })}
             className="button button-primary"
-            disabled={busy || active}
+            disabled={controlsBusy || active}
             onClick={onSwitch}
             type="button"
           >
-            {busy ? <LoaderCircle className="spin" size={15} /> : <ArrowRightLeft size={15} />}
+            {busyAction === "switch" ? <LoaderCircle className="spin" size={15} /> : <ArrowRightLeft size={15} />}
             {active ? t("common.current") : t("common.switch")}
           </button>
         </div>
@@ -593,6 +615,7 @@ export default function App() {
   const [pendingResetCredit, setPendingResetCredit] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
+  const [accountBusy, setAccountBusy] = useState<Record<string, AccountBusyAction>>({});
   const [dialog, setDialog] = useState<Dialog>(null);
   const [addMethod, setAddMethod] = useState<AddMethod>("start");
   const [selectionMode, setSelectionMode] = useState(false);
@@ -617,6 +640,7 @@ export default function App() {
   const dismissedUpdateVersions = useRef(new Set<string>());
   const updateCheckInFlight = useRef(false);
   const quotaRefreshes = useRef(new Map<string, Promise<QuotaView>>());
+  const accountOperations = useRef(new Set<string>());
   const [label, setLabel] = useState("");
   const locale = useMemo(() => resolveLocale(languagePreference), [languagePreference]);
   const t = useMemo(() => createTranslator(locale.language), [locale.language]);
@@ -778,6 +802,31 @@ export default function App() {
       }
     },
     [loadSnapshot, t],
+  );
+
+  const runAccountTask = useCallback(
+    async <T,>(accountId: string, action: Exclude<AccountBusyAction, "switch">, task: () => Promise<T>): Promise<T | undefined> => {
+      if (accountOperations.current.has(accountId)) {
+        return undefined;
+      }
+
+      accountOperations.current.add(accountId);
+      setAccountBusy((current) => ({ ...current, [accountId]: action }));
+      try {
+        return await task();
+      } catch (error) {
+        setNotice({ kind: "error", text: friendlyError(t, error) });
+        return undefined;
+      } finally {
+        accountOperations.current.delete(accountId);
+        setAccountBusy((current) => {
+          const remaining = { ...current };
+          delete remaining[accountId];
+          return remaining;
+        });
+      }
+    },
+    [t],
   );
 
   const importPaths = useCallback(
@@ -1166,19 +1215,16 @@ export default function App() {
   };
 
   const refreshAccount = async (account: AccountView) => {
-    const result = await runTask("refresh:" + account.id, () => requestQuotaRefresh(account.id));
+    const result = await runAccountTask(account.id, "refresh", () => requestQuotaRefresh(account.id));
     if (result) {
       setNotice({ kind: "success", text: t("notice.quotaRefreshed", { name: account.label }) });
     }
   };
 
   const startWake = async (accountId?: string) => {
-    const key = accountId ? "wake:" + accountId : "wake-all";
-    const result = await runTask(
-      key,
-      () => accountId ? api.startWake(accountId) : api.startWakeAll(),
-      false,
-    );
+    const result = accountId
+      ? await runAccountTask(accountId, "wake", () => api.startWake(accountId))
+      : await runTask("wake-all", api.startWakeAll, false);
     if (result) {
       setWake({ id: result.operation_id, status: "running", results: [] });
       setDialog("wake");
@@ -1306,6 +1352,7 @@ export default function App() {
   ).length;
   const resetCredits = resetAccount ? quotas[resetAccount.id]?.snapshot?.reset_credits : undefined;
   const storageRecovery = storage?.status === "recovery_required";
+  const accountGridBusy = accountGridHasGlobalMutation(busy);
 
   const safetyNotice = useMemo(() => {
     if (storage?.status === "recovery_required") {
@@ -1544,8 +1591,9 @@ export default function App() {
                 <AccountCard
                   account={account}
                   active={account.active || account.id === currentActiveId}
-                  busy={busy !== null}
+                  busyAction={accountBusy[account.id] ?? (busy === "switch:" + account.id ? "switch" : undefined)}
                   formatLocale={locale.formatLocale}
+                  globalBusy={accountGridBusy}
                   key={account.id}
                   onRefresh={() => void refreshAccount(account)}
                   onRemove={() => {
