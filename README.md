@@ -1,5 +1,7 @@
 # GSwitch
 
+<img src="./assets/gswitch-icon.svg" width="64" alt="GSwitch mark">
+
 A simple and reliable Codex account switcher.
 
 GSwitch is for people who use more than one Codex account and want an easy way

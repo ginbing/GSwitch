@@ -1322,12 +1322,12 @@ export default function App() {
     <main className="app-shell">
       <header className="toolbar">
         <div className="brand-lockup">
-          <div className="brand-mark" aria-hidden="true"><ArrowRightLeft size={20} strokeWidth={2.4} /></div>
-          <div>
+          <img alt="" aria-hidden="true" className="brand-mark" src="/gswitch-icon.svg" />
+          <div className="brand-copy">
             <h1>GSwitch</h1>
-            <p>
+            <p className="brand-status">
               <span className={live?.status === "ready" ? "status-dot status-ready" : "status-dot"} />
-              {liveAccountLabel}
+              <span className="brand-status-label">{liveAccountLabel}</span>
             </p>
           </div>
         </div>
