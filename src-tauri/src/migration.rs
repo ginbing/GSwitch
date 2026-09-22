@@ -8,7 +8,6 @@ use aes_gcm::{aead::Aead, Aes256Gcm, KeyInit, Nonce};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 
 use crate::{
     accounts::AppState,
@@ -674,10 +673,7 @@ fn candidate_id(
     let identity = stable_identity
         .and_then(|identity| serde_json::to_string(identity).ok())
         .unwrap_or_else(|| "unsupported".to_string());
-    format!(
-        "{:x}",
-        Sha256::digest(format!("{source_name}\n{record_id}\n{identity}").as_bytes())
-    )
+    identity::sha256_hex(format!("{source_name}\n{record_id}\n{identity}").as_bytes())
 }
 
 #[cfg(test)]
