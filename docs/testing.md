@@ -59,6 +59,20 @@ The CI workflow has read-only repository permissions. A passing CI run proves
 that the checked-in revision passed those commands on those runners; it does
 not publish or release anything.
 
+CI also runs GitHub dependency review on pull requests (moderate-or-higher
+advisories in runtime, development, or unknown scopes) and RustSec's
+`cargo-audit` against `src-tauri/Cargo.lock`. The dependency check deliberately
+does not impose a license policy. Both checks use a read-only token; the
+release workflow grants write access only to its draft-upload job. External
+Actions use full commit SHAs with version comments. Rust and Node versions are
+owned by `rust-toolchain.toml` and `.node-version`; pnpm is owned by
+`package.json`'s `packageManager`.
+
+GitHub CodeQL default setup, rather than a repository workflow, scans Actions,
+JavaScript/TypeScript, and Rust. Its effective language list and the
+repository's SHA-pinning policy must be read from GitHub when making a claim
+about current protection; these settings are not inferred from this document.
+
 ## Required regression areas
 
 Credential and state work should cover the exact affected boundary, including
