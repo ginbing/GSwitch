@@ -38,7 +38,19 @@ pub fn derive_identity(kind: &AccountKind, credential: &Value) -> Result<Account
 pub fn document_fingerprint(credential: &Value) -> Result<String, String> {
     let bytes = serde_json::to_vec(credential)
         .map_err(|_| "Unable to fingerprint Codex credentials".to_string())?;
-    Ok(format!("{:x}", Sha256::digest(bytes)))
+    Ok(sha256_hex(&bytes))
+}
+
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+
+    let digest = Sha256::digest(bytes);
+    let mut encoded = String::with_capacity(digest.len() * 2);
+    for byte in digest.iter() {
+        encoded.push(HEX[(byte >> 4) as usize] as char);
+        encoded.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    encoded
 }
 
 pub fn email_from_credential(credential: &Value) -> Option<String> {
@@ -99,9 +111,8 @@ fn api_key_identity(credential: &Value) -> Result<AccountIdentity, String> {
         .filter(|key| !key.trim().is_empty())
         .ok_or_else(|| "The API-key credential does not contain an API key".to_string())?;
 
-    let digest = Sha256::digest(key.as_bytes());
     Ok(AccountIdentity::ApiKey {
-        fingerprint: format!("{digest:x}"),
+        fingerprint: sha256_hex(key.as_bytes()),
     })
 }
 
@@ -167,5 +178,13 @@ mod tests {
         };
         assert_eq!(fingerprint.len(), 64);
         assert!(!fingerprint.contains("sk-secret"));
+    }
+
+    #[test]
+    fn sha256_hex_is_lowercase_and_stable() {
+        assert_eq!(
+            sha256_hex(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
     }
 }
