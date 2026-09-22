@@ -14,8 +14,9 @@ the user's live Codex identity.
 1. Create an isolated GSwitch-owned `CODEX_HOME`.
 2. Ask the official Codex App Server to start ChatGPT login.
 3. Open or copy the returned HTTPS authorization URL.
-4. Wait for the matching completion event, then confirm the account through
-   Codex and read the complete resulting credential document.
+4. Wait for the matching completion event, read the complete resulting
+   credential document, and use its fresh access-token snapshot for the
+   read-only account metadata check. Do not request a proactive refresh.
 5. Persist the verified profile only after its identity is known.
 
 Cancellation and timeout end the isolated login. OAuth is the default login
@@ -24,19 +25,80 @@ experience; GSwitch does not implement a parallel OAuth protocol.
 ### JSON or file import
 
 A complete Codex auth document is migration input, not an editable GSwitch
-schema. Preserve unknown fields, validate it through an isolated official Codex
-runtime, and require the validated identity to match the imported document.
+schema. Derive its stable identity locally, preserve unknown fields, and use
+the existing access-token snapshot for the current ChatGPT account metadata
+check. Require the returned workspace entry to match the imported identity.
+Only an authentication-specific failure for an inactive ChatGPT identity may
+fall back to the isolated official Codex runtime; network, timeout, 5xx, and
+parse failures never trigger managed refresh. A current externally owned
+identity gets one live-credential reread/retry and never enters that fallback.
 
-Pasted JSON is transient form input and is cleared after submission. A selected
-or dropped file is read by Rust; its contents are not returned to the WebView.
+Pasted JSON is transient form input and is cleared after submission. Selected
+or dropped files are read by Rust; their contents are not returned to the
+WebView. After successful saves, the normal background quota projection path
+refreshes each imported ChatGPT account without making the batch wait for
+network requests.
 
 GSwitch can import a complete official Codex auth document and explicitly
-user-selected public exports from Cockpit Tools, Sub2API, and CPA. It never
-searches for, reads, or decrypts Cockpit Tools private application storage.
+user-selected public exports from Cockpit Tools, Sub2API, and CPA. It does not
+inspect another application's account storage automatically. The Add Account
+dialog prioritizes **Import existing** with one-shot **Find on this computer**
+and **Choose files** actions, then **Add new** with official Codex sign-in;
+paste JSON and API-key intake remain under Other methods. After the user starts
+Find on this computer, Rust reads only the documented Official Codex profile and
+Cockpit production/legacy roots (`codex_accounts.json`, direct detail files,
+and the existing secure-storage key). A user-selected alternate folder is
+bounded to the same allowlist. The preview contains only email, workspace or
+account name, local plan, source, and New/Already/Unsupported state. Already
+saved identities are disabled and never replaced.
+
+The local migration decoder accepts only the current Cockpit version-1
+`codex`/`AES-256-GCM` envelope with its existing 32-byte key and 12-byte nonce,
+or an unencrypted known Codex record. It never creates, rotates, repairs, or
+rewrites Cockpit files. Confirming a preview rereads the selected records and
+rederives identity; a changed identity makes the preview stale. Supported
+records are reduced to the minimum complete Codex credential shape and then
+sent through the normal snapshot-first intake path. There is no startup scan,
+watcher, scheduler, plugin source, or generic search surface.
+
+The native picker and drop handler accept one or more files in one bounded
+operation: at most 64 files and 64 MiB in aggregate, with the existing 10 MiB
+per-file limit. Rust reads and parses all readable files before starting
+credential validation, deduplicates candidates across the selection and saved
+profiles by `AccountIdentity`, then validates candidates sequentially. The
+result reports imported accounts plus duplicate, unsupported, and failed
+counts; it does not expose file paths, credential material, or provider errors.
 Portable exports are converted only to the minimum complete Codex credential
 shape needed for validation. Cockpit-specific private metadata such as 2FA
 secrets, passwords, phone fields, notes, labels, tags, and mail settings is
 dropped rather than copied into GSwitch.
+
+### Portable GSwitch export
+
+Selection mode is the normal way to act on several saved accounts. The
+WebView holds only selected account IDs; Rust verifies those IDs under the
+operation lock, collects the matching saved snapshots, opens the native save
+dialog, and writes one explicitly user-authorized portable document. It returns
+only an aggregate count or cancellation state.
+
+The version-1 format is a single JSON object:
+
+```json
+{"format":"gswitch-accounts","version":1,"accounts":[...]}
+```
+
+Each entry contains the complete credential document and optional label or
+workspace display metadata. It excludes account IDs, account kind, email, plan,
+identity, quota/cache data, reset-credit state, Wake state, recovery records,
+settings, paths, updater data, and source metadata. Before the native save
+dialog, the UI makes clear that the file is unencrypted. On Unix the write uses
+private file permissions; users still choose a private location and remain
+responsible for deleting the export when finished.
+
+The existing bounded Rust batch parser recognizes this format by its explicit
+`format` field, accepts only version 1, and fails closed for other versions. It
+then uses the normal identity deduplication and validation path. Filename or
+extension never selects a parser.
 
 ### API key
 
@@ -84,10 +146,13 @@ profile cannot be removed until another identity is active.
 
 ## Quota
 
-Quota is read through the official Codex App Server in an isolated account
-profile. GSwitch normalizes the Codex bucket into five-hour and weekly windows
-by the durations supplied by the provider, while retaining other buckets as
-other. Missing or malformed values remain unknown.
+Quota is read from ChatGPT's current read-only usage endpoint with the live
+access-token snapshot when Codex is running, or the saved credential snapshot
+when it is not. GSwitch sends no App Server request and writes no credential
+for a successful ordinary read. It normalizes the provider's primary,
+secondary, and additional buckets into five-hour, weekly, and other windows by
+the durations supplied by the provider; missing or malformed values remain
+unknown.
 
 The supported minimum is Codex 0.144.5. GSwitch sends its rate-limit request
 with a null parameter payload for that version and retries once with an empty
@@ -95,12 +160,26 @@ object only when a newer server explicitly rejects the parameter shape. It
 never treats a cached `account/read` result as proof that a credential can reach
 the provider.
 
-An isolated read can rotate credentials. GSwitch verifies the returned document
-still belongs to the saved identity, then atomically stores it with the quota
-snapshot; a failed store write retains protected recovery data rather than
-discarding the refreshed credential. A snapshot is fresh for five minutes and
-then visibly stale. API-key accounts show quota as not applicable. Quota is
-operational account state, not usage analytics.
+If the read-only endpoint rejects an inactive saved credential with an
+authentication response, GSwitch may fall back to the existing isolated App
+Server refresh path, verifies the returned document still belongs to the saved
+identity, and atomically stores it with the quota snapshot. A successful
+read-only result stores only the quota projection. A snapshot is fresh for five
+minutes and then visibly stale. API-key accounts show quota as not applicable.
+Quota is operational account state, not usage analytics.
+
+The workspace renders its cached quota immediately and refreshes unknown or
+stale ChatGPT accounts in the background. A manual refresh joins that account's
+existing request rather than starting another one. Adding, importing, or saving
+an account follows the same refresh path. When a running Codex instance is
+identified as using the account, GSwitch rereads the live file-backed
+credential immediately before the request and retries once only when the same
+identity has a newer credential. If the active identity cannot be safely
+identified, the cached projection remains and the UI offers a retry. A 429,
+transport, TLS, DNS, timeout, parse, or provider-server failure never starts a
+managed refresh. Reset-credit detail failure does not erase a successful usage
+result; its detailed rows remain unavailable until a later successful detail
+read.
 
 ## Reset credits
 
@@ -139,31 +218,35 @@ Wake deliberately starts an eligible account's five-hour window with one small
 Codex request. It is not a health check, router, load balancer, account rotation,
 or keep-warm service.
 
-Each Wake runs with the saved account in an isolated `CODEX_HOME` and an empty
-workspace. It does not replace the live credential or load the user's project,
-MCP servers, Skills, or normal Codex settings. The operation:
+Wake reads quota first through GSwitch's narrow ChatGPT backend client. It
+reports an already-active five-hour window or unavailable ordinary capacity
+without sending a request, and it never uses Reserve or reset credits. A running
+Codex process never makes an account ineligible: a matching active identity uses
+one live access-token snapshot, a different identity uses the saved snapshot,
+and an unidentifiable active process uses the saved snapshot without a managed
+refresh. GSwitch never writes live `auth.json`.
 
-- refreshes quota first and skips a window already active;
-- refuses to spend reset credits or Reserve when ordinary quota is exhausted;
-- skips an account when an external Codex process is using that same identity,
-  or when that identity cannot be checked safely;
-- automatically selects only `gpt-5.6-luna` or `gpt-5.4-mini` when that
-  account advertises a visible text model with the normal (`standard`) service
-  tier; otherwise it asks the user to choose from eligible models;
-- uses the lowest supported reasoning effort and the normal service tier;
-- creates one ephemeral read-only thread with a minimal prompt, no approval,
-  and no retry; the isolated profile has no user MCP servers, Skills, or
-  project configuration, and the instruction asks Codex not to inspect files
-  or use tools;
-- confirms the result from refreshed quota when possible;
-- preserves refreshed credentials only if the identity still matches.
+An authentication failure for a definitely inactive account may use one
+isolated official Codex App Server refresh. That profile is identity-checked
+before its refreshed credential is stored. An active or uncertain account never
+enters this fallback. If a matching active token changes before Wake sends, it
+rereads the live token once and repeats only the quota preflight.
 
-Wake All is sequential, cancellable, and returns one result per account. A
-single account failure does not corrupt or silently relabel another account.
-After a turn begins, an uncertain result is reported without retrying and any
-refreshed credential is persisted before the isolated profile is cleaned up.
-Wake is user-triggered; there is no cron, background schedule, automatic
-rotation, history dashboard, or job-management surface.
+The request is one direct `POST /codex/responses` call through the current
+ChatGPT Codex route: `gpt-5.6-luna`, standard tier, no reasoning, a single
+`OK` text input, no tools, no files or project context, and no stored response.
+There is no generic Responses client, proxy, second App Server, or retry after
+the request may have reached ChatGPT. Wake rereads quota afterward only to
+confirm the new window; an unavailable confirmation is reported as sent but not
+confirmed.
+
+Wake All and selected-account Wake are sequential, cancellable, and return one
+result per eligible ChatGPT account:
+Started, Already active, No ordinary capacity, Needs sign-in, Sent not
+confirmed, Failed, or Cancelled. A single account failure does not corrupt or
+silently relabel another account. Wake is user-triggered; there is no cron,
+background schedule, automatic rotation, history dashboard, or job-management
+surface.
 
 ## Recovery
 

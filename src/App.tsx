@@ -7,6 +7,7 @@ import {
   CircleAlert,
   CircleCheck,
   Copy,
+  Download,
   FileJson,
   FolderOpen,
   Globe2,
@@ -47,6 +48,8 @@ import {
 import type {
   AccountView,
   LiveAccountView,
+  MigrationCandidate,
+  MigrationPreview,
   OAuthLoginStart,
   OAuthLoginStatus,
   QuotaView,
@@ -66,10 +69,11 @@ type Dialog =
   | "storage-recovery"
   | "reset"
   | "remove"
+  | "export"
   | "wake"
   | null;
 
-type AddMethod = "start" | "oauth" | "json" | "api-key";
+type AddMethod = "start" | "oauth" | "json" | "api-key" | "migration";
 
 interface Notice {
   kind: "success" | "error" | "info";
@@ -93,7 +97,7 @@ function fileFilters(t: Translator) {
 
 function friendlyError(t: Translator, error: unknown, fallback = t("error.actionIncomplete")) {
   const message = String(error);
-  if (/Codex is running|external Codex/i.test(message)) {
+  if (/Quit Codex|Codex is running|external Codex|Unable to reliably inspect/i.test(message)) {
     return t("error.quitCodex");
   }
   if (/recovery/i.test(message)) {
@@ -102,10 +106,29 @@ function friendlyError(t: Translator, error: unknown, fallback = t("error.action
   if (/file-backed|file store|required/i.test(message)) {
     return t("error.enableFileStore");
   }
+  if (/No account files were selected/i.test(message)) {
+    return t("error.importNoFiles");
+  }
+  if (/migration preview is stale|preview is no longer importable|scan again/i.test(message)) {
+    return t("error.migrationStale");
+  }
+  if (/selected Cockpit folder could not be read|selected Cockpit folder is empty/i.test(message)) {
+    return t("error.migrationFolder");
+  }
+  if (/no more than 64|64 MiB batch limit/i.test(message)) {
+    return t("error.importBatchLimit");
+  }
   if (/No supported|not valid JSON|Invalid auth/i.test(message)) {
     return t("error.importUnsupported");
   }
   return `${fallback} ${t("error.currentUnchanged")}`;
+}
+
+function quotaRefreshMessage(t: Translator, error: unknown) {
+  if (/currently using this account|cannot safely identify its active account/i.test(String(error))) {
+    return t("quota.runningCodex");
+  }
+  return undefined;
 }
 
 function primaryWindow(quota: QuotaView | undefined, kind: "five_hour" | "weekly") {
@@ -117,6 +140,40 @@ function primaryWindow(quota: QuotaView | undefined, kind: "five_hour" | "weekly
 
 function accountPlan(account: AccountView, t: Translator) {
   return account.kind === "api_key" ? t("account.apiKey") : account.plan_type || t("account.chatGpt");
+}
+
+function migrationSourceLabel(candidate: MigrationCandidate, t: Translator) {
+  return candidate.source === "official_codex"
+    ? t("migration.sourceOfficial")
+    : t("migration.sourceCockpit");
+}
+
+function migrationStateLabel(candidate: MigrationCandidate, t: Translator) {
+  if (candidate.state === "new") return t("migration.stateNew");
+  if (candidate.state === "already_present") return t("migration.stateAlready");
+  return t("migration.stateUnsupported");
+}
+
+function accountPrimaryName(account: AccountView) {
+  if (account.kind === "chat_gpt" && account.email?.trim()) {
+    return account.email.trim();
+  }
+  return account.label;
+}
+
+function accountSecondaryName(account: AccountView, primary: string, t: Translator) {
+  if (account.kind === "api_key") {
+    return t("account.storedLocally");
+  }
+  const workspace = account.workspace_name?.trim();
+  if (workspace && workspace !== primary) {
+    return workspace;
+  }
+  const legacyLabel = account.label.trim();
+  if (!workspace && legacyLabel && legacyLabel !== primary) {
+    return legacyLabel;
+  }
+  return undefined;
 }
 
 function credentialStoreLabel(store: RuntimeInfo["credential_store"] | undefined, t: Translator) {
@@ -141,12 +198,12 @@ function wakeStatusLabel(status: WakeOperationView["status"], t: Translator) {
 
 function wakeResultLabel(result: WakeOperationView["results"][number]["result"], t: Translator) {
   const labels = {
+    started: "wake.started",
     already_active: "wake.alreadyActive",
-    window_started: "wake.windowStarted",
-    request_completed_unconfirmed: "wake.unconfirmed",
-    needs_model_selection: "wake.chooseModel",
+    no_ordinary_capacity: "wake.noOrdinaryCapacity",
+    needs_sign_in: "wake.needsSignIn",
+    sent_not_confirmed: "wake.sentNotConfirmed",
     failed: "wake.failed",
-    skipped: "wake.skipped",
     cancelled: "wake.cancelled",
   } as const;
   return t(labels[result]);
@@ -254,6 +311,9 @@ function AccountCard({
   onReset,
   resetRecoveryRequired,
   onRemove,
+  selectionMode,
+  selected,
+  onSelectionChange,
   t,
   formatLocale,
 }: {
@@ -267,35 +327,57 @@ function AccountCard({
   onReset: () => void;
   resetRecoveryRequired: boolean;
   onRemove: () => void;
+  selectionMode: boolean;
+  selected: boolean;
+  onSelectionChange: () => void;
   t: Translator;
   formatLocale: string;
 }) {
   const credits = quota?.snapshot?.reset_credits;
   const isApiKey = account.kind === "api_key";
+  const primaryName = accountPrimaryName(account);
+  const secondaryName = accountSecondaryName(account, primaryName, t);
 
   return (
-    <article className={"account-card" + (active ? " account-active" : "")}>
+    <article className={"account-card" + (active ? " account-active" : "") + (selected ? " account-selected" : "")}>
       <div className="account-card-head">
         <div className="account-identity">
+          {selectionMode ? (
+            <label className="account-select-control">
+              <input
+                aria-label={t("accounts.selectAccount", { name: primaryName })}
+                checked={selected}
+                onChange={onSelectionChange}
+                type="checkbox"
+              />
+            </label>
+          ) : null}
           <div className="account-avatar" aria-hidden="true">
-            {account.label.slice(0, 1).toUpperCase()}
+            {primaryName.slice(0, 1).toUpperCase()}
           </div>
           <div className="account-copy">
-            <h3>{account.label}</h3>
-            <p>{account.email || (isApiKey ? t("account.storedLocally") : t("account.verifiedCodex"))}</p>
+            <h3>{primaryName}</h3>
+            {secondaryName ? <p>{secondaryName}</p> : null}
           </div>
         </div>
-        <details className="card-menu">
-          <summary aria-label={t("account.moreActions", { name: account.label })}>
-            <MoreHorizontal size={18} />
-          </summary>
-          <div className="card-menu-popover">
-            <button disabled={active || busy} onClick={onRemove} type="button">
-              <Trash2 size={15} />
-              {t("common.removeAccount")}
-            </button>
-          </div>
-        </details>
+        {!selectionMode ? (
+          <details className="card-menu">
+            <summary aria-label={t("account.moreActions", { name: primaryName })}>
+              <MoreHorizontal size={18} />
+            </summary>
+            <div className="card-menu-popover">
+              <button
+                aria-label={t("account.remove", { name: primaryName })}
+                disabled={active || busy}
+                onClick={onRemove}
+                type="button"
+              >
+                <Trash2 size={15} />
+                {t("common.removeAccount")}
+              </button>
+            </div>
+          </details>
+        ) : null}
       </div>
 
       <div className="account-badges">
@@ -318,6 +400,7 @@ function AccountCard({
             <QuotaMeter formatLocale={formatLocale} label={t("quota.fiveHour")} status={quota?.status} t={t} window={primaryWindow(quota, "five_hour")} />
             <QuotaMeter formatLocale={formatLocale} label={t("quota.weekly")} status={quota?.status} t={t} window={primaryWindow(quota, "weekly")} />
           </div>
+          {quota?.message ? <p className="quota-status-message">{quota.message}</p> : null}
           <div className="credit-row">
             <span>
               {t("credit.resetCredits")}
@@ -334,9 +417,9 @@ function AccountCard({
         </>
       )}
 
-      <div className="card-footer">
+      {!selectionMode ? <div className="card-footer">
         <button
-          aria-label={t("account.refresh", { name: account.label })}
+          aria-label={t("account.refresh", { name: primaryName })}
           className="icon-button"
           disabled={busy || isApiKey}
           onClick={onRefresh}
@@ -346,17 +429,29 @@ function AccountCard({
         </button>
         <div className="card-footer-actions">
           {!isApiKey ? (
-            <button className="button button-secondary" disabled={busy} onClick={onWake} type="button">
+            <button
+              aria-label={t("account.wake", { name: primaryName })}
+              className="button button-secondary"
+              disabled={busy}
+              onClick={onWake}
+              type="button"
+            >
               <Zap size={15} />
               {t("common.wake")}
             </button>
           ) : null}
-          <button className="button button-primary" disabled={busy || active} onClick={onSwitch} type="button">
+          <button
+            aria-label={t(active ? "account.current" : "account.switch", { name: primaryName })}
+            className="button button-primary"
+            disabled={busy || active}
+            onClick={onSwitch}
+            type="button"
+          >
             {busy ? <LoaderCircle className="spin" size={15} /> : <ArrowRightLeft size={15} />}
             {active ? t("common.current") : t("common.switch")}
           </button>
         </div>
-      </div>
+      </div> : null}
     </article>
   );
 }
@@ -465,6 +560,13 @@ export default function App() {
   const [busy, setBusy] = useState<string | null>(null);
   const [dialog, setDialog] = useState<Dialog>(null);
   const [addMethod, setAddMethod] = useState<AddMethod>("start");
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedAccountIds, setSelectedAccountIds] = useState<string[]>([]);
+  const [exportConfirmation, setExportConfirmation] = useState(false);
+  const [migrationPreview, setMigrationPreview] = useState<MigrationPreview | null>(null);
+  const [migrationRoot, setMigrationRoot] = useState<string | undefined>();
+  const [migrationSelection, setMigrationSelection] = useState<string[]>([]);
+  const [migrationScanned, setMigrationScanned] = useState(false);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [oauth, setOauth] = useState<OAuthFlow | null>(null);
   const [wake, setWake] = useState<WakeOperationView | null>(null);
@@ -479,6 +581,7 @@ export default function App() {
   const apiKeyRef = useRef<HTMLInputElement>(null);
   const dismissedUpdateVersions = useRef(new Set<string>());
   const updateCheckInFlight = useRef(false);
+  const quotaRefreshes = useRef(new Map<string, Promise<QuotaView>>());
   const [label, setLabel] = useState("");
   const locale = useMemo(() => resolveLocale(languagePreference), [languagePreference]);
   const t = useMemo(() => createTranslator(locale.language), [locale.language]);
@@ -488,28 +591,75 @@ export default function App() {
     saveLanguagePreference(preference);
   };
 
+  const requestQuotaRefresh = useCallback((accountId: string): Promise<QuotaView> => {
+    const inFlight = quotaRefreshes.current.get(accountId);
+    if (inFlight) {
+      return inFlight;
+    }
+
+    const request = api.refreshAccountQuota(accountId).then(
+      (quota) => {
+        setQuotas((current) => ({ ...current, [accountId]: quota }));
+        return quota;
+      },
+      (error) => {
+        const message = quotaRefreshMessage(t, error);
+        if (message) {
+          setQuotas((current) => {
+            const previous = current[accountId];
+            return {
+              ...current,
+              [accountId]: {
+                account_id: accountId,
+                status: previous?.snapshot ? "stale" : "unknown",
+                snapshot: previous?.snapshot,
+                message,
+              },
+            };
+          });
+        }
+        throw error;
+      },
+    );
+    quotaRefreshes.current.set(accountId, request);
+    void request.then(
+      () => quotaRefreshes.current.get(accountId) === request && quotaRefreshes.current.delete(accountId),
+      () => quotaRefreshes.current.get(accountId) === request && quotaRefreshes.current.delete(accountId),
+    );
+    return request;
+  }, [t]);
+
   const loadSnapshot = useCallback(async () => {
     setLoading(true);
     try {
       const initial = await api.appSnapshot();
       const nextAccounts = initial.accounts;
-      const quotaPairs = initial.storage.status === "ready"
-        ? await Promise.allSettled(
-            nextAccounts
-              .filter((account) => account.kind === "chat_gpt")
-              .map(async (account) => [account.id, await api.accountQuota(account.id)] as const),
-          )
-        : [];
       setAccounts(nextAccounts);
+      setSelectedAccountIds((current) =>
+        current.filter((id) => nextAccounts.some((account) => account.id === id)),
+      );
       setStorage(initial.storage);
       setPendingResetCredit(initial.pending_reset_credit);
       setLive(initial.live || null);
       setRuntime(initial.runtime || null);
-      setQuotas(
-        Object.fromEntries(
-          quotaPairs.flatMap((result) => result.status === "fulfilled" ? [result.value] : []),
-        ),
-      );
+      setQuotas({});
+      if (initial.storage.status === "ready") {
+        void Promise.allSettled(
+          nextAccounts
+            .filter((account) => account.kind === "chat_gpt")
+            .map(async (account) => [account.id, await api.accountQuota(account.id)] as const),
+        ).then((quotaPairs) => {
+          const cached = Object.fromEntries(
+            quotaPairs.flatMap((result) => result.status === "fulfilled" ? [result.value] : []),
+          ) as Record<string, QuotaView>;
+          setQuotas(cached);
+          for (const quota of Object.values(cached)) {
+            if (quota.status === "unknown" || quota.status === "stale") {
+              void requestQuotaRefresh(quota.account_id).catch(() => undefined);
+            }
+          }
+        });
+      }
     } catch (error) {
       setNotice({
         kind: "error",
@@ -518,7 +668,7 @@ export default function App() {
     } finally {
       setLoading(false);
     }
-  }, [t]);
+  }, [requestQuotaRefresh, t]);
 
   useEffect(() => {
     void loadSnapshot();
@@ -590,23 +740,17 @@ export default function App() {
     [loadSnapshot, t],
   );
 
-  const importPath = useCallback(
-    async (path: string) => {
-      const result = await runTask("import", () => api.importAuthFile(path));
+  const importPaths = useCallback(
+    async (paths: string[]) => {
+      const result = await runTask("import", () => api.importAuthFiles(paths));
       if (result) {
-        const suffix = result.imported.length === 1 ? "" : "s";
-        const skippedSuffix = result.skipped_count
-          ? t("notice.unsupportedSkipped", {
-              count: formatNumber(result.skipped_count, locale.formatLocale),
-              suffix: result.skipped_count === 1 ? "" : "s",
-            })
-          : "";
+        const skippedCount = result.unsupported_count + result.failed_count;
         setNotice({
-          kind: "success",
-          text: t("notice.imported", {
-            count: formatNumber(result.imported.length, locale.formatLocale),
-            suffix,
-            skipped: skippedSuffix,
+          kind: result.imported.length ? "success" : "info",
+          text: t("notice.importBatch", {
+            imported: formatNumber(result.imported.length, locale.formatLocale),
+            duplicates: formatNumber(result.duplicate_count, locale.formatLocale),
+            skipped: formatNumber(skippedCount, locale.formatLocale),
           }),
         });
         setDialog(null);
@@ -620,15 +764,52 @@ export default function App() {
       const selected = await open({
         title: t("add.fileTitle"),
         filters: fileFilters(t),
-        multiple: false,
+        multiple: true,
       });
-      if (typeof selected === "string") {
-        await importPath(selected);
+      if (selected?.length) {
+        await importPaths(selected);
       }
     } catch (error) {
       setNotice({ kind: "error", text: friendlyError(t, error, t("error.filePicker")) });
     }
-  }, [importPath, t]);
+  }, [importPaths, t]);
+
+  const scanMigration = useCallback(
+    async (customRoot?: string) => {
+      const result = await runTask(
+        "migration-scan",
+        () => api.discoverLocalAccounts(customRoot),
+        false,
+      );
+      if (result) {
+        setMigrationRoot(customRoot);
+        setMigrationPreview(result);
+        setMigrationScanned(true);
+        setMigrationSelection(
+          result.candidates
+            .filter((candidate) => candidate.state === "new")
+            .map((candidate) => candidate.id),
+        );
+      }
+    },
+    [runTask],
+  );
+
+  const chooseMigrationFolder = useCallback(async () => {
+    try {
+      const selected = await open({
+        title: t("migration.chooseFolder"),
+        directory: true,
+        multiple: false,
+      });
+      const selectedPath = Array.isArray(selected) ? selected[0] : selected;
+      if (selectedPath) {
+        await scanMigration(selectedPath);
+      }
+    } catch (error) {
+      setNotice({ kind: "error", text: friendlyError(t, error, t("error.migrationFolder")) });
+    }
+  }, [scanMigration, t]);
 
   useEffect(() => {
     if (!("__TAURI_INTERNALS__" in window)) {
@@ -640,9 +821,9 @@ export default function App() {
         if (event.payload.type !== "drop") {
           return;
         }
-        const path = event.payload.paths[0];
-        if (path) {
-          void importPath(path);
+        const paths = event.payload.paths;
+        if (paths.length) {
+          void importPaths(paths);
         }
       })
       .then((stop) => {
@@ -652,7 +833,7 @@ export default function App() {
         // File selection remains available if drag-and-drop cannot register.
       });
     return () => unlisten?.();
-  }, [importPath]);
+  }, [importPaths]);
 
   useEffect(() => {
     if (!oauth || oauth.status.status !== "pending") {
@@ -820,6 +1001,42 @@ export default function App() {
     setDialog(null);
   };
 
+  const openAddDialog = () => {
+    setOauth(null);
+    setAddMethod("start");
+    setMigrationPreview(null);
+    setMigrationRoot(undefined);
+    setMigrationSelection([]);
+    setMigrationScanned(false);
+    setDialog("add");
+  };
+
+  const confirmMigration = async () => {
+    if (!migrationSelection.length) {
+      return;
+    }
+    const result = await runTask(
+      "migration-import",
+      () => api.importLocalAccounts(migrationRoot, migrationSelection),
+    );
+    if (result) {
+      const skippedCount = result.unsupported_count + result.failed_count;
+      setNotice({
+        kind: result.imported.length ? "success" : "info",
+        text: t("notice.migration", {
+          imported: formatNumber(result.imported.length, locale.formatLocale),
+          duplicates: formatNumber(result.duplicate_count, locale.formatLocale),
+          skipped: formatNumber(skippedCount, locale.formatLocale),
+        }),
+      });
+      setMigrationPreview(null);
+      setMigrationSelection([]);
+      setMigrationRoot(undefined);
+      setMigrationScanned(false);
+      setDialog(null);
+    }
+  };
+
   const copyOAuthUrl = async () => {
     if (!oauth) {
       return;
@@ -875,7 +1092,7 @@ export default function App() {
         const results = await Promise.allSettled(
           accounts
             .filter((account) => account.kind === "chat_gpt")
-            .map((account) => api.refreshAccountQuota(account.id)),
+            .map((account) => requestQuotaRefresh(account.id)),
         );
         const failures = results.filter((result) => result.status === "rejected").length;
         if (failures) {
@@ -900,22 +1117,61 @@ export default function App() {
   };
 
   const refreshAccount = async (account: AccountView) => {
-    const result = await runTask("refresh:" + account.id, () => api.refreshAccountQuota(account.id));
+    const result = await runTask("refresh:" + account.id, () => requestQuotaRefresh(account.id));
     if (result) {
       setNotice({ kind: "success", text: t("notice.quotaRefreshed", { name: account.label }) });
     }
   };
 
-  const startWake = async (accountId?: string, model?: string) => {
+  const startWake = async (accountId?: string) => {
     const key = accountId ? "wake:" + accountId : "wake-all";
     const result = await runTask(
       key,
-      () => accountId ? api.startWake(accountId, model) : api.startWakeAll(),
+      () => accountId ? api.startWake(accountId) : api.startWakeAll(),
       false,
     );
     if (result) {
       setWake({ id: result.operation_id, status: "running", results: [] });
       setDialog("wake");
+    }
+  };
+
+  const startSelectedWake = async () => {
+    const selectedChatGptIds = accounts
+      .filter((account) => account.kind === "chat_gpt" && selectedAccountIds.includes(account.id))
+      .map((account) => account.id);
+    const result = await runTask(
+      "wake-selected",
+      () => api.startWakeSelected(selectedChatGptIds),
+      false,
+    );
+    if (result) {
+      setWake({ id: result.operation_id, status: "running", results: [] });
+      setDialog("wake");
+    }
+  };
+
+  const exportSelectedAccounts = async () => {
+    if (!exportConfirmation) {
+      setExportConfirmation(true);
+      return;
+    }
+    const result = await runTask(
+      "export-accounts",
+      () => api.exportAccounts(selectedAccountIds),
+      false,
+    );
+    if (result) {
+      setExportConfirmation(false);
+      setDialog(null);
+      if (!result.cancelled) {
+        setNotice({
+          kind: "success",
+          text: t("notice.exported", {
+            count: formatNumber(result.exported_count, locale.formatLocale),
+          }),
+        });
+      }
     }
   };
 
@@ -996,6 +1252,9 @@ export default function App() {
   const currentActiveId = live?.account?.id;
   const liveAccountLabel = live?.account?.label || t("toolbar.currentAccount");
   const chatGptAccounts = accounts.filter((account) => account.kind === "chat_gpt");
+  const selectedChatGptCount = accounts.filter(
+    (account) => account.kind === "chat_gpt" && selectedAccountIds.includes(account.id),
+  ).length;
   const resetCredits = resetAccount ? quotas[resetAccount.id]?.snapshot?.reset_credits : undefined;
   const storageRecovery = storage?.status === "recovery_required";
 
@@ -1063,12 +1322,12 @@ export default function App() {
     <main className="app-shell">
       <header className="toolbar">
         <div className="brand-lockup">
-          <div className="brand-mark" aria-hidden="true"><ArrowRightLeft size={20} strokeWidth={2.4} /></div>
-          <div>
+          <img alt="" aria-hidden="true" className="brand-mark" src="/gswitch-icon.svg" />
+          <div className="brand-copy">
             <h1>GSwitch</h1>
-            <p>
+            <p className="brand-status">
               <span className={live?.status === "ready" ? "status-dot status-ready" : "status-dot"} />
-              {liveAccountLabel}
+              <span className="brand-status-label">{liveAccountLabel}</span>
             </p>
           </div>
         </div>
@@ -1089,11 +1348,7 @@ export default function App() {
           <button
             className="button button-primary"
             disabled={loading || busy !== null || storageRecovery}
-            onClick={() => {
-              setOauth(null);
-              setAddMethod("start");
-              setDialog("add");
-            }}
+            onClick={openAddDialog}
             type="button"
           >
             <Plus size={16} />
@@ -1151,8 +1406,68 @@ export default function App() {
                     : t("accounts.savedMany", { count: formatNumber(accounts.length, locale.formatLocale) })}
               </h2>
             </div>
-            <p>{storageRecovery ? t("accounts.recoveryDescription") : t("accounts.readyDescription")}</p>
+            <div className="section-heading-actions">
+              <p>{storageRecovery ? t("accounts.recoveryDescription") : t("accounts.readyDescription")}</p>
+              {accounts.length && !storageRecovery ? (
+                <button
+                  className="button button-quiet"
+                  disabled={loading || busy !== null}
+                  onClick={() => {
+                    setSelectionMode((current) => !current);
+                    setSelectedAccountIds([]);
+                  }}
+                  type="button"
+                >
+                  {selectionMode ? t("accounts.doneSelecting") : t("accounts.select")}
+                </button>
+              ) : null}
+            </div>
           </div>
+
+          {selectionMode && accounts.length ? (
+            <div className="account-selection-bar" aria-label={t("accounts.selectionActions")}>
+              <span>{t("accounts.selected", { count: formatNumber(selectedAccountIds.length, locale.formatLocale) })}</span>
+              <div className="account-selection-controls">
+                <button
+                  className="text-button"
+                  disabled={busy !== null || selectedAccountIds.length === accounts.length}
+                  onClick={() => setSelectedAccountIds(accounts.map((account) => account.id))}
+                  type="button"
+                >
+                  {t("accounts.selectAll")}
+                </button>
+                <button
+                  className="text-button"
+                  disabled={busy !== null || selectedAccountIds.length === 0}
+                  onClick={() => setSelectedAccountIds([])}
+                  type="button"
+                >
+                  {t("accounts.clearSelection")}
+                </button>
+                <button
+                  className="button button-secondary"
+                  disabled={busy !== null || selectedChatGptCount === 0}
+                  onClick={() => void startSelectedWake()}
+                  type="button"
+                >
+                  <Zap size={15} />
+                  {t("common.wake")}
+                </button>
+                <button
+                  className="button button-primary"
+                  disabled={busy !== null || selectedAccountIds.length === 0}
+                  onClick={() => {
+                    setExportConfirmation(false);
+                    setDialog("export");
+                  }}
+                  type="button"
+                >
+                  <Download size={15} />
+                  {t("common.export")}
+                </button>
+              </div>
+            </div>
+          ) : null}
 
           {loading ? (
             <div className="loading-state"><LoaderCircle className="spin" size={24} />{t("accounts.reading")}</div>
@@ -1200,18 +1515,23 @@ export default function App() {
                   resetRecoveryRequired={pendingResetCredit}
                   onSwitch={() => void switchAccount(account)}
                   onWake={() => void startWake(account.id)}
+                  onSelectionChange={() => {
+                    setSelectedAccountIds((current) =>
+                      current.includes(account.id)
+                        ? current.filter((id) => id !== account.id)
+                        : [...current, account.id],
+                    );
+                  }}
                   quota={quotas[account.id]}
+                  selected={selectedAccountIds.includes(account.id)}
+                  selectionMode={selectionMode}
                   t={t}
                 />
               ))}
             </div>
           ) : (
             <FirstRun
-              onAdd={() => {
-                setOauth(null);
-                setAddMethod("start");
-                setDialog("add");
-              }}
+              onAdd={openAddDialog}
               onImport={() => void chooseImportFile()}
               t={t}
             />
@@ -1223,27 +1543,130 @@ export default function App() {
         <Modal onClose={closeAddDialog} t={t} title={t("add.title")} wide>
           {addMethod === "start" ? (
             <div className="add-methods">
-              <button className="add-method-card" onClick={() => void startOAuth()} type="button">
-                <span className="method-icon"><Globe2 size={22} /></span>
-                <span><strong>{t("add.browserTitle")}</strong><small>{t("add.browserDescription")}</small></span>
-                <ChevronRight size={18} />
-              </button>
-              <button className="add-method-card" onClick={() => setAddMethod("json")} type="button">
-                <span className="method-icon"><FileJson size={22} /></span>
-                <span><strong>{t("add.jsonTitle")}</strong><small>{t("add.jsonDescription")}</small></span>
-                <ChevronRight size={18} />
-              </button>
-              <button className="add-method-card" onClick={() => void chooseImportFile()} type="button">
-                <span className="method-icon"><FolderOpen size={22} /></span>
-                <span><strong>{t("add.fileTitle")}</strong><small>{t("add.fileDescription")}</small></span>
-                <ChevronRight size={18} />
-              </button>
-              <button className="add-method-card" onClick={() => setAddMethod("api-key")} type="button">
-                <span className="method-icon"><KeyRound size={22} /></span>
-                <span><strong>{t("add.apiKeyTitle")}</strong><small>{t("add.apiKeyDescription")}</small></span>
-                <ChevronRight size={18} />
-              </button>
+              <section className="add-method-group" aria-labelledby="import-existing-heading">
+                <h3 id="import-existing-heading">{t("add.importExisting")}</h3>
+                <button
+                  className="add-method-card"
+                  onClick={() => {
+                    setMigrationPreview(null);
+                    setMigrationRoot(undefined);
+                    setMigrationSelection([]);
+                    setMigrationScanned(false);
+                    setAddMethod("migration");
+                  }}
+                  type="button"
+                >
+                  <span className="method-icon"><Upload size={22} /></span>
+                  <span><strong>{t("add.localTitle")}</strong><small>{t("add.localDescription")}</small></span>
+                  <ChevronRight size={18} />
+                </button>
+                <button className="add-method-card" onClick={() => void chooseImportFile()} type="button">
+                  <span className="method-icon"><FolderOpen size={22} /></span>
+                  <span><strong>{t("add.fileTitle")}</strong><small>{t("add.fileDescription")}</small></span>
+                  <ChevronRight size={18} />
+                </button>
+              </section>
+              <section className="add-method-group" aria-labelledby="add-new-heading">
+                <h3 id="add-new-heading">{t("add.addNew")}</h3>
+                <button className="add-method-card" onClick={() => void startOAuth()} type="button">
+                  <span className="method-icon"><Globe2 size={22} /></span>
+                  <span><strong>{t("add.browserTitle")}</strong><small>{t("add.browserDescription")}</small></span>
+                  <ChevronRight size={18} />
+                </button>
+              </section>
+              <details className="add-other-methods">
+                <summary>{t("add.otherMethods")}</summary>
+                <div>
+                  <button className="add-method-card" onClick={() => setAddMethod("json")} type="button">
+                    <span className="method-icon"><FileJson size={22} /></span>
+                    <span><strong>{t("add.jsonTitle")}</strong><small>{t("add.jsonDescription")}</small></span>
+                    <ChevronRight size={18} />
+                  </button>
+                  <button className="add-method-card" onClick={() => setAddMethod("api-key")} type="button">
+                    <span className="method-icon"><KeyRound size={22} /></span>
+                    <span><strong>{t("add.apiKeyTitle")}</strong><small>{t("add.apiKeyDescription")}</small></span>
+                    <ChevronRight size={18} />
+                  </button>
+                </div>
+              </details>
               <p className="dialog-footnote">{t("add.privateStorage")}</p>
+            </div>
+          ) : null}
+
+          {addMethod === "migration" ? (
+            <div className="migration-flow">
+              <button className="back-link" onClick={() => setAddMethod("start")} type="button">{t("migration.back")}</button>
+              <h3>{t("migration.title")}</h3>
+              <p>{t("migration.body")}</p>
+              {!migrationScanned ? (
+                <div className="modal-actions migration-actions">
+                  <button className="button button-secondary" disabled={busy !== null} onClick={() => void chooseMigrationFolder()} type="button">
+                    <FolderOpen size={16} />
+                    {t("migration.chooseFolder")}
+                  </button>
+                  <button className="button button-primary" disabled={busy !== null} onClick={() => void scanMigration()} type="button">
+                    {busy === "migration-scan" ? <LoaderCircle className="spin" size={16} /> : <Upload size={16} />}
+                    {t("migration.scan")}
+                  </button>
+                </div>
+              ) : (
+                <>
+                  {migrationPreview?.candidates.length ? (
+                    <div className="migration-list" aria-label={t("migration.title")}>
+                      {migrationPreview.candidates.map((candidate) => {
+                        const disabled = candidate.state !== "new";
+                        const checked = migrationSelection.includes(candidate.id);
+                        const primary = candidate.email || candidate.workspace_name || t("common.unknown");
+                        return (
+                          <label className={`migration-item migration-${candidate.state}`} key={candidate.id}>
+                            <input
+                              checked={checked}
+                              disabled={disabled || busy !== null}
+                              onChange={() => {
+                                setMigrationSelection((current) =>
+                                  checked
+                                    ? current.filter((id) => id !== candidate.id)
+                                    : [...current, candidate.id],
+                                );
+                              }}
+                              type="checkbox"
+                            />
+                            <span className="migration-item-copy">
+                              <strong>{primary}</strong>
+                              <small>
+                                {migrationSourceLabel(candidate, t)} · {migrationStateLabel(candidate, t)}
+                                {candidate.workspace_name && candidate.workspace_name !== primary
+                                  ? ` · ${t("migration.workspace", { name: candidate.workspace_name })}`
+                                  : ""}
+                                {candidate.plan_type ? ` · ${t("migration.plan", { plan: candidate.plan_type })}` : ""}
+                              </small>
+                            </span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <p className="dialog-footnote">{t("migration.empty")}</p>
+                  )}
+                  {!migrationSelection.length && migrationPreview?.candidates.some((candidate) => candidate.state === "new") ? (
+                    <p className="dialog-footnote">{t("migration.noSelection")}</p>
+                  ) : null}
+                  <div className="modal-actions migration-actions">
+                    <button className="button button-secondary" disabled={busy !== null} onClick={() => void chooseMigrationFolder()} type="button">
+                      <FolderOpen size={16} />
+                      {t("migration.chooseFolder")}
+                    </button>
+                    <button className="button button-quiet" disabled={busy !== null} onClick={() => void scanMigration(migrationRoot)} type="button">
+                      <RefreshCw size={16} />
+                      {t("migration.rescan")}
+                    </button>
+                    <button className="button button-primary" disabled={!migrationSelection.length || busy !== null} onClick={() => void confirmMigration()} type="button">
+                      {busy === "migration-import" ? <LoaderCircle className="spin" size={16} /> : <Check size={16} />}
+                      {t("migration.import")}
+                    </button>
+                  </div>
+                </>
+              )}
             </div>
           ) : null}
 
@@ -1319,6 +1742,50 @@ export default function App() {
               </div>
             </form>
           ) : null}
+        </Modal>
+      ) : null}
+
+      {dialog === "export" ? (
+        <Modal
+          onClose={() => {
+            setExportConfirmation(false);
+            setDialog(null);
+          }}
+          t={t}
+          title={t("export.title")}
+        >
+          <div className="confirm-panel">
+            <ShieldAlert size={26} />
+            <h3>{t("export.heading")}</h3>
+            <p>{t("export.body")}</p>
+            {exportConfirmation ? (
+              <div className="confirm-copy">
+                <strong>{t("export.question", { count: formatNumber(selectedAccountIds.length, locale.formatLocale) })}</strong>
+                <p>{t("export.warning")}</p>
+              </div>
+            ) : null}
+            <div className="modal-actions">
+              <button
+                className="button button-secondary"
+                onClick={() => {
+                  setExportConfirmation(false);
+                  setDialog(null);
+                }}
+                type="button"
+              >
+                {t("common.cancel")}
+              </button>
+              <button
+                className="button button-danger"
+                disabled={busy !== null || selectedAccountIds.length === 0}
+                onClick={() => void exportSelectedAccounts()}
+                type="button"
+              >
+                {busy === "export-accounts" ? <LoaderCircle className="spin" size={16} /> : <Download size={16} />}
+                {exportConfirmation ? t("export.write") : t("common.continue")}
+              </button>
+            </div>
+          </div>
         </Modal>
       ) : null}
 
@@ -1533,13 +2000,7 @@ export default function App() {
                   <div>
                     <strong>{result.label}</strong>
                     <p>{wakeResultLabel(result.result, t)}</p>
-                    {result.result === "needs_model_selection" && result.available_models?.length ? (
-                      <div className="model-choices">
-                        {result.available_models.map((model) => (
-                          <button className="button button-secondary" key={model} onClick={() => void startWake(result.account_id, model)} type="button">{t("wake.useModel", { model })}</button>
-                        ))}
-                      </div>
-                    ) : null}
+                    <p className="wake-result-detail">{result.message}</p>
                   </div>
                 </li>
               ))}

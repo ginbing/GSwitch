@@ -1,13 +1,14 @@
 use tauri::{AppHandle, State};
+use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
 
 use crate::{
     accounts::AppState,
-    codex, intake, quota, switching,
+    codex, intake, migration, quota, switching,
     types::{
-        AccountView, AppSnapshot, ImportResult, LiveAccountView, OAuthLoginStart, OAuthLoginStatus,
-        QuotaView, ResetCreditOutcome, RuntimeInfo, StorageStatus, SwitchOutcome, UpdateDelivery,
-        WakeOperationView, WakeStart,
+        AccountView, AppSnapshot, ExportResult, ImportResult, LiveAccountView, MigrationPreview,
+        OAuthLoginStart, OAuthLoginStatus, QuotaView, ResetCreditOutcome, RuntimeInfo,
+        StorageStatus, SwitchOutcome, UpdateDelivery, WakeOperationView, WakeStart,
     },
     wake,
 };
@@ -123,6 +124,54 @@ pub fn import_auth_file(state: State<'_, AppState>, path: String) -> Result<Impo
 }
 
 #[tauri::command]
+pub fn import_auth_files(
+    state: State<'_, AppState>,
+    paths: Vec<String>,
+) -> Result<ImportResult, String> {
+    intake::import_files(state.inner(), paths)
+}
+
+#[tauri::command]
+pub fn export_accounts(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    selected_ids: Vec<String>,
+) -> Result<ExportResult, String> {
+    let export = intake::prepare_accounts_export(state.inner(), selected_ids)?;
+    let destination = app
+        .dialog()
+        .file()
+        .set_title("Export GSwitch accounts")
+        .set_file_name("gswitch-accounts.json")
+        .add_filter("JSON", &["json"])
+        .blocking_save_file()
+        .map(|destination| {
+            destination
+                .into_path()
+                .map_err(|_| "Unable to use the selected export location".to_string())
+        })
+        .transpose()?;
+    intake::complete_accounts_export(&export, destination.as_deref())
+}
+
+#[tauri::command]
+pub fn discover_local_accounts(
+    state: State<'_, AppState>,
+    custom_root: Option<String>,
+) -> Result<MigrationPreview, String> {
+    migration::discover(state.inner(), custom_root)
+}
+
+#[tauri::command]
+pub fn import_local_accounts(
+    state: State<'_, AppState>,
+    custom_root: Option<String>,
+    selected_ids: Vec<String>,
+) -> Result<ImportResult, String> {
+    migration::confirm(state.inner(), custom_root, selected_ids)
+}
+
+#[tauri::command]
 pub fn import_api_key(
     state: State<'_, AppState>,
     api_key: String,
@@ -190,17 +239,21 @@ pub fn recover_pending_reset_credit(
 }
 
 #[tauri::command]
-pub fn start_wake(
-    state: State<'_, AppState>,
-    id: String,
-    model: Option<String>,
-) -> Result<WakeStart, String> {
-    wake::start_one(state.inner().clone(), id, model)
+pub fn start_wake(state: State<'_, AppState>, id: String) -> Result<WakeStart, String> {
+    wake::start_one(state.inner().clone(), id)
 }
 
 #[tauri::command]
 pub fn start_wake_all(state: State<'_, AppState>) -> Result<WakeStart, String> {
     wake::start_all(state.inner().clone())
+}
+
+#[tauri::command]
+pub fn start_wake_selected(
+    state: State<'_, AppState>,
+    selected_ids: Vec<String>,
+) -> Result<WakeStart, String> {
+    wake::start_selected(state.inner().clone(), selected_ids)
 }
 
 #[tauri::command]
