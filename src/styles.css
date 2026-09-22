@@ -1373,15 +1373,15 @@ textarea {
   background: var(--soft-muted);
 }
 
-.wake-window_started,
+.wake-started,
 .wake-already_active {
   background: var(--success);
 }
 
-.wake-needs_model_selection,
-.wake-skipped,
+.wake-no_ordinary_capacity,
+.wake-needs_sign_in,
 .wake-cancelled,
-.wake-request_completed_unconfirmed {
+.wake-sent_not_confirmed {
   background: var(--warning);
 }
 
@@ -1401,17 +1401,9 @@ textarea {
   line-height: 1.4;
 }
 
-.model-choices {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 9px;
-}
-
-.model-choices .button {
-  min-height: 29px;
-  padding: 0 8px;
-  font-size: 11px;
+.wake-results .wake-result-detail {
+  margin-top: 1px;
+  font-size: 10.5px;
 }
 
 .spin {

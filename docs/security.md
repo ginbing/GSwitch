@@ -97,7 +97,7 @@ ephemeral credentials, bypass managed policy, or assume that writing
 
 ## Isolated-operation invariants
 
-OAuth, managed import fallback, quota fallback, reset redemption, and Wake use
+OAuth, managed import fallback, quota fallback, and reset redemption use
 short-lived GSwitch-owned Codex profiles. Ordinary ChatGPT import validation
 and account metadata use the Rust-only read-only backend client first. Before
 persisting any refreshed credential, verify that its account kind and identity
@@ -115,10 +115,16 @@ authentication failure for an inactive account may enter the managed isolated
 refresh path; 429, transport, TLS, DNS, timeout, parse, and server failures do
 not.
 
-Wake also uses an empty workspace, read-only sandbox, no approvals, and an
-ephemeral thread. It does not load the user's project, MCP servers, Skills, or
-normal Codex configuration. Its minimal instruction asks Codex not to inspect
-files or use tools; it never spends a reset credit or Reserve.
+Wake uses a Rust-owned, direct ChatGPT Codex Responses request with one
+access-token snapshot. A matching running Codex identity remains eligible, but
+retains sole refresh-token ownership: GSwitch rereads its live file-backed token
+once before sending and never writes live `auth.json` or starts a second App
+Server. A safely inactive identity may use one isolated refresh only after an
+authentication failure; an unidentifiable running process is never a reason to
+skip Wake, but prevents that refresh fallback. The one standard-tier text
+request has no tools, project or file context, stored response, reset credit, or
+Reserve use. Once it may have reached the provider, GSwitch reports uncertainty
+instead of retrying.
 
 ## Recovery invariants
 
