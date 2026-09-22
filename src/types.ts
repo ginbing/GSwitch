@@ -6,6 +6,7 @@ export interface AccountView {
   kind: AccountKind;
   email?: string;
   plan_type?: string;
+  workspace_name?: string;
   active: boolean;
 }
 
@@ -68,7 +69,30 @@ export type OAuthLoginStatus =
 
 export interface ImportResult {
   imported: AccountView[];
-  skipped_count: number;
+  duplicate_count: number;
+  unsupported_count: number;
+  failed_count: number;
+}
+
+export interface ExportResult {
+  exported_count: number;
+  cancelled: boolean;
+}
+
+export type MigrationSource = "official_codex" | "cockpit_tools";
+export type MigrationCandidateState = "new" | "already_present" | "unsupported";
+
+export interface MigrationCandidate {
+  id: string;
+  source: MigrationSource;
+  email?: string;
+  workspace_name?: string;
+  plan_type?: string;
+  state: MigrationCandidateState;
+}
+
+export interface MigrationPreview {
+  candidates: MigrationCandidate[];
 }
 
 export type QuotaStatus = "fresh" | "stale" | "unknown" | "not_applicable";
@@ -130,12 +154,12 @@ export interface ResetCreditOutcome {
 }
 
 export type WakeResultKind =
+  | "started"
   | "already_active"
-  | "window_started"
-  | "request_completed_unconfirmed"
-  | "needs_model_selection"
+  | "no_ordinary_capacity"
+  | "needs_sign_in"
+  | "sent_not_confirmed"
   | "failed"
-  | "skipped"
   | "cancelled";
 
 export interface WakeAccountResult {
@@ -143,7 +167,6 @@ export interface WakeAccountResult {
   label: string;
   result: WakeResultKind;
   message: string;
-  available_models?: string[];
 }
 
 export interface WakeOperationView {

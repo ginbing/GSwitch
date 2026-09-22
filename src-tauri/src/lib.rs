@@ -1,9 +1,11 @@
 mod accounts;
 mod app_server;
+mod chatgpt;
 mod codex;
 mod commands;
 mod identity;
 mod intake;
+mod migration;
 mod quota;
 mod runtime;
 mod storage;
@@ -39,6 +41,10 @@ pub fn run() {
             commands::open_latest_release,
             commands::import_auth_json,
             commands::import_auth_file,
+            commands::import_auth_files,
+            commands::export_accounts,
+            commands::discover_local_accounts,
+            commands::import_local_accounts,
             commands::import_api_key,
             commands::get_live_account_state,
             commands::save_current_account,
@@ -52,6 +58,7 @@ pub fn run() {
             commands::recover_pending_reset_credit,
             commands::start_wake,
             commands::start_wake_all,
+            commands::start_wake_selected,
             commands::get_wake_operation,
             commands::cancel_wake
         ])

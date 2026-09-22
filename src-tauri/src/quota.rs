@@ -1,11 +1,14 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use chrono::DateTime;
 use serde_json::Value;
 use uuid::Uuid;
 
 use crate::{
     accounts::{AppState, OperationGuard},
     app_server::{AppServer, TempCodexHome},
+    chatgpt::{self, ChatGptClient, RequestFailure, RequestFailureKind},
+    codex,
     identity::{derive_identity, document_kind},
     runtime,
     types::{
@@ -15,6 +18,17 @@ use crate::{
         StoredResetCredit, StoredResetCredits,
     },
 };
+
+/// The externally running Codex process is the refresh-token owner for a
+/// matching account. A Wake may still use a token snapshot in every state,
+/// but only a definitely inactive account may use an isolated refresh.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum ExternalCredentialState {
+    NotRunning,
+    Matching(Value),
+    DifferentAccount,
+    Unidentifiable,
+}
 
 const CACHE_FRESH_FOR_MS: i64 = 5 * 60 * 1000;
 
@@ -29,13 +43,172 @@ pub fn cached_quota(state: &AppState, account_id: &str) -> Result<QuotaView, Str
 /// account endpoint; `account/read` alone is deliberately not used as proof.
 pub fn refresh_quota(state: &AppState, account_id: &str) -> Result<QuotaView, String> {
     let operation = state.acquire_operation()?;
-    runtime::ensure_no_external_codex(&[])?;
     let account = state.account_by_id_under_operation(&operation, account_id)?;
     if account.kind == AccountKind::ApiKey {
         return Ok(not_applicable(&account));
     }
     let identity = verified_chatgpt_identity(&account)?;
+    match external_credential_state_for_identity(&identity)? {
+        ExternalCredentialState::Matching(credential) => {
+            return refresh_active_read_only(state, &operation, &account, &identity, credential)
+        }
+        ExternalCredentialState::Unidentifiable => {
+            return Err(
+                "Codex is running and GSwitch cannot safely identify its active account"
+                    .to_string(),
+            )
+        }
+        ExternalCredentialState::NotRunning | ExternalCredentialState::DifferentAccount => {}
+    }
 
+    match refresh_read_only(state, &operation, &account, &identity, &account.credential) {
+        Ok(view) => Ok(view),
+        Err(ReadOnlyRefreshFailure::Provider(error)) if error.can_fallback_to_managed_refresh() => {
+            refresh_via_managed_profile(state, &operation, &account, &identity)
+        }
+        Err(error) => Err(error.message()),
+    }
+}
+
+fn refresh_active_read_only(
+    state: &AppState,
+    operation: &OperationGuard<'_>,
+    account: &StoredAccount,
+    identity: &AccountIdentity,
+    initial_credential: Value,
+) -> Result<QuotaView, String> {
+    match refresh_read_only(state, operation, account, identity, &initial_credential) {
+        Ok(view) => Ok(view),
+        Err(ReadOnlyRefreshFailure::Provider(error)) if error.can_fallback_to_managed_refresh() => {
+            let latest = live_credential_for_identity(identity)?.ok_or_else(|| {
+                "Codex is running and GSwitch could not reread its active account credential"
+                    .to_string()
+            })?;
+            if latest == initial_credential {
+                return Err(ReadOnlyRefreshFailure::Provider(error).message());
+            }
+            match refresh_read_only(state, operation, account, identity, &latest) {
+                Ok(view) => Ok(view),
+                Err(error) => Err(error.message()),
+            }
+        }
+        Err(error) => Err(error.message()),
+    }
+}
+
+fn refresh_read_only(
+    state: &AppState,
+    operation: &OperationGuard<'_>,
+    account: &StoredAccount,
+    identity: &AccountIdentity,
+    credential: &Value,
+) -> Result<QuotaView, ReadOnlyRefreshFailure> {
+    let snapshot = refresh_quota_snapshot(state, operation, account, identity, credential)?;
+    Ok(view_from_snapshot(&account.id, snapshot, now_unix_ms()))
+}
+
+/// Refreshes only the account's quota projection from a supplied access-token
+/// snapshot. It never updates credentials and is safe for an externally owned
+/// active account.
+pub(crate) fn refresh_quota_snapshot(
+    state: &AppState,
+    operation: &OperationGuard<'_>,
+    account: &StoredAccount,
+    identity: &AccountIdentity,
+    credential: &Value,
+) -> Result<QuotaSnapshot, ReadOnlyRefreshFailure> {
+    let client = ChatGptClient::new().map_err(ReadOnlyRefreshFailure::Message)?;
+    let response = client
+        .quota(credential)
+        .map_err(ReadOnlyRefreshFailure::Provider)?;
+    chatgpt::validate_response_identity(credential, identity, &response.usage)
+        .map_err(ReadOnlyRefreshFailure::Message)?;
+
+    let merged = chatgpt::merge_reset_credit_details(
+        &response.usage,
+        response.reset_credit_details.as_ref(),
+    );
+    let mut normalized = normalize_rate_limits_data(&merged, now_unix_ms());
+    if response.detail_failure.is_some() {
+        if let Some(reset_credits) = normalized.reset_credits.as_mut() {
+            reset_credits.credits = None;
+            normalized.snapshot.reset_credits = Some(reset_credits_view(
+                reset_credits,
+                normalized.snapshot.fetched_at_unix_ms / 1000,
+            ));
+        }
+    }
+    let snapshot = normalized.snapshot;
+    state
+        .update_quota_under_operation(
+            operation,
+            &account.id,
+            snapshot.clone(),
+            normalized.reset_credits,
+        )
+        .map_err(ReadOnlyRefreshFailure::Message)?;
+    Ok(snapshot)
+}
+
+pub(crate) enum ReadOnlyRefreshFailure {
+    Provider(RequestFailure),
+    Message(String),
+}
+
+impl ReadOnlyRefreshFailure {
+    pub(crate) fn can_fallback_to_managed_refresh(&self) -> bool {
+        matches!(self, Self::Provider(error) if error.can_fallback_to_managed_refresh())
+    }
+
+    pub(crate) fn message(self) -> String {
+        match self {
+            Self::Message(message) => message,
+            Self::Provider(error) => match error.kind {
+                RequestFailureKind::Authentication => {
+                    "ChatGPT rejected the read-only quota request".to_string()
+                }
+                RequestFailureKind::RateLimited => {
+                    "ChatGPT rate-limited the quota request; try again later".to_string()
+                }
+                RequestFailureKind::Http => "ChatGPT quota service returned an error".to_string(),
+                RequestFailureKind::Transport => {
+                    "Unable to reach ChatGPT quota service".to_string()
+                }
+                RequestFailureKind::InvalidJson => {
+                    "ChatGPT returned an invalid quota response".to_string()
+                }
+            },
+        }
+    }
+}
+
+fn refresh_via_managed_profile(
+    state: &AppState,
+    operation: &OperationGuard<'_>,
+    account: &StoredAccount,
+    identity: &AccountIdentity,
+) -> Result<QuotaView, String> {
+    let refreshed = refresh_via_managed_profile_for_wake(state, operation, account, identity)?;
+    Ok(view_from_snapshot(
+        &account.id,
+        refreshed.snapshot,
+        now_unix_ms(),
+    ))
+}
+
+pub(crate) struct ManagedQuotaRefresh {
+    pub(crate) credential: Value,
+    pub(crate) snapshot: QuotaSnapshot,
+}
+
+/// Refreshes an inactive credential only through an isolated profile. Callers
+/// must first establish that no external Codex process owns this identity.
+pub(crate) fn refresh_via_managed_profile_for_wake(
+    state: &AppState,
+    operation: &OperationGuard<'_>,
+    account: &StoredAccount,
+    identity: &AccountIdentity,
+) -> Result<ManagedQuotaRefresh, String> {
     let mut temporary = TempCodexHome::create(&state.isolated_profile_root()?)?;
     temporary.write_auth(&account.credential)?;
     let mut server = AppServer::start(&temporary.path)?;
@@ -43,7 +216,7 @@ pub fn refresh_quota(state: &AppState, account_id: &str) -> Result<QuotaView, St
     let refreshed_credential = temporary.read_auth()?;
 
     if document_kind(&refreshed_credential)? != AccountKind::ChatGpt
-        || derive_identity(&AccountKind::ChatGpt, &refreshed_credential)? != identity
+        || derive_identity(&AccountKind::ChatGpt, &refreshed_credential)? != *identity
     {
         return Err("Codex did not confirm the quota account identity".to_string());
     }
@@ -52,14 +225,17 @@ pub fn refresh_quota(state: &AppState, account_id: &str) -> Result<QuotaView, St
     let snapshot = normalized.snapshot;
     persist_refreshed_credential_and_quota(
         state,
-        &operation,
+        operation,
         &account.id,
         &refreshed_credential,
         snapshot.clone(),
         normalized.reset_credits,
         &mut temporary,
     )?;
-    Ok(view_from_snapshot(&account.id, snapshot, now_unix_ms()))
+    Ok(ManagedQuotaRefresh {
+        credential: refreshed_credential,
+        snapshot,
+    })
 }
 
 /// Redeems one user-confirmed reset credit through the official App Server.
@@ -342,6 +518,61 @@ pub(crate) fn verified_chatgpt_identity(
     Ok(identity)
 }
 
+/// When Codex is running, identify the active file-backed account immediately
+/// before the provider request. A matching account gets a live token snapshot;
+/// a different account remains eligible for a read-only saved snapshot.
+pub(crate) fn live_credential_for_identity(
+    identity: &AccountIdentity,
+) -> Result<Option<Value>, String> {
+    match external_credential_state_for_identity(identity)? {
+        ExternalCredentialState::Matching(credential) => Ok(Some(credential)),
+        ExternalCredentialState::NotRunning | ExternalCredentialState::DifferentAccount => Ok(None),
+        ExternalCredentialState::Unidentifiable => Err(
+            "Codex is running and GSwitch cannot safely identify its active account".to_string(),
+        ),
+    }
+}
+
+pub(crate) fn external_credential_state_for_identity(
+    identity: &AccountIdentity,
+) -> Result<ExternalCredentialState, String> {
+    if !runtime::external_codex_running(&[])? {
+        return Ok(ExternalCredentialState::NotRunning);
+    }
+
+    let codex_home = codex::codex_home()?;
+    if codex::credential_store_mode(&codex_home)? != crate::types::CredentialStoreMode::File {
+        return Ok(ExternalCredentialState::Unidentifiable);
+    }
+    let Some(live) = codex::read_optional_auth_document(&codex_home)? else {
+        return Ok(ExternalCredentialState::Unidentifiable);
+    };
+    let live_kind = match document_kind(&live) {
+        Ok(kind) => kind,
+        Err(_) => return Ok(ExternalCredentialState::Unidentifiable),
+    };
+    let live_identity = match derive_identity(&live_kind, &live) {
+        Ok(identity) => identity,
+        Err(_) => return Ok(ExternalCredentialState::Unidentifiable),
+    };
+    if live_kind == AccountKind::ChatGpt && &live_identity == identity {
+        return Ok(ExternalCredentialState::Matching(live));
+    }
+    Ok(ExternalCredentialState::DifferentAccount)
+}
+
+#[cfg(test)]
+fn quota_refresh_conflicts_with_live_identity(
+    target_kind: &AccountKind,
+    target_identity: &AccountIdentity,
+    live_kind: &AccountKind,
+    live_identity: &AccountIdentity,
+) -> bool {
+    target_kind == &AccountKind::ChatGpt
+        && live_kind == &AccountKind::ChatGpt
+        && target_identity == live_identity
+}
+
 fn cached_view(account: &StoredAccount, now: i64) -> QuotaView {
     if account.kind == AccountKind::ApiKey {
         return not_applicable(account);
@@ -406,6 +637,9 @@ pub(crate) fn normalize_rate_limits_data(
     result: &Value,
     fetched_at_unix_ms: i64,
 ) -> NormalizedRateLimits {
+    if result.get("rate_limit").is_some() {
+        return normalize_chatgpt_rate_limits_data(result, fetched_at_unix_ms);
+    }
     let buckets = rate_limit_sources(result)
         .into_iter()
         .map(|(fallback_id, bucket)| normalize_bucket(fallback_id, bucket))
@@ -426,24 +660,122 @@ pub(crate) fn normalize_rate_limits_data(
     }
 }
 
+fn normalize_chatgpt_rate_limits_data(
+    result: &Value,
+    fetched_at_unix_ms: i64,
+) -> NormalizedRateLimits {
+    let mut buckets = Vec::new();
+    if let Some(rate_limit) = result.get("rate_limit").filter(|value| value.is_object()) {
+        buckets.push(normalize_chatgpt_bucket(
+            "codex",
+            rate_limit,
+            string_at(result.get("plan_type")),
+            None,
+        ));
+    }
+    if let Some(additional) = result
+        .get("additional_rate_limits")
+        .and_then(Value::as_array)
+    {
+        for entry in additional.iter().filter(|value| value.is_object()) {
+            let rate_limit = entry
+                .get("rate_limit")
+                .filter(|value| value.is_object())
+                .unwrap_or(entry);
+            let fallback_id = string_at(entry.get("metered_feature"))
+                .or_else(|| string_at(entry.get("limit_id")))
+                .unwrap_or_else(|| "additional".to_string());
+            buckets.push(normalize_chatgpt_bucket(
+                &fallback_id,
+                rate_limit,
+                string_at(entry.get("plan_type")).or_else(|| string_at(result.get("plan_type"))),
+                string_at(entry.get("limit_name")),
+            ));
+        }
+    }
+    let reset_credits = normalize_stored_reset_credits(result);
+    let reset_credits_view = reset_credits
+        .as_ref()
+        .map(|credits| reset_credits_view(credits, fetched_at_unix_ms / 1000));
+    let ordinary_usage_allowed = result
+        .get("ordinary_usage_allowed")
+        .and_then(Value::as_bool)
+        .or_else(|| {
+            result
+                .get("rate_limit")
+                .and_then(|value| value.get("allowed"))
+                .and_then(Value::as_bool)
+        });
+    NormalizedRateLimits {
+        snapshot: QuotaSnapshot {
+            fetched_at_unix_ms,
+            account_id: string_at(result.get("account_id")),
+            ordinary_usage_allowed,
+            buckets,
+            reset_credits: reset_credits_view,
+        },
+        reset_credits,
+    }
+}
+
+fn normalize_chatgpt_bucket(
+    fallback_id: &str,
+    bucket: &Value,
+    plan_type: Option<String>,
+    limit_name: Option<String>,
+) -> QuotaBucket {
+    let limit_id = string_at(bucket.get("limit_id"))
+        .or_else(|| string_at(bucket.get("limitId")))
+        .unwrap_or_else(|| fallback_id.to_string());
+    let windows = [
+        bucket.get("primary_window"),
+        bucket.get("secondary_window"),
+        bucket.get("primary"),
+        bucket.get("secondary"),
+    ]
+    .into_iter()
+    .flatten()
+    .filter(|window| window.is_object())
+    .map(normalize_window)
+    .collect();
+    QuotaBucket {
+        kind: if limit_id == "codex" {
+            QuotaBucketKind::Codex
+        } else {
+            QuotaBucketKind::Other
+        },
+        limit_id,
+        limit_name: limit_name.or_else(|| string_at(bucket.get("limit_name"))),
+        plan_type: plan_type.or_else(|| string_at(bucket.get("plan_type"))),
+        rate_limit_reached_type: string_at(bucket.get("rate_limit_reached_type")),
+        windows,
+    }
+}
+
 fn normalize_stored_reset_credits(result: &Value) -> Option<StoredResetCredits> {
-    let summary = result.get("rateLimitResetCredits")?.as_object()?;
+    let summary = result
+        .get("rateLimitResetCredits")
+        .or_else(|| result.get("rate_limit_reset_credits"))?
+        .as_object()?;
     let available_count = summary
         .get("availableCount")
-        .and_then(Value::as_i64)
-        .and_then(|count| u64::try_from(count).ok())
+        .or_else(|| summary.get("available_count"))
+        .and_then(nonnegative_u64_at)
         .unwrap_or(0);
     let credits = match summary.get("credits") {
         Some(Value::Array(values)) => Some(
             values
                 .iter()
                 .filter_map(|value| {
-                    let id = value.get("id")?.as_str()?.to_string();
-                    let status = value.get("status")?.as_str()?.to_string();
+                    let id = string_at(value.get("id"))?;
+                    let status = string_at(value.get("status"))?;
                     Some(StoredResetCredit {
                         id,
                         status,
-                        expires_at: value.get("expiresAt").and_then(Value::as_i64),
+                        expires_at: value
+                            .get("expiresAt")
+                            .or_else(|| value.get("expires_at"))
+                            .and_then(unix_seconds_at),
                     })
                 })
                 .collect(),
@@ -519,7 +851,10 @@ fn parse_reset_outcome(value: &Value) -> Result<ResetCreditOutcomeKind, String> 
 }
 
 fn rate_limit_sources(result: &Value) -> Vec<(&str, &Value)> {
-    if let Some(by_limit_id) = result.get("rateLimitsByLimitId").and_then(Value::as_object) {
+    let by_limit_id = result
+        .get("rateLimitsByLimitId")
+        .or_else(|| result.get("rate_limits_by_limit_id"));
+    if let Some(by_limit_id) = by_limit_id.and_then(Value::as_object) {
         if !by_limit_id.is_empty() {
             let mut entries = by_limit_id
                 .iter()
@@ -529,8 +864,10 @@ fn rate_limit_sources(result: &Value) -> Vec<(&str, &Value)> {
                 *id == "codex" || bucket.get("limitId").and_then(Value::as_str) == Some("codex")
             });
             if !has_codex_bucket {
-                if let Some(legacy_codex) =
-                    result.get("rateLimits").filter(|bucket| bucket.is_object())
+                if let Some(legacy_codex) = result
+                    .get("rateLimits")
+                    .or_else(|| result.get("rate_limits"))
+                    .filter(|bucket| bucket.is_object())
                 {
                     entries.push(("codex", legacy_codex));
                 }
@@ -541,13 +878,16 @@ fn rate_limit_sources(result: &Value) -> Vec<(&str, &Value)> {
     }
     result
         .get("rateLimits")
+        .or_else(|| result.get("rate_limits"))
         .filter(|bucket| bucket.is_object())
         .map(|bucket| vec![("codex", bucket)])
         .unwrap_or_default()
 }
 
 fn normalize_bucket(fallback_id: &str, bucket: &Value) -> QuotaBucket {
-    let limit_id = string_at(bucket.get("limitId")).unwrap_or_else(|| fallback_id.to_string());
+    let limit_id = string_at(bucket.get("limitId"))
+        .or_else(|| string_at(bucket.get("limit_id")))
+        .unwrap_or_else(|| fallback_id.to_string());
     let windows = [bucket.get("primary"), bucket.get("secondary")]
         .into_iter()
         .flatten()
@@ -561,16 +901,35 @@ fn normalize_bucket(fallback_id: &str, bucket: &Value) -> QuotaBucket {
             QuotaBucketKind::Other
         },
         limit_id,
-        limit_name: string_at(bucket.get("limitName")),
-        plan_type: string_at(bucket.get("planType")),
-        rate_limit_reached_type: string_at(bucket.get("rateLimitReachedType")),
+        limit_name: string_at(bucket.get("limitName"))
+            .or_else(|| string_at(bucket.get("limit_name"))),
+        plan_type: string_at(bucket.get("planType")).or_else(|| string_at(bucket.get("plan_type"))),
+        rate_limit_reached_type: string_at(bucket.get("rateLimitReachedType"))
+            .or_else(|| string_at(bucket.get("rate_limit_reached_type"))),
         windows,
     }
 }
 
 fn normalize_window(window: &Value) -> QuotaWindow {
-    let used_percent = percent_at(window.get("usedPercent"));
-    let window_duration_mins = positive_i64_at(window.get("windowDurationMins"));
+    let used_percent = percent_at(
+        window
+            .get("usedPercent")
+            .or_else(|| window.get("used_percent")),
+    );
+    let window_duration_mins = positive_i64_at(
+        window
+            .get("windowDurationMins")
+            .or_else(|| window.get("window_duration_mins")),
+    )
+    .or_else(|| {
+        positive_i64_at(
+            window
+                .get("limitWindowSeconds")
+                .or_else(|| window.get("limit_window_seconds")),
+        )
+        .map(|seconds| seconds / 60)
+        .filter(|minutes| *minutes > 0)
+    });
     QuotaWindow {
         kind: match window_duration_mins {
             Some(300) => QuotaWindowKind::FiveHour,
@@ -580,7 +939,12 @@ fn normalize_window(window: &Value) -> QuotaWindow {
         used_percent,
         remaining_percent: used_percent.map(|used| 100 - used),
         window_duration_mins,
-        resets_at: positive_i64_at(window.get("resetsAt")),
+        resets_at: positive_i64_at(
+            window
+                .get("resetsAt")
+                .or_else(|| window.get("resets_at"))
+                .or_else(|| window.get("reset_at")),
+        ),
     }
 }
 
@@ -592,14 +956,33 @@ fn string_at(value: Option<&Value>) -> Option<String> {
 }
 
 fn percent_at(value: Option<&Value>) -> Option<u8> {
-    value
-        .and_then(Value::as_i64)
-        .and_then(|value| u8::try_from(value).ok())
-        .filter(|value| *value <= 100)
+    value.and_then(Value::as_f64).and_then(|value| {
+        (0.0..=100.0)
+            .contains(&value)
+            .then_some(value.round() as u8)
+    })
 }
 
 fn positive_i64_at(value: Option<&Value>) -> Option<i64> {
     value.and_then(Value::as_i64).filter(|value| *value > 0)
+}
+
+fn nonnegative_u64_at(value: &Value) -> Option<u64> {
+    value
+        .as_u64()
+        .or_else(|| value.as_i64().and_then(|value| u64::try_from(value).ok()))
+}
+
+fn unix_seconds_at(value: &Value) -> Option<i64> {
+    value
+        .as_i64()
+        .or_else(|| value.as_u64().and_then(|value| i64::try_from(value).ok()))
+        .or_else(|| {
+            value
+                .as_str()
+                .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+                .map(|value| value.timestamp())
+        })
 }
 
 pub(crate) fn now_unix_ms() -> i64 {
@@ -648,6 +1031,76 @@ mod tests {
         assert_eq!(snapshot.buckets[0].windows[0].remaining_percent, Some(75));
         assert_eq!(snapshot.buckets[0].windows[1].kind, QuotaWindowKind::Weekly);
         assert_eq!(snapshot.buckets[1].kind, QuotaBucketKind::Other);
+    }
+
+    #[test]
+    fn normalizes_current_chatgpt_usage_shape_and_additional_limits() {
+        let snapshot = normalize_rate_limits(
+            &json!({
+                "plan_type": "plus",
+                "user_id": "user",
+                "account_id": "workspace",
+                "rate_limit": {
+                    "allowed": true,
+                    "primary_window": {
+                        "used_percent": 25.5,
+                        "limit_window_seconds": 18000,
+                        "reset_at": 900
+                    },
+                    "secondary_window": {
+                        "used_percent": 80,
+                        "limit_window_seconds": 604800,
+                        "reset_at": 1000
+                    }
+                },
+                "additional_rate_limits": [{
+                    "limit_name": "Images",
+                    "metered_feature": "images",
+                    "rate_limit": {
+                        "primary_window": {"used_percent": 10, "limit_window_seconds": 300}
+                    }
+                }]
+            }),
+            100,
+        );
+
+        assert_eq!(snapshot.account_id.as_deref(), Some("workspace"));
+        assert_eq!(snapshot.ordinary_usage_allowed, Some(true));
+        assert_eq!(snapshot.buckets.len(), 2);
+        assert_eq!(snapshot.buckets[0].kind, QuotaBucketKind::Codex);
+        assert_eq!(
+            snapshot.buckets[0].windows[0].kind,
+            QuotaWindowKind::FiveHour
+        );
+        assert_eq!(snapshot.buckets[0].windows[0].used_percent, Some(26));
+        assert_eq!(snapshot.buckets[0].windows[1].kind, QuotaWindowKind::Weekly);
+        assert_eq!(snapshot.buckets[1].limit_name.as_deref(), Some("Images"));
+        assert_eq!(snapshot.buckets[1].kind, QuotaBucketKind::Other);
+    }
+
+    #[test]
+    fn current_chatgpt_reset_credit_expiry_is_normalized_without_exposing_ids() {
+        let normalized = normalize_rate_limits_data(
+            &json!({
+                "rate_limit": {},
+                "rate_limit_reset_credits": {
+                    "available_count": 1,
+                    "credits": [{
+                        "id": "opaque-provider-credit-id",
+                        "status": "available",
+                        "expires_at": "1970-01-01T00:15:00Z"
+                    }]
+                }
+            }),
+            100_000,
+        );
+        let view = normalized.snapshot.reset_credits.expect("credit view");
+        assert_eq!(view.available_count, 1);
+        assert_eq!(view.nearest_expiry, Some(900));
+        assert!(view.details_available);
+        assert!(!serde_json::to_string(&view)
+            .expect("serialize view")
+            .contains("opaque-provider-credit-id"));
     }
 
     #[test]
@@ -741,6 +1194,31 @@ mod tests {
         };
         let view = view_from_snapshot("account", snapshot, CACHE_FRESH_FOR_MS + 2);
         assert_eq!(view.status, QuotaStatus::Stale);
+    }
+
+    #[test]
+    fn blocks_only_the_running_codex_account_from_an_isolated_refresh() {
+        let target = AccountIdentity::ChatGpt {
+            user_id: "user".to_string(),
+            workspace_id: Some("workspace".to_string()),
+        };
+        let other = AccountIdentity::ChatGpt {
+            user_id: "other-user".to_string(),
+            workspace_id: Some("workspace".to_string()),
+        };
+
+        assert!(quota_refresh_conflicts_with_live_identity(
+            &AccountKind::ChatGpt,
+            &target,
+            &AccountKind::ChatGpt,
+            &target,
+        ));
+        assert!(!quota_refresh_conflicts_with_live_identity(
+            &AccountKind::ChatGpt,
+            &target,
+            &AccountKind::ChatGpt,
+            &other,
+        ));
     }
 
     #[test]
