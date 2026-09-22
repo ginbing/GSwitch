@@ -91,6 +91,11 @@ as applicable:
 - structured switch-error codes producing account-specific frontend guidance
   without parsing Rust strings or exposing credential/provider details;
 - successful switching reloading the account view with the active account first;
+- delayed filesystem, provider, process, and App Server command paths running
+  through the asynchronous blocking-work boundary rather than the Tauri main
+  thread;
+- a one-account quota refresh updating its own projection without rebuilding
+  the workspace, and that account's busy state leaving unrelated cards usable;
 - quota bucket normalization, zero remaining, and stale-cache labeling;
 - a quota projection failure leaving the saved-account workspace and Switch
   action available;

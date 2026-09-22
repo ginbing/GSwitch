@@ -603,6 +603,55 @@ describe("GSwitch account workspace", () => {
     expect(await screen.findByText("30%")).toBeInTheDocument();
   });
 
+  it("updates one account quota without reloading the account workspace", async () => {
+    const secondAccount = { ...chatAccount, id: "account-2", email: "other@example.com" };
+    mocks.listAccounts.mockResolvedValue([chatAccount, secondAccount]);
+    mocks.accountQuota.mockImplementation(async (accountId: string) => ({
+      ...staleQuota,
+      account_id: accountId,
+      status: "fresh",
+    }));
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "person@example.com" });
+    expect(await screen.findByRole("heading", { name: "other@example.com" })).toBeInTheDocument();
+    expect(mocks.appSnapshot).toHaveBeenCalledTimes(1);
+
+    await userEvent.click(screen.getByRole("button", { name: "Refresh person@example.com" }));
+
+    await waitFor(() => expect(mocks.refreshAccountQuota).toHaveBeenCalledWith("account-1"));
+    expect(mocks.appSnapshot).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("heading", { name: "person@example.com" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "other@example.com" })).toBeInTheDocument();
+  });
+
+  it("keeps unrelated account actions interactive during a point refresh", async () => {
+    const secondAccount = { ...chatAccount, id: "account-2", email: "other@example.com" };
+    mocks.listAccounts.mockResolvedValue([chatAccount, secondAccount]);
+    mocks.accountQuota.mockImplementation(async (accountId: string) => ({
+      ...staleQuota,
+      account_id: accountId,
+      status: "fresh",
+    }));
+    let resolveRefresh: ((quota: QuotaView) => void) | undefined;
+    mocks.refreshAccountQuota.mockImplementation(
+      () => new Promise<QuotaView>((resolve) => { resolveRefresh = resolve; }),
+    );
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "person@example.com" });
+    await userEvent.click(screen.getByRole("button", { name: "Refresh person@example.com" }));
+    await waitFor(() => expect(mocks.refreshAccountQuota).toHaveBeenCalledWith("account-1"));
+
+    expect(screen.getByRole("button", { name: "Refresh person@example.com" })).toBeDisabled();
+    const otherWake = screen.getByRole("button", { name: "Wake other@example.com" });
+    expect(otherWake).toBeEnabled();
+    await userEvent.click(otherWake);
+    await waitFor(() => expect(mocks.startWake).toHaveBeenCalledWith("account-2"));
+
+    resolveRefresh?.(staleQuota);
+  });
+
   it("keeps account actions available when the live Codex account cannot be identified", async () => {
     mocks.listAccounts.mockResolvedValue([chatAccount]);
     mocks.accountQuota.mockResolvedValue({ account_id: "account-1", status: "unknown" });
