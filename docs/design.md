@@ -44,6 +44,13 @@ status badge. Actions stay next to the account they affect. Global actions such
 as **Add account** and **Wake All** stay near the cards rather than behind a
 sidebar.
 
+Next to Saved accounts, **Select** enters a compact selection mode. Checkboxes
+appear only in that mode, with Select all, Clear, Wake, and Export in one
+compact action bar. It must remain a card-grid interaction rather than a
+dashboard, table, bulk-management page, or second navigation system. Export
+always opens a focused warning before the native save dialog because its
+portable JSON contains unencrypted credentials.
+
 Reset credits remain compact in the row. Details and the destructive
 **Use reset** confirmation appear only on demand, with the earliest-expiring
 eligible credit presented first.
@@ -51,10 +58,10 @@ eligible credit presented first.
 The empty state is two deliberate choices: import one or more export files the
 user selects, or add an account manually. It states plainly that GSwitch does
 not inspect another application's account storage automatically. The add dialog
-offers a clearly labeled **Import from this computer** preview, official
-browser sign-in, pasted auth JSON, selected export files, and API key without a
-separate page. The local preview explains its allowlist before scanning and
-keeps already-saved identities disabled.
+groups the normal path as **Import existing** (Find on this computer and Choose
+files) then **Add new** (official Codex sign-in). Pasted auth JSON and API key
+remain an **Other methods** disclosure. The local preview explains its allowlist
+before scanning and keeps already-saved identities disabled.
 
 A damaged GSwitch account library is not an empty state. It replaces the cards
 with one recovery-only surface, disables account actions, and explains that an
@@ -70,6 +77,8 @@ explicit reset preserves GSwitch's damaged file without touching Codex.
   clear them immediately after submission.
 - File import reads the selected path in Rust rather than copying file contents
   into persistent WebView state.
+- Export selection state and its completion count are safe presentation state;
+  credential documents and the selected destination never enter React.
 
 Errors should answer three questions: what did not happen, whether the current
 Codex state is safe, and what the user can do next. Raw Rust, HTTP, OAuth,

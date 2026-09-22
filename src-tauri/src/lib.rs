@@ -42,6 +42,7 @@ pub fn run() {
             commands::import_auth_json,
             commands::import_auth_file,
             commands::import_auth_files,
+            commands::export_accounts,
             commands::discover_local_accounts,
             commands::import_local_accounts,
             commands::import_api_key,
@@ -57,6 +58,7 @@ pub fn run() {
             commands::recover_pending_reset_credit,
             commands::start_wake,
             commands::start_wake_all,
+            commands::start_wake_selected,
             commands::get_wake_operation,
             commands::cancel_wake
         ])

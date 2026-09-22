@@ -32,7 +32,7 @@ credential document.
 | Quota and reset-credit facts | Codex/OpenAI response | Normalize and cache them without inventing missing values |
 | External Codex process state | Operating system | Detect known or uninspectable runtimes before sensitive operations |
 | Pending switch/reset recovery | GSwitch account store | Persist enough intent to resume safely and idempotently |
-| Screen and dialog state | React component tree | Keep it transient, derived, and free of stored secrets |
+| Screen and dialog state | React component tree | Keep it transient, derived, and free of stored secrets; selected saved-account IDs are permitted, credentials and export paths are not |
 
 Unknown, stale, timed-out, or conflicting state remains unknown. A cache is a
 projection, not a second authority over runtime or provider facts.
@@ -56,7 +56,7 @@ Keep the backend flat and organized by concrete responsibility:
 - `codex.rs`: `CODEX_HOME`, effective storage mode, and live auth-file access;
 - `identity.rs`: credential classification, stable non-secret identity, and
   fingerprints used for comparisons;
-- `intake.rs`: OAuth, bounded auth-document batch import, and API-key intake;
+- `intake.rs`: OAuth, bounded auth-document batch import, versioned portable export serialization, and API-key intake;
 - `migration.rs`: one-shot, allowlisted local Codex/Cockpit discovery,
   read-only envelope decoding, sanitized previews, and revalidated handoff to
   `intake.rs`;
@@ -83,14 +83,15 @@ and forms. A global store, router, component framework, or generic API client
 requires a demonstrated current need.
 
 The native dialog is used to choose account-export paths or, after an explicit
-user action, one documented Cockpit data folder. Rust reads those paths and
-returns only a sanitized aggregate import result or local-account preview; raw
-file bytes, source records, keys, and credential documents do not cross the
-WebView boundary. File-count, per-file, and aggregate-size limits plus identity
-deduplication belong to Rust rather than React. Local migration is a one-shot
-command with no startup scan, watcher, scheduler, or background job. OAuth
-links are short-lived, user-visible links associated with an in-memory login
-session.
+user action, one documented Cockpit data folder. Rust reads selected import
+paths and owns portable export lookup, serialization, destination, and write;
+it returns only sanitized import summaries, local-account previews, and export
+counts. Raw file bytes, source records, paths, keys, and credential documents
+do not cross the WebView boundary. File-count, per-file, and aggregate-size
+limits plus identity deduplication belong to Rust rather than React. Local
+migration is a one-shot command with no startup scan, watcher, scheduler, or
+background job. OAuth links are short-lived, user-visible links associated with
+an in-memory login session.
 
 The WebView may persist its selected display language only. Language selection
 is not account state and must not share storage with credentials, provider data,

@@ -42,8 +42,10 @@ network requests.
 GSwitch can import a complete official Codex auth document and explicitly
 user-selected public exports from Cockpit Tools, Sub2API, and CPA. It does not
 inspect another application's account storage automatically. The Add Account
-dialog also offers a one-shot **Import from this computer** action: after the
-user starts it, Rust reads only the documented Official Codex profile and
+dialog prioritizes **Import existing** with one-shot **Find on this computer**
+and **Choose files** actions, then **Add new** with official Codex sign-in;
+paste JSON and API-key intake remain under Other methods. After the user starts
+Find on this computer, Rust reads only the documented Official Codex profile and
 Cockpit production/legacy roots (`codex_accounts.json`, direct detail files,
 and the existing secure-storage key). A user-selected alternate folder is
 bounded to the same allowlist. The preview contains only email, workspace or
@@ -70,6 +72,33 @@ Portable exports are converted only to the minimum complete Codex credential
 shape needed for validation. Cockpit-specific private metadata such as 2FA
 secrets, passwords, phone fields, notes, labels, tags, and mail settings is
 dropped rather than copied into GSwitch.
+
+### Portable GSwitch export
+
+Selection mode is the normal way to act on several saved accounts. The
+WebView holds only selected account IDs; Rust verifies those IDs under the
+operation lock, collects the matching saved snapshots, opens the native save
+dialog, and writes one explicitly user-authorized portable document. It returns
+only an aggregate count or cancellation state.
+
+The version-1 format is a single JSON object:
+
+```json
+{"format":"gswitch-accounts","version":1,"accounts":[...]}
+```
+
+Each entry contains the complete credential document and optional label or
+workspace display metadata. It excludes account IDs, account kind, email, plan,
+identity, quota/cache data, reset-credit state, Wake state, recovery records,
+settings, paths, updater data, and source metadata. Before the native save
+dialog, the UI makes clear that the file is unencrypted. On Unix the write uses
+private file permissions; users still choose a private location and remain
+responsible for deleting the export when finished.
+
+The existing bounded Rust batch parser recognizes this format by its explicit
+`format` field, accepts only version 1, and fails closed for other versions. It
+then uses the normal identity deduplication and validation path. Filename or
+extension never selects a parser.
 
 ### API key
 
@@ -211,7 +240,8 @@ the request may have reached ChatGPT. Wake rereads quota afterward only to
 confirm the new window; an unavailable confirmation is reported as sent but not
 confirmed.
 
-Wake All is sequential, cancellable, and returns one result per account:
+Wake All and selected-account Wake are sequential, cancellable, and return one
+result per eligible ChatGPT account:
 Started, Already active, No ordinary capacity, Needs sign-in, Sent not
 confirmed, Failed, or Cancelled. A single account failure does not corrupt or
 silently relabel another account. Wake is user-triggered; there is no cron,
