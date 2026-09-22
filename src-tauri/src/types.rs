@@ -207,6 +207,30 @@ pub struct SwitchOutcome {
     pub account: AccountView,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SwitchFailureCode {
+    CodexOpen,
+    AccountNeedsSignIn,
+    FileStoreRequired,
+    CredentialsChanged,
+    RecoveryRequired,
+    VerificationFailed,
+}
+
+/// A deliberately small, sanitized command error. Detailed provider,
+/// filesystem, and recovery errors stay inside Rust.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SwitchFailure {
+    pub code: SwitchFailureCode,
+}
+
+impl SwitchFailure {
+    pub fn new(code: SwitchFailureCode) -> Self {
+        Self { code }
+    }
+}
+
 /// A provider-reported capacity snapshot. It is operational state, not usage
 /// analytics: credentials and raw App Server payloads stay in Rust.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
