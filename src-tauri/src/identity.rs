@@ -41,6 +41,20 @@ pub fn document_fingerprint(credential: &Value) -> Result<String, String> {
     Ok(format!("{:x}", Sha256::digest(bytes)))
 }
 
+pub fn email_from_credential(credential: &Value) -> Option<String> {
+    let token = credential
+        .pointer("/tokens/id_token")
+        .or_else(|| credential.get("id_token"))
+        .and_then(Value::as_str)?;
+    let claims = jwt_claims(token).ok()?;
+    let auth = claims
+        .get("https://api.openai.com/auth")
+        .and_then(Value::as_object);
+    string_at(auth, "email")
+        .or_else(|| string_at(claims.as_object(), "email"))
+        .map(ToString::to_string)
+}
+
 fn chatgpt_identity(credential: &Value) -> Result<AccountIdentity, String> {
     let token = credential
         .pointer("/tokens/id_token")

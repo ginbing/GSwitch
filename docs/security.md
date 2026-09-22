@@ -11,12 +11,23 @@ product behavior, not optional implementation polish.
   token fields; unknown future fields must survive a round trip.
 - A pasted auth document or API key may exist only in its transient input until
   submission and must be cleared immediately afterward.
-- A selected or dropped auth file is read in Rust. Its contents are not placed
-  in WebView storage.
-- Import support for Cockpit Tools, Sub2API, and CPA applies only to a file the
-  user explicitly selects or drops. GSwitch never scans their private storage.
-  When a portable Cockpit export includes non-Codex account metadata, it drops
-  password, 2FA, note, phone, tag, group, provider, and mail-setting fields.
+- Selected or dropped auth files are read in Rust. A batch is capped at 64
+  files and 64 MiB in aggregate, retains the 10 MiB per-file limit, and parses
+  all readable files before sequential credential validation. File contents,
+  absolute paths, and individual failure details are not placed in WebView
+  storage or returned in the aggregate result.
+- Import support for Cockpit Tools, Sub2API, and CPA applies to files the user
+  explicitly selects or drops. GSwitch does not inspect another application's
+  account storage automatically. After the user explicitly starts **Find on
+  this computer**, it may read only the documented Official Codex profile
+  and Cockpit allowlist, including the existing secure-storage key needed to
+  decode a supported Codex detail. The read is bounded and strictly
+  read-only: no key creation, rotation, repair, source rewrite, watcher,
+  scheduler, or generic recursive search is allowed. A changed source
+  identity invalidates the preview before normal intake runs. When a portable
+  Cockpit export or local record includes non-Codex account metadata, GSwitch
+  drops password, 2FA, note, phone, tag, group, provider, and mail-setting
+  fields.
 - Do not write credentials, raw provider payloads, reset-credit IDs, or account
   secrets to logs, telemetry, issue-report output, or user-facing errors.
 - The production WebView CSP permits bundled local assets and Tauri IPC only.
@@ -25,6 +36,11 @@ product behavior, not optional implementation polish.
   login is checked.
 - Credential-bearing files use atomic replacement and restrictive permissions
   where the operating system and filesystem support them.
+- Portable export is explicit credential egress: Rust validates selected saved
+  IDs, opens the native save dialog, and writes only after the user accepts the
+  unencrypted-export warning. The WebView receives neither credential content
+  nor destination path. The versioned format excludes account operational
+  state, reset/recovery IDs, provider payloads, paths, and source metadata.
 
 The GSwitch account store lives under the application's config directory. It is
 a small versioned JSON store because the product owns a handful of local
@@ -45,6 +61,13 @@ Switching checks again immediately before replacement to narrow the race window.
 GSwitch-owned isolated App Server children are scoped to their operation and
 excluded only from that operation's external-process check. They are terminated
 when the operation ends.
+
+Saving the current file-backed account does not replace or rewrite live
+credentials. It copies the document into an isolated GSwitch profile for
+validation, checks that the live identity is still the same, and then writes
+only GSwitch-owned account storage. It remains available while Codex is
+running. Switching and every other live credential mutation retain the external
+process guard.
 
 ## Storage and concurrency
 
@@ -79,16 +102,34 @@ ephemeral credentials, bypass managed policy, or assume that writing
 
 ## Isolated-operation invariants
 
-OAuth, import validation, quota, reset redemption, and Wake use short-lived
-GSwitch-owned Codex profiles. Before persisting any refreshed credential, verify
-that its account kind and identity are unchanged. Delete the isolated profile
-after success unless it must be retained as a last-resort protected recovery
-copy.
+OAuth, managed import fallback, quota fallback, and reset redemption use
+short-lived GSwitch-owned Codex profiles. Ordinary ChatGPT import validation
+and account metadata use the Rust-only read-only backend client first. Before
+persisting any refreshed credential, verify that its account kind and identity
+are unchanged. Delete the isolated profile after success unless it must be
+retained as a last-resort protected recovery copy.
 
-Wake also uses an empty workspace, read-only sandbox, no approvals, and an
-ephemeral thread. It does not load the user's project, MCP servers, Skills, or
-normal Codex configuration. Its minimal instruction asks Codex not to inspect
-files or use tools; it never spends a reset credit or Reserve.
+Ordinary quota refresh is a read-only provider projection. When Codex is
+running, GSwitch rereads the file-backed live credential immediately before
+the request and uses that token snapshot when its identity matches the target.
+If the read gets an authentication response, it rereads once and retries only
+when the same identity has a newer credential. It never writes the live file or
+uses App Server for that active path. A running Codex instance on another saved
+identity can still be read through the target's saved snapshot. Only an
+authentication failure for an inactive account may enter the managed isolated
+refresh path; 429, transport, TLS, DNS, timeout, parse, and server failures do
+not.
+
+Wake uses a Rust-owned, direct ChatGPT Codex Responses request with one
+access-token snapshot. A matching running Codex identity remains eligible, but
+retains sole refresh-token ownership: GSwitch rereads its live file-backed token
+once before sending and never writes live `auth.json` or starts a second App
+Server. A safely inactive identity may use one isolated refresh only after an
+authentication failure; an unidentifiable running process is never a reason to
+skip Wake, but prevents that refresh fallback. The one standard-tier text
+request has no tools, project or file context, stored response, reset credit, or
+Reserve use. Once it may have reached the provider, GSwitch reports uncertainty
+instead of retrying.
 
 ## Recovery invariants
 

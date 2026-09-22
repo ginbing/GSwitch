@@ -21,20 +21,8 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Require the tag to match the application version
         run: |
-          version="$(node -p \"require('./src-tauri/tauri.conf.json').version\")"
+          version="$(node -p "require('./src-tauri/tauri.conf.json').version")"
           test "$GITHUB_REF_NAME" = "v$version"
-      - name: Require macOS release credentials
-        env:
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
-        run: |
-          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID KEYCHAIN_PASSWORD; do
-            test -n "${!name}" || { echo "Missing required release secret: $name" >&2; exit 1; }
-          done
       - name: Require signed updater configuration
         env:
           TAURI_UPDATER_PUBLIC_KEY: ${{ vars.TAURI_UPDATER_PUBLIC_KEY }}
@@ -58,11 +46,11 @@ jobs:
             rust_targets: ""
           - id: macos-silicon
             os: macos-latest
-            args: --target aarch64-apple-darwin --bundles dmg
+            args: --target aarch64-apple-darwin --bundles app,dmg
             rust_targets: aarch64-apple-darwin
           - id: macos-intel
             os: macos-latest
-            args: --target x86_64-apple-darwin --bundles dmg
+            args: --target x86_64-apple-darwin --bundles app,dmg
             rust_targets: x86_64-apple-darwin
           - id: linux
             os: ubuntu-22.04
@@ -102,58 +90,17 @@ jobs:
       - run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
       - run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
       - run: cargo test --manifest-path src-tauri/Cargo.toml --locked
-      - name: Import the configured Windows certificate
-        if: matrix.id == 'windows'
-        shell: pwsh
-        env:
-          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
-          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
-        run: |
-          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE)) { exit 0 }
-          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_PASSWORD)) {
-            throw 'WINDOWS_CERTIFICATE_PASSWORD is required when WINDOWS_CERTIFICATE is configured.'
-          }
-          $encoded = Join-Path $env:RUNNER_TEMP 'gswitch-certificate.txt'
-          $certificate = Join-Path $env:RUNNER_TEMP 'gswitch-certificate.pfx'
-          Set-Content -LiteralPath $encoded -Value $env:WINDOWS_CERTIFICATE
-          certutil -decode $encoded $certificate | Out-Host
-          Import-PfxCertificate -FilePath $certificate -CertStoreLocation Cert:\CurrentUser\My -Password (ConvertTo-SecureString -String $env:WINDOWS_CERTIFICATE_PASSWORD -Force -AsPlainText) | Out-Null
-          Remove-Item -LiteralPath $encoded, $certificate -Force
-      - name: Import the macOS Developer ID certificate
-        if: startsWith(matrix.id, 'macos-')
-        env:
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
-        run: |
-          certificate="$RUNNER_TEMP/gswitch-certificate.p12"
-          keychain="$RUNNER_TEMP/gswitch-build.keychain"
-          echo "$APPLE_CERTIFICATE" | base64 --decode > "$certificate"
-          security create-keychain -p "$KEYCHAIN_PASSWORD" "$keychain"
-          security default-keychain -s "$keychain"
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$keychain"
-          security set-keychain-settings -t 3600 -u "$keychain"
-          security import "$certificate" -k "$keychain" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
-          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$keychain"
-          identity="$(security find-identity -v -p codesigning "$keychain" | grep 'Developer ID Application' | head -n 1 | awk -F '\"' '{print $2}')"
-          test -n "$identity"
-          echo "APPLE_SIGNING_IDENTITY=$identity" >> "$GITHUB_ENV"
-          rm -f "$certificate"
       - uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_SIGNING_IDENTITY: ${{ env.APPLE_SIGNING_IDENTITY }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: GSwitch v__VERSION__
-          releaseBody: "Review the assets, release notes, platform smoke evidence, and signing results before publishing this draft."
           releaseDraft: true
           prerelease: false
+          generateReleaseNotes: true
           uploadUpdaterJson: true
           updaterJsonPreferNsis: true
           args: --config src-tauri/tauri.updater.conf.json ${{ matrix.args }}
@@ -166,12 +113,15 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          assets="$(gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name')"
+          assets="$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')"
           printf '%s\n' "$assets"
           test "$(printf '%s\n' "$assets" | grep -Eic 'setup\.exe$')" -eq 1
           test "$(printf '%s\n' "$assets" | grep -Eic '\.dmg$')" -eq 2
           test "$(printf '%s\n' "$assets" | grep -Eic '\.AppImage$')" -eq 1
           test "$(printf '%s\n' "$assets" | grep -Eic '\.deb$')" -eq 1
           test "$(printf '%s\n' "$assets" | grep -Eic '^latest\.json$')" -eq 1
-          test "$(printf '%s\n' "$assets" | grep -Eic '\.sig$')" -eq 4
-          test "$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq '.isDraft')" = true
+          test "$(printf '%s\n' "$assets" | grep -Eic 'setup\.exe\.sig$')" -eq 1
+          test "$(printf '%s\n' "$assets" | grep -Eic 'aarch64\.app\.tar\.gz\.sig$')" -eq 1
+          test "$(printf '%s\n' "$assets" | grep -Eic 'x64\.app\.tar\.gz\.sig$')" -eq 1
+          test "$(printf '%s\n' "$assets" | grep -Eic 'amd64\.AppImage\.sig$')" -eq 1
+          test "$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json isDraft --jq '.isDraft')" = true
