@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   AccountView,
   AppSnapshot,
+  ExportResult,
   ImportResult,
   LiveAccountView,
   MigrationPreview,
@@ -39,6 +40,8 @@ export const api = {
     invoke<ImportResult>("import_auth_file", { path }),
   importAuthFiles: (paths: string[]) =>
     invoke<ImportResult>("import_auth_files", { paths }),
+  exportAccounts: (selectedIds: string[]) =>
+    invoke<ExportResult>("export_accounts", { selectedIds }),
   discoverLocalAccounts: (customRoot?: string) =>
     invoke<MigrationPreview>("discover_local_accounts", { customRoot }),
   importLocalAccounts: (customRoot: string | undefined, selectedIds: string[]) =>
@@ -62,9 +65,10 @@ export const api = {
     invoke<ResetCreditOutcome>("redeem_earliest_reset_credit", { id }),
   recoverPendingResetCredit: () =>
     invoke<ResetCreditOutcome>("recover_pending_reset_credit"),
-  startWake: (id: string, model?: string) =>
-    invoke<WakeStart>("start_wake", { id, model }),
+  startWake: (id: string) => invoke<WakeStart>("start_wake", { id }),
   startWakeAll: () => invoke<WakeStart>("start_wake_all"),
+  startWakeSelected: (selectedIds: string[]) =>
+    invoke<WakeStart>("start_wake_selected", { selectedIds }),
   wakeOperation: (operationId: string) =>
     invoke<WakeOperationView>("get_wake_operation", { operationId }),
   cancelWake: (operationId: string) =>

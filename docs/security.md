@@ -18,8 +18,8 @@ product behavior, not optional implementation polish.
   storage or returned in the aggregate result.
 - Import support for Cockpit Tools, Sub2API, and CPA applies to files the user
   explicitly selects or drops. GSwitch does not inspect another application's
-  account storage automatically. After the user explicitly starts **Import
-  from this computer**, it may read only the documented Official Codex profile
+  account storage automatically. After the user explicitly starts **Find on
+  this computer**, it may read only the documented Official Codex profile
   and Cockpit allowlist, including the existing secure-storage key needed to
   decode a supported Codex detail. The read is bounded and strictly
   read-only: no key creation, rotation, repair, source rewrite, watcher,
@@ -36,6 +36,11 @@ product behavior, not optional implementation polish.
   login is checked.
 - Credential-bearing files use atomic replacement and restrictive permissions
   where the operating system and filesystem support them.
+- Portable export is explicit credential egress: Rust validates selected saved
+  IDs, opens the native save dialog, and writes only after the user accepts the
+  unencrypted-export warning. The WebView receives neither credential content
+  nor destination path. The versioned format excludes account operational
+  state, reset/recovery IDs, provider payloads, paths, and source metadata.
 
 The GSwitch account store lives under the application's config directory. It is
 a small versioned JSON store because the product owns a handful of local
@@ -97,7 +102,7 @@ ephemeral credentials, bypass managed policy, or assume that writing
 
 ## Isolated-operation invariants
 
-OAuth, managed import fallback, quota fallback, reset redemption, and Wake use
+OAuth, managed import fallback, quota fallback, and reset redemption use
 short-lived GSwitch-owned Codex profiles. Ordinary ChatGPT import validation
 and account metadata use the Rust-only read-only backend client first. Before
 persisting any refreshed credential, verify that its account kind and identity
@@ -115,10 +120,16 @@ authentication failure for an inactive account may enter the managed isolated
 refresh path; 429, transport, TLS, DNS, timeout, parse, and server failures do
 not.
 
-Wake also uses an empty workspace, read-only sandbox, no approvals, and an
-ephemeral thread. It does not load the user's project, MCP servers, Skills, or
-normal Codex configuration. Its minimal instruction asks Codex not to inspect
-files or use tools; it never spends a reset credit or Reserve.
+Wake uses a Rust-owned, direct ChatGPT Codex Responses request with one
+access-token snapshot. A matching running Codex identity remains eligible, but
+retains sole refresh-token ownership: GSwitch rereads its live file-backed token
+once before sending and never writes live `auth.json` or starts a second App
+Server. A safely inactive identity may use one isolated refresh only after an
+authentication failure; an unidentifiable running process is never a reason to
+skip Wake, but prevents that refresh fallback. The one standard-tier text
+request has no tools, project or file context, stored response, reset credit, or
+Reserve use. Once it may have reached the provider, GSwitch reports uncertainty
+instead of retrying.
 
 ## Recovery invariants
 

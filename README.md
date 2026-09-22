@@ -1,5 +1,7 @@
 # GSwitch
 
+<img src="./assets/gswitch-icon.svg" width="64" alt="GSwitch mark">
+
 A simple and reliable Codex account switcher.
 
 GSwitch is for people who use more than one Codex account and want an easy way
@@ -10,6 +12,7 @@ It gets the job done.
 ## What it does
 
 - Keep multiple Codex accounts on your computer
+- Import or export selected accounts as one portable file
 - Show the active account
 - Show quota, reset times, and available reset credits
 - Change accounts safely

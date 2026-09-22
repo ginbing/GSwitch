@@ -42,8 +42,10 @@ network requests.
 GSwitch can import a complete official Codex auth document and explicitly
 user-selected public exports from Cockpit Tools, Sub2API, and CPA. It does not
 inspect another application's account storage automatically. The Add Account
-dialog also offers a one-shot **Import from this computer** action: after the
-user starts it, Rust reads only the documented Official Codex profile and
+dialog prioritizes **Import existing** with one-shot **Find on this computer**
+and **Choose files** actions, then **Add new** with official Codex sign-in;
+paste JSON and API-key intake remain under Other methods. After the user starts
+Find on this computer, Rust reads only the documented Official Codex profile and
 Cockpit production/legacy roots (`codex_accounts.json`, direct detail files,
 and the existing secure-storage key). A user-selected alternate folder is
 bounded to the same allowlist. The preview contains only email, workspace or
@@ -70,6 +72,33 @@ Portable exports are converted only to the minimum complete Codex credential
 shape needed for validation. Cockpit-specific private metadata such as 2FA
 secrets, passwords, phone fields, notes, labels, tags, and mail settings is
 dropped rather than copied into GSwitch.
+
+### Portable GSwitch export
+
+Selection mode is the normal way to act on several saved accounts. The
+WebView holds only selected account IDs; Rust verifies those IDs under the
+operation lock, collects the matching saved snapshots, opens the native save
+dialog, and writes one explicitly user-authorized portable document. It returns
+only an aggregate count or cancellation state.
+
+The version-1 format is a single JSON object:
+
+```json
+{"format":"gswitch-accounts","version":1,"accounts":[...]}
+```
+
+Each entry contains the complete credential document and optional label or
+workspace display metadata. It excludes account IDs, account kind, email, plan,
+identity, quota/cache data, reset-credit state, Wake state, recovery records,
+settings, paths, updater data, and source metadata. Before the native save
+dialog, the UI makes clear that the file is unencrypted. On Unix the write uses
+private file permissions; users still choose a private location and remain
+responsible for deleting the export when finished.
+
+The existing bounded Rust batch parser recognizes this format by its explicit
+`format` field, accepts only version 1, and fails closed for other versions. It
+then uses the normal identity deduplication and validation path. Filename or
+extension never selects a parser.
 
 ### API key
 
@@ -189,31 +218,35 @@ Wake deliberately starts an eligible account's five-hour window with one small
 Codex request. It is not a health check, router, load balancer, account rotation,
 or keep-warm service.
 
-Each Wake runs with the saved account in an isolated `CODEX_HOME` and an empty
-workspace. It does not replace the live credential or load the user's project,
-MCP servers, Skills, or normal Codex settings. The operation:
+Wake reads quota first through GSwitch's narrow ChatGPT backend client. It
+reports an already-active five-hour window or unavailable ordinary capacity
+without sending a request, and it never uses Reserve or reset credits. A running
+Codex process never makes an account ineligible: a matching active identity uses
+one live access-token snapshot, a different identity uses the saved snapshot,
+and an unidentifiable active process uses the saved snapshot without a managed
+refresh. GSwitch never writes live `auth.json`.
 
-- refreshes quota first and skips a window already active;
-- refuses to spend reset credits or Reserve when ordinary quota is exhausted;
-- skips an account when an external Codex process is using that same identity,
-  or when that identity cannot be checked safely;
-- automatically selects only `gpt-5.6-luna` or `gpt-5.4-mini` when that
-  account advertises a visible text model with the normal (`standard`) service
-  tier; otherwise it asks the user to choose from eligible models;
-- uses the lowest supported reasoning effort and the normal service tier;
-- creates one ephemeral read-only thread with a minimal prompt, no approval,
-  and no retry; the isolated profile has no user MCP servers, Skills, or
-  project configuration, and the instruction asks Codex not to inspect files
-  or use tools;
-- confirms the result from refreshed quota when possible;
-- preserves refreshed credentials only if the identity still matches.
+An authentication failure for a definitely inactive account may use one
+isolated official Codex App Server refresh. That profile is identity-checked
+before its refreshed credential is stored. An active or uncertain account never
+enters this fallback. If a matching active token changes before Wake sends, it
+rereads the live token once and repeats only the quota preflight.
 
-Wake All is sequential, cancellable, and returns one result per account. A
-single account failure does not corrupt or silently relabel another account.
-After a turn begins, an uncertain result is reported without retrying and any
-refreshed credential is persisted before the isolated profile is cleaned up.
-Wake is user-triggered; there is no cron, background schedule, automatic
-rotation, history dashboard, or job-management surface.
+The request is one direct `POST /codex/responses` call through the current
+ChatGPT Codex route: `gpt-5.6-luna`, standard tier, no reasoning, a single
+`OK` text input, no tools, no files or project context, and no stored response.
+There is no generic Responses client, proxy, second App Server, or retry after
+the request may have reached ChatGPT. Wake rereads quota afterward only to
+confirm the new window; an unavailable confirmation is reported as sent but not
+confirmed.
+
+Wake All and selected-account Wake are sequential, cancellable, and return one
+result per eligible ChatGPT account:
+Started, Already active, No ordinary capacity, Needs sign-in, Sent not
+confirmed, Failed, or Cancelled. A single account failure does not corrupt or
+silently relabel another account. Wake is user-triggered; there is no cron,
+background schedule, automatic rotation, history dashboard, or job-management
+surface.
 
 ## Recovery
 

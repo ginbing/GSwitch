@@ -74,6 +74,11 @@ export interface ImportResult {
   failed_count: number;
 }
 
+export interface ExportResult {
+  exported_count: number;
+  cancelled: boolean;
+}
+
 export type MigrationSource = "official_codex" | "cockpit_tools";
 export type MigrationCandidateState = "new" | "already_present" | "unsupported";
 
@@ -149,12 +154,12 @@ export interface ResetCreditOutcome {
 }
 
 export type WakeResultKind =
+  | "started"
   | "already_active"
-  | "window_started"
-  | "request_completed_unconfirmed"
-  | "needs_model_selection"
+  | "no_ordinary_capacity"
+  | "needs_sign_in"
+  | "sent_not_confirmed"
   | "failed"
-  | "skipped"
   | "cancelled";
 
 export interface WakeAccountResult {
@@ -162,7 +167,6 @@ export interface WakeAccountResult {
   label: string;
   result: WakeResultKind;
   message: string;
-  available_models?: string[];
 }
 
 export interface WakeOperationView {
