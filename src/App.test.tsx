@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { open } from "@tauri-apps/plugin-dialog";
 
 import App from "./App";
-import type { AccountView, QuotaView } from "./types";
+import type { AccountView, QuotaView, SwitchFailureCode } from "./types";
 
 const mocks = vi.hoisted(() => ({
   runtimeInfo: vi.fn(),
@@ -615,13 +615,84 @@ describe("GSwitch account workspace", () => {
     expect(screen.getByRole("button", { name: "Switch to person@example.com" })).toBeEnabled();
   });
 
-  it("maps the existing Quit Codex guard to an actionable retry message", async () => {
-    mocks.listAccounts.mockResolvedValue([chatAccount]);
-    mocks.switchAccount.mockRejectedValue(new Error("Quit Codex before changing the active account"));
+  it.each([
+    ["codex_open", /Quit the other Codex session/],
+    ["account_needs_sign_in", /needs sign-in again/],
+    ["file_store_required", /Enable file-backed Codex credentials/],
+    ["credentials_changed", /Codex credentials changed during the switch/],
+    ["recovery_required", /Complete the protected switch recovery/],
+    ["verification_failed", /could not verify/],
+  ] satisfies Array<[SwitchFailureCode, RegExp]>)(
+    "shows an actionable %s switch failure for the selected account",
+    async (code, message) => {
+      mocks.listAccounts.mockResolvedValue([chatAccount]);
+      mocks.switchAccount.mockRejectedValue({ code });
+      render(<App />);
+
+      await userEvent.click(
+        await screen.findByRole("button", { name: "Switch to person@example.com" }),
+      );
+      const notice = await screen.findByRole("status");
+      expect(notice).toHaveTextContent(message);
+      expect(notice).toHaveTextContent("person@example.com");
+    },
+  );
+
+  it("uses the account label in a structured switch failure when email is unavailable", async () => {
+    const account = { ...chatAccount, email: undefined, label: "Fallback account" };
+    mocks.listAccounts.mockResolvedValue([account]);
+    mocks.switchAccount.mockRejectedValue({ code: "verification_failed" });
     render(<App />);
 
+    await userEvent.click(await screen.findByRole("button", { name: "Switch to Fallback account" }));
+    expect(await screen.findByRole("status")).toHaveTextContent("could not verify Fallback account");
+  });
+
+  it("localizes a structured switch failure in Simplified Chinese", async () => {
+    Object.defineProperty(window.navigator, "language", { configurable: true, value: "zh-CN" });
+    mocks.listAccounts.mockResolvedValue([chatAccount]);
+    mocks.switchAccount.mockRejectedValue({ code: "account_needs_sign_in" });
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "切换到 person@example.com" }));
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      "person@example.com 需要重新登录。请登录或重新导入该账户后重试。",
+    );
+  });
+
+  it("reloads after a successful switch and places the active account first", async () => {
+    const currentAccount: AccountView = {
+      id: "account-2",
+      label: "Current",
+      kind: "chat_gpt",
+      email: "current@example.com",
+      active: true,
+    };
+    const activatedTarget = { ...chatAccount, active: true };
+    mocks.listAccounts
+      .mockResolvedValueOnce([currentAccount, chatAccount])
+      .mockResolvedValue([{ ...currentAccount, active: false }, activatedTarget]);
+    mocks.liveAccount
+      .mockResolvedValueOnce({
+        status: "ready",
+        credential_store: "file",
+        account: currentAccount,
+      })
+      .mockResolvedValue({
+        status: "ready",
+        credential_store: "file",
+        account: activatedTarget,
+      });
+    mocks.switchAccount.mockResolvedValue({ account: activatedTarget });
+    const { container } = render(<App />);
+
     await userEvent.click(await screen.findByRole("button", { name: "Switch to person@example.com" }));
-    expect(await screen.findByText(/Quit the other Codex session/)).toBeInTheDocument();
+    expect(
+      await screen.findByText("person@example.com is now the active Codex account."),
+    ).toBeInTheDocument();
+    expect(mocks.appSnapshot).toHaveBeenCalledTimes(2);
+    const cards = container.querySelectorAll<HTMLElement>(".account-card");
+    expect(within(cards[0]!).getByText("person@example.com")).toBeInTheDocument();
   });
 
   it("lets the user cancel a browser OAuth flow", async () => {

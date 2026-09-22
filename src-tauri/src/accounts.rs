@@ -13,6 +13,7 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 use crate::{
+    app_server::AccountMetadata,
     storage::{self, AccountStore},
     types::{
         AccountIdentity, AccountKind, AccountView, OAuthLoginStatus, PendingResetCredit,
@@ -420,6 +421,44 @@ impl AppState {
             .ok_or_else(|| "The selected account is no longer saved".to_string())?;
         let mut candidate = store.clone();
         candidate.accounts[index].credential = credential;
+        storage::save_atomic(&self.store_path, &candidate)?;
+        *store = candidate;
+        Ok(())
+    }
+
+    /// Commits a verified provider projection and, only when authentication
+    /// required it, a refreshed credential in one account-store replacement.
+    pub fn update_switch_validation_under_operation(
+        &self,
+        _operation: &OperationGuard<'_>,
+        id: &str,
+        metadata: &AccountMetadata,
+        credential: Option<Value>,
+    ) -> Result<(), String> {
+        let mut store = self
+            .store
+            .lock()
+            .map_err(|_| "Account store lock is unavailable".to_string())?;
+        let index = store
+            .accounts
+            .iter()
+            .position(|account| account.id == id)
+            .ok_or_else(|| "The selected account is no longer saved".to_string())?;
+        let mut candidate = store.clone();
+        let account = &mut candidate.accounts[index];
+        account.email = metadata.email.clone();
+        account.plan_type = metadata.plan_type.clone();
+        if metadata.workspace_name.is_some() {
+            account.workspace_name = metadata.workspace_name.clone();
+        }
+        if metadata.account_structure.is_some() {
+            account.account_structure = metadata.account_structure.clone();
+        }
+        if let Some(credential) = credential {
+            account.credential = credential;
+            account.quota = None;
+            account.reset_credits = None;
+        }
         storage::save_atomic(&self.store_path, &candidate)?;
         *store = candidate;
         Ok(())
