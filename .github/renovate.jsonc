@@ -1,0 +1,79 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": "Dashboard-gated dependency updates for GSwitch.",
+  "extends": ["config:recommended", "helpers:pinGitHubActionDigests"],
+  "enabledManagers": ["npm", "cargo", "github-actions"],
+  "dependencyDashboard": true,
+  "dependencyDashboardApproval": true,
+  "dependencyDashboardAutoclose": false,
+  "dependencyDashboardLabels": ["dependencies"],
+  "automerge": false,
+  "platformAutomerge": false,
+  "prConcurrentLimit": 2,
+  "branchConcurrentLimit": 2,
+  "separateMajorMinor": true,
+  "separateMultipleMajor": true,
+  "labels": ["dependencies"],
+  "lockFileMaintenance": {
+    "enabled": true
+  },
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "labels": ["dependencies", "security"],
+    "dependencyDashboardApproval": false,
+    "prCreation": "immediate",
+    "minimumReleaseAge": null,
+    "vulnerabilityFixStrategy": "lowest",
+    "automerge": false,
+    "platformAutomerge": false
+  },
+  "packageRules": [
+    {
+      "description": "Let npm packages age out of the unpublish window before normal updates.",
+      "matchDatasources": ["npm"],
+      "minimumReleaseAge": "3 days",
+      "internalChecksFilter": "strict"
+    },
+    {
+      "description": "Keep major updates isolated for compatibility review.",
+      "matchUpdateTypes": ["major"],
+      "groupName": null
+    },
+    {
+      "description": "Update compatible Tauri Rust and JavaScript packages together.",
+      "matchManagers": ["npm", "cargo"],
+      "matchPackageNames": [
+        "@tauri-apps/api",
+        "@tauri-apps/cli",
+        "@tauri-apps/plugin-dialog",
+        "@tauri-apps/plugin-process",
+        "@tauri-apps/plugin-updater",
+        "tauri",
+        "tauri-build",
+        "tauri-plugin-dialog",
+        "tauri-plugin-opener",
+        "tauri-plugin-process",
+        "tauri-plugin-updater"
+      ],
+      "matchUpdateTypes": ["minor", "patch"],
+      "groupName": "Tauri packages",
+      "groupSlug": "tauri"
+    },
+    {
+      "description": "Update the React runtime and type packages together.",
+      "matchManagers": ["npm"],
+      "matchPackageNames": ["react", "react-dom", "@types/react", "@types/react-dom"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "groupName": "React packages",
+      "groupSlug": "react"
+    },
+    {
+      "description": "Update Vite and its React plugin together.",
+      "matchManagers": ["npm"],
+      "matchPackageNames": ["vite", "@vitejs/plugin-react"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "groupName": "Vite packages",
+      "groupSlug": "vite"
+    }
+  ]
+}
