@@ -74,6 +74,11 @@ export interface ImportResult {
   failed_count: number;
 }
 
+export interface ExportResult {
+  exported_count: number;
+  cancelled: boolean;
+}
+
 export type MigrationSource = "official_codex" | "cockpit_tools";
 export type MigrationCandidateState = "new" | "already_present" | "unsupported";
 

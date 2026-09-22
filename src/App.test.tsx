@@ -18,6 +18,7 @@ const mocks = vi.hoisted(() => ({
   openOAuth: vi.fn(),
   importAuthJson: vi.fn(),
   importAuthFiles: vi.fn(),
+  exportAccounts: vi.fn(),
   discoverLocalAccounts: vi.fn(),
   importLocalAccounts: vi.fn(),
   importApiKey: vi.fn(),
@@ -32,6 +33,7 @@ const mocks = vi.hoisted(() => ({
   recoverPendingResetCredit: vi.fn(),
   startWake: vi.fn(),
   startWakeAll: vi.fn(),
+  startWakeSelected: vi.fn(),
   wakeOperation: vi.fn(),
   cancelWake: vi.fn(),
   updateDelivery: vi.fn(),
@@ -143,6 +145,7 @@ function prepareDefaults() {
     unsupported_count: 0,
     failed_count: 0,
   });
+  mocks.exportAccounts.mockResolvedValue({ exported_count: 1, cancelled: false });
   mocks.discoverLocalAccounts.mockResolvedValue({ candidates: [] });
   mocks.importLocalAccounts.mockResolvedValue({
     imported: [chatAccount],
@@ -172,6 +175,7 @@ function prepareDefaults() {
   });
   mocks.startWake.mockResolvedValue({ operation_id: "wake-1" });
   mocks.startWakeAll.mockResolvedValue({ operation_id: "wake-all" });
+  mocks.startWakeSelected.mockResolvedValue({ operation_id: "wake-selected" });
   mocks.wakeOperation.mockResolvedValue({
     id: "wake-1",
     status: "completed",
@@ -232,8 +236,10 @@ describe("GSwitch account workspace", () => {
     const dialog = await screen.findByRole("dialog", { name: "Add a Codex account" });
     expect(dialog).toBeInTheDocument();
     expect(within(dialog).getByRole("button", { name: /Paste auth JSON/ })).toBeInTheDocument();
-    expect(within(dialog).getByRole("button", { name: /Cockpit Tools exports, Codex auth\.json/i })).toBeInTheDocument();
-    expect(within(dialog).getByText(/export account files from Cockpit Tools/i)).toBeInTheDocument();
+    expect(within(dialog).getByText("Import existing")).toBeInTheDocument();
+    expect(within(dialog).getByText("Add new")).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: /Choose files/ })).toBeInTheDocument();
+    expect(within(dialog).getByText(/Select one or more account files/i)).toBeInTheDocument();
     expect(within(dialog).getByText(/does not inspect another application's account storage automatically/i)).toBeInTheDocument();
   });
 
@@ -244,7 +250,7 @@ describe("GSwitch account workspace", () => {
     expect(mocks.discoverLocalAccounts).not.toHaveBeenCalled();
 
     await userEvent.click(screen.getByRole("button", { name: "Add manually" }));
-    await userEvent.click(screen.getByRole("button", { name: /Import from this computer/ }));
+    await userEvent.click(screen.getByRole("button", { name: /Find on this computer/ }));
     expect(screen.getByText(/Before scanning, GSwitch will read only/i)).toBeInTheDocument();
     expect(mocks.discoverLocalAccounts).not.toHaveBeenCalled();
   });
@@ -277,7 +283,7 @@ describe("GSwitch account workspace", () => {
     render(<App />);
 
     await userEvent.click(await screen.findByRole("button", { name: "Add manually" }));
-    await userEvent.click(screen.getByRole("button", { name: /Import from this computer/ }));
+    await userEvent.click(screen.getByRole("button", { name: /Find on this computer/ }));
     await userEvent.click(screen.getByRole("button", { name: "Scan supported locations" }));
 
     expect(await screen.findByText("person@example.com")).toBeInTheDocument();
@@ -299,7 +305,7 @@ describe("GSwitch account workspace", () => {
     render(<App />);
 
     await userEvent.click(await screen.findByRole("button", { name: "Add manually" }));
-    await userEvent.click(screen.getByRole("button", { name: /Import from this computer/ }));
+    await userEvent.click(screen.getByRole("button", { name: /Find on this computer/ }));
     await userEvent.click(screen.getByRole("button", { name: "Choose another Cockpit folder" }));
 
     await waitFor(() => expect(mocks.discoverLocalAccounts).toHaveBeenCalledWith("C:\\custom\\cockpit"));
@@ -611,7 +617,7 @@ describe("GSwitch account workspace", () => {
 
     await userEvent.click(screen.getByRole("button", { name: /^Add account$/ }));
     const dialog = await screen.findByRole("dialog", { name: "Add a Codex account" });
-    await userEvent.click(within(dialog).getByRole("button", { name: /Sign in with your browser/ }));
+    await userEvent.click(within(dialog).getByRole("button", { name: /Sign in with Codex/ }));
     expect(await screen.findByText("Finish sign-in in your browser")).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: "Cancel sign-in" }));
@@ -629,6 +635,37 @@ describe("GSwitch account workspace", () => {
     expect(await screen.findByRole("dialog", { name: "Wake" })).toBeInTheDocument();
     expect(screen.getByText("Wake is running safely")).toBeInTheDocument();
     expect(mocks.startWakeAll).toHaveBeenCalledOnce();
+  });
+
+  it("selects saved accounts, wakes only selected ChatGPT accounts, and exports through a warning", async () => {
+    const apiAccount: AccountView = {
+      id: "api-1",
+      label: "Key",
+      kind: "api_key",
+      active: false,
+    };
+    mocks.listAccounts.mockResolvedValue([chatAccount, apiAccount]);
+    mocks.accountQuota.mockResolvedValue(staleQuota);
+    render(<App />);
+    await screen.findByText("Personal");
+
+    await userEvent.click(screen.getByRole("button", { name: "Select" }));
+    const accountChoice = screen.getByRole("checkbox", { name: "Select person@example.com" });
+    expect(accountChoice).not.toBeChecked();
+    await userEvent.click(accountChoice);
+    await userEvent.click(screen.getByRole("button", { name: "Wake" }));
+    await waitFor(() => expect(mocks.startWakeSelected).toHaveBeenCalledWith(["account-1"]));
+    expect(await screen.findByRole("dialog", { name: "Wake" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: /Close Wake/ }));
+
+    await userEvent.click(screen.getByRole("button", { name: "Export" }));
+    const exportDialog = await screen.findByRole("dialog", { name: "Export selected accounts" });
+    expect(within(exportDialog).getByText(/Usage, quota, reset, and local state stay in GSwitch/i)).toBeInTheDocument();
+    await userEvent.click(within(exportDialog).getByRole("button", { name: "Continue" }));
+    expect(within(exportDialog).getByText(/Anyone who can read this JSON file can use its credentials/i)).toBeInTheDocument();
+    await userEvent.click(within(exportDialog).getByRole("button", { name: "Export unencrypted accounts" }));
+    await waitFor(() => expect(mocks.exportAccounts).toHaveBeenCalledWith(["account-1"]));
+    expect(await screen.findByText("Exported 1 selected account(s). Keep this unencrypted file private.")).toBeInTheDocument();
   });
 
   it("offers a signed update once and keeps Later local to the current session", async () => {

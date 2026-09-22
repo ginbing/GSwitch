@@ -7,6 +7,7 @@ import {
   CircleAlert,
   CircleCheck,
   Copy,
+  Download,
   FileJson,
   FolderOpen,
   Globe2,
@@ -68,6 +69,7 @@ type Dialog =
   | "storage-recovery"
   | "reset"
   | "remove"
+  | "export"
   | "wake"
   | null;
 
@@ -309,6 +311,9 @@ function AccountCard({
   onReset,
   resetRecoveryRequired,
   onRemove,
+  selectionMode,
+  selected,
+  onSelectionChange,
   t,
   formatLocale,
 }: {
@@ -322,6 +327,9 @@ function AccountCard({
   onReset: () => void;
   resetRecoveryRequired: boolean;
   onRemove: () => void;
+  selectionMode: boolean;
+  selected: boolean;
+  onSelectionChange: () => void;
   t: Translator;
   formatLocale: string;
 }) {
@@ -331,9 +339,19 @@ function AccountCard({
   const secondaryName = accountSecondaryName(account, primaryName, t);
 
   return (
-    <article className={"account-card" + (active ? " account-active" : "")}>
+    <article className={"account-card" + (active ? " account-active" : "") + (selected ? " account-selected" : "")}>
       <div className="account-card-head">
         <div className="account-identity">
+          {selectionMode ? (
+            <label className="account-select-control">
+              <input
+                aria-label={t("accounts.selectAccount", { name: primaryName })}
+                checked={selected}
+                onChange={onSelectionChange}
+                type="checkbox"
+              />
+            </label>
+          ) : null}
           <div className="account-avatar" aria-hidden="true">
             {primaryName.slice(0, 1).toUpperCase()}
           </div>
@@ -342,22 +360,24 @@ function AccountCard({
             {secondaryName ? <p>{secondaryName}</p> : null}
           </div>
         </div>
-        <details className="card-menu">
-          <summary aria-label={t("account.moreActions", { name: primaryName })}>
-            <MoreHorizontal size={18} />
-          </summary>
-          <div className="card-menu-popover">
-            <button
-              aria-label={t("account.remove", { name: primaryName })}
-              disabled={active || busy}
-              onClick={onRemove}
-              type="button"
-            >
-              <Trash2 size={15} />
-              {t("common.removeAccount")}
-            </button>
-          </div>
-        </details>
+        {!selectionMode ? (
+          <details className="card-menu">
+            <summary aria-label={t("account.moreActions", { name: primaryName })}>
+              <MoreHorizontal size={18} />
+            </summary>
+            <div className="card-menu-popover">
+              <button
+                aria-label={t("account.remove", { name: primaryName })}
+                disabled={active || busy}
+                onClick={onRemove}
+                type="button"
+              >
+                <Trash2 size={15} />
+                {t("common.removeAccount")}
+              </button>
+            </div>
+          </details>
+        ) : null}
       </div>
 
       <div className="account-badges">
@@ -397,7 +417,7 @@ function AccountCard({
         </>
       )}
 
-      <div className="card-footer">
+      {!selectionMode ? <div className="card-footer">
         <button
           aria-label={t("account.refresh", { name: primaryName })}
           className="icon-button"
@@ -431,7 +451,7 @@ function AccountCard({
             {active ? t("common.current") : t("common.switch")}
           </button>
         </div>
-      </div>
+      </div> : null}
     </article>
   );
 }
@@ -540,6 +560,9 @@ export default function App() {
   const [busy, setBusy] = useState<string | null>(null);
   const [dialog, setDialog] = useState<Dialog>(null);
   const [addMethod, setAddMethod] = useState<AddMethod>("start");
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedAccountIds, setSelectedAccountIds] = useState<string[]>([]);
+  const [exportConfirmation, setExportConfirmation] = useState(false);
   const [migrationPreview, setMigrationPreview] = useState<MigrationPreview | null>(null);
   const [migrationRoot, setMigrationRoot] = useState<string | undefined>();
   const [migrationSelection, setMigrationSelection] = useState<string[]>([]);
@@ -612,6 +635,9 @@ export default function App() {
       const initial = await api.appSnapshot();
       const nextAccounts = initial.accounts;
       setAccounts(nextAccounts);
+      setSelectedAccountIds((current) =>
+        current.filter((id) => nextAccounts.some((account) => account.id === id)),
+      );
       setStorage(initial.storage);
       setPendingResetCredit(initial.pending_reset_credit);
       setLive(initial.live || null);
@@ -1110,6 +1136,45 @@ export default function App() {
     }
   };
 
+  const startSelectedWake = async () => {
+    const selectedChatGptIds = accounts
+      .filter((account) => account.kind === "chat_gpt" && selectedAccountIds.includes(account.id))
+      .map((account) => account.id);
+    const result = await runTask(
+      "wake-selected",
+      () => api.startWakeSelected(selectedChatGptIds),
+      false,
+    );
+    if (result) {
+      setWake({ id: result.operation_id, status: "running", results: [] });
+      setDialog("wake");
+    }
+  };
+
+  const exportSelectedAccounts = async () => {
+    if (!exportConfirmation) {
+      setExportConfirmation(true);
+      return;
+    }
+    const result = await runTask(
+      "export-accounts",
+      () => api.exportAccounts(selectedAccountIds),
+      false,
+    );
+    if (result) {
+      setExportConfirmation(false);
+      setDialog(null);
+      if (!result.cancelled) {
+        setNotice({
+          kind: "success",
+          text: t("notice.exported", {
+            count: formatNumber(result.exported_count, locale.formatLocale),
+          }),
+        });
+      }
+    }
+  };
+
   const redeemReset = async () => {
     if (!resetAccount) {
       return;
@@ -1187,6 +1252,9 @@ export default function App() {
   const currentActiveId = live?.account?.id;
   const liveAccountLabel = live?.account?.label || t("toolbar.currentAccount");
   const chatGptAccounts = accounts.filter((account) => account.kind === "chat_gpt");
+  const selectedChatGptCount = accounts.filter(
+    (account) => account.kind === "chat_gpt" && selectedAccountIds.includes(account.id),
+  ).length;
   const resetCredits = resetAccount ? quotas[resetAccount.id]?.snapshot?.reset_credits : undefined;
   const storageRecovery = storage?.status === "recovery_required";
 
@@ -1338,8 +1406,68 @@ export default function App() {
                     : t("accounts.savedMany", { count: formatNumber(accounts.length, locale.formatLocale) })}
               </h2>
             </div>
-            <p>{storageRecovery ? t("accounts.recoveryDescription") : t("accounts.readyDescription")}</p>
+            <div className="section-heading-actions">
+              <p>{storageRecovery ? t("accounts.recoveryDescription") : t("accounts.readyDescription")}</p>
+              {accounts.length && !storageRecovery ? (
+                <button
+                  className="button button-quiet"
+                  disabled={loading || busy !== null}
+                  onClick={() => {
+                    setSelectionMode((current) => !current);
+                    setSelectedAccountIds([]);
+                  }}
+                  type="button"
+                >
+                  {selectionMode ? t("accounts.doneSelecting") : t("accounts.select")}
+                </button>
+              ) : null}
+            </div>
           </div>
+
+          {selectionMode && accounts.length ? (
+            <div className="account-selection-bar" aria-label={t("accounts.selectionActions")}>
+              <span>{t("accounts.selected", { count: formatNumber(selectedAccountIds.length, locale.formatLocale) })}</span>
+              <div className="account-selection-controls">
+                <button
+                  className="text-button"
+                  disabled={busy !== null || selectedAccountIds.length === accounts.length}
+                  onClick={() => setSelectedAccountIds(accounts.map((account) => account.id))}
+                  type="button"
+                >
+                  {t("accounts.selectAll")}
+                </button>
+                <button
+                  className="text-button"
+                  disabled={busy !== null || selectedAccountIds.length === 0}
+                  onClick={() => setSelectedAccountIds([])}
+                  type="button"
+                >
+                  {t("accounts.clearSelection")}
+                </button>
+                <button
+                  className="button button-secondary"
+                  disabled={busy !== null || selectedChatGptCount === 0}
+                  onClick={() => void startSelectedWake()}
+                  type="button"
+                >
+                  <Zap size={15} />
+                  {t("common.wake")}
+                </button>
+                <button
+                  className="button button-primary"
+                  disabled={busy !== null || selectedAccountIds.length === 0}
+                  onClick={() => {
+                    setExportConfirmation(false);
+                    setDialog("export");
+                  }}
+                  type="button"
+                >
+                  <Download size={15} />
+                  {t("common.export")}
+                </button>
+              </div>
+            </div>
+          ) : null}
 
           {loading ? (
             <div className="loading-state"><LoaderCircle className="spin" size={24} />{t("accounts.reading")}</div>
@@ -1387,7 +1515,16 @@ export default function App() {
                   resetRecoveryRequired={pendingResetCredit}
                   onSwitch={() => void switchAccount(account)}
                   onWake={() => void startWake(account.id)}
+                  onSelectionChange={() => {
+                    setSelectedAccountIds((current) =>
+                      current.includes(account.id)
+                        ? current.filter((id) => id !== account.id)
+                        : [...current, account.id],
+                    );
+                  }}
                   quota={quotas[account.id]}
+                  selected={selectedAccountIds.includes(account.id)}
+                  selectionMode={selectionMode}
                   t={t}
                 />
               ))}
@@ -1406,42 +1543,52 @@ export default function App() {
         <Modal onClose={closeAddDialog} t={t} title={t("add.title")} wide>
           {addMethod === "start" ? (
             <div className="add-methods">
-              <button
-                className="add-method-card"
-                onClick={() => {
-                  setMigrationPreview(null);
-                  setMigrationRoot(undefined);
-                  setMigrationSelection([]);
-                  setMigrationScanned(false);
-                  setAddMethod("migration");
-                }}
-                type="button"
-              >
-                <span className="method-icon"><Upload size={22} /></span>
-                <span><strong>{t("add.localTitle")}</strong><small>{t("add.localDescription")}</small></span>
-                <ChevronRight size={18} />
-              </button>
-              <button className="add-method-card" onClick={() => void startOAuth()} type="button">
-                <span className="method-icon"><Globe2 size={22} /></span>
-                <span><strong>{t("add.browserTitle")}</strong><small>{t("add.browserDescription")}</small></span>
-                <ChevronRight size={18} />
-              </button>
-              <button className="add-method-card" onClick={() => setAddMethod("json")} type="button">
-                <span className="method-icon"><FileJson size={22} /></span>
-                <span><strong>{t("add.jsonTitle")}</strong><small>{t("add.jsonDescription")}</small></span>
-                <ChevronRight size={18} />
-              </button>
-              <button className="add-method-card" onClick={() => void chooseImportFile()} type="button">
-                <span className="method-icon"><FolderOpen size={22} /></span>
-                <span><strong>{t("add.fileTitle")}</strong><small>{t("add.fileDescription")}</small></span>
-                <ChevronRight size={18} />
-              </button>
-              <p className="dialog-footnote">{t("add.cockpitHelper")}</p>
-              <button className="add-method-card" onClick={() => setAddMethod("api-key")} type="button">
-                <span className="method-icon"><KeyRound size={22} /></span>
-                <span><strong>{t("add.apiKeyTitle")}</strong><small>{t("add.apiKeyDescription")}</small></span>
-                <ChevronRight size={18} />
-              </button>
+              <section className="add-method-group" aria-labelledby="import-existing-heading">
+                <h3 id="import-existing-heading">{t("add.importExisting")}</h3>
+                <button
+                  className="add-method-card"
+                  onClick={() => {
+                    setMigrationPreview(null);
+                    setMigrationRoot(undefined);
+                    setMigrationSelection([]);
+                    setMigrationScanned(false);
+                    setAddMethod("migration");
+                  }}
+                  type="button"
+                >
+                  <span className="method-icon"><Upload size={22} /></span>
+                  <span><strong>{t("add.localTitle")}</strong><small>{t("add.localDescription")}</small></span>
+                  <ChevronRight size={18} />
+                </button>
+                <button className="add-method-card" onClick={() => void chooseImportFile()} type="button">
+                  <span className="method-icon"><FolderOpen size={22} /></span>
+                  <span><strong>{t("add.fileTitle")}</strong><small>{t("add.fileDescription")}</small></span>
+                  <ChevronRight size={18} />
+                </button>
+              </section>
+              <section className="add-method-group" aria-labelledby="add-new-heading">
+                <h3 id="add-new-heading">{t("add.addNew")}</h3>
+                <button className="add-method-card" onClick={() => void startOAuth()} type="button">
+                  <span className="method-icon"><Globe2 size={22} /></span>
+                  <span><strong>{t("add.browserTitle")}</strong><small>{t("add.browserDescription")}</small></span>
+                  <ChevronRight size={18} />
+                </button>
+              </section>
+              <details className="add-other-methods">
+                <summary>{t("add.otherMethods")}</summary>
+                <div>
+                  <button className="add-method-card" onClick={() => setAddMethod("json")} type="button">
+                    <span className="method-icon"><FileJson size={22} /></span>
+                    <span><strong>{t("add.jsonTitle")}</strong><small>{t("add.jsonDescription")}</small></span>
+                    <ChevronRight size={18} />
+                  </button>
+                  <button className="add-method-card" onClick={() => setAddMethod("api-key")} type="button">
+                    <span className="method-icon"><KeyRound size={22} /></span>
+                    <span><strong>{t("add.apiKeyTitle")}</strong><small>{t("add.apiKeyDescription")}</small></span>
+                    <ChevronRight size={18} />
+                  </button>
+                </div>
+              </details>
               <p className="dialog-footnote">{t("add.privateStorage")}</p>
             </div>
           ) : null}
@@ -1595,6 +1742,50 @@ export default function App() {
               </div>
             </form>
           ) : null}
+        </Modal>
+      ) : null}
+
+      {dialog === "export" ? (
+        <Modal
+          onClose={() => {
+            setExportConfirmation(false);
+            setDialog(null);
+          }}
+          t={t}
+          title={t("export.title")}
+        >
+          <div className="confirm-panel">
+            <ShieldAlert size={26} />
+            <h3>{t("export.heading")}</h3>
+            <p>{t("export.body")}</p>
+            {exportConfirmation ? (
+              <div className="confirm-copy">
+                <strong>{t("export.question", { count: formatNumber(selectedAccountIds.length, locale.formatLocale) })}</strong>
+                <p>{t("export.warning")}</p>
+              </div>
+            ) : null}
+            <div className="modal-actions">
+              <button
+                className="button button-secondary"
+                onClick={() => {
+                  setExportConfirmation(false);
+                  setDialog(null);
+                }}
+                type="button"
+              >
+                {t("common.cancel")}
+              </button>
+              <button
+                className="button button-danger"
+                disabled={busy !== null || selectedAccountIds.length === 0}
+                onClick={() => void exportSelectedAccounts()}
+                type="button"
+              >
+                {busy === "export-accounts" ? <LoaderCircle className="spin" size={16} /> : <Download size={16} />}
+                {exportConfirmation ? t("export.write") : t("common.continue")}
+              </button>
+            </div>
+          </div>
         </Modal>
       ) : null}
 

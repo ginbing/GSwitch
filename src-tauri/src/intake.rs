@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     fs,
     path::Path,
     sync::{
@@ -9,15 +10,17 @@ use std::{
     time::Duration,
 };
 
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::{
     accounts::{AccountDraft, AppState, OperationGuard},
     app_server::{account_metadata, AccountMetadata, AppServer, TempCodexHome},
     chatgpt::{self, ChatGptClient, RequestFailure, RequestFailureKind},
-    identity,
+    identity, storage,
     types::{
-        AccountIdentity, AccountKind, AccountView, ImportResult, OAuthLoginStart, OAuthLoginStatus,
+        AccountIdentity, AccountKind, AccountView, ExportResult, ImportResult, OAuthLoginStart,
+        OAuthLoginStatus,
     },
 };
 
@@ -35,6 +38,98 @@ pub(crate) struct ParsedImport {
     pub(crate) candidates: Vec<ImportCandidate>,
     pub(crate) unsupported_count: u32,
     pub(crate) duplicate_count: u32,
+}
+
+const GSWITCH_EXPORT_FORMAT: &str = "gswitch-accounts";
+const GSWITCH_EXPORT_VERSION: u8 = 1;
+
+/// The only portable document GSwitch writes. Operational account state stays
+/// in the local library; this contains just the complete credential document
+/// and optional presentation metadata needed to import it again.
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct GSwitchPortableExport {
+    format: String,
+    version: u8,
+    accounts: Vec<GSwitchPortableAccount>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct GSwitchPortableAccount {
+    credential: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    workspace_name: Option<String>,
+}
+
+/// Reads the selected saved-account snapshots under GSwitch's operation lock.
+/// This function deliberately returns a private document for the Rust command
+/// layer rather than anything that may cross Tauri IPC.
+pub(crate) fn prepare_accounts_export(
+    state: &AppState,
+    selected_ids: Vec<String>,
+) -> Result<GSwitchPortableExport, String> {
+    let mut seen = HashSet::new();
+    let selected_ids: Vec<_> = selected_ids
+        .into_iter()
+        .filter(|id| seen.insert(id.clone()))
+        .collect();
+    if selected_ids.is_empty() {
+        return Err("Select at least one saved account to export".to_string());
+    }
+
+    let operation = state.acquire_operation()?;
+    let accounts = selected_ids
+        .iter()
+        .map(|id| state.account_by_id_under_operation(&operation, id))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(GSwitchPortableExport {
+        format: GSWITCH_EXPORT_FORMAT.to_string(),
+        version: GSWITCH_EXPORT_VERSION,
+        accounts: accounts
+            .into_iter()
+            .map(|account| GSwitchPortableAccount {
+                credential: account.credential,
+                label: clean_label(Some(account.label)),
+                workspace_name: account.workspace_name,
+            })
+            .collect(),
+    })
+}
+
+/// Writes a previously selected portable export through the shared private
+/// atomic writer. Callers must obtain an explicit native save destination.
+pub(crate) fn write_accounts_export(
+    path: &Path,
+    export: &GSwitchPortableExport,
+) -> Result<(), String> {
+    let content = serde_json::to_vec_pretty(export)
+        .map_err(|_| "Unable to serialize the GSwitch account export".to_string())?;
+    storage::write_private_bytes_atomic(path, &content, "GSwitch account export")
+}
+
+pub(crate) fn accounts_export_count(export: &GSwitchPortableExport) -> u32 {
+    export.accounts.len() as u32
+}
+
+/// Completes an explicit export after Rust has obtained a native save result.
+/// A cancelled dialog has no destination and cannot reach the file writer.
+pub(crate) fn complete_accounts_export(
+    export: &GSwitchPortableExport,
+    destination: Option<&Path>,
+) -> Result<ExportResult, String> {
+    let Some(destination) = destination else {
+        return Ok(ExportResult {
+            exported_count: 0,
+            cancelled: true,
+        });
+    };
+    write_accounts_export(destination, export)?;
+    Ok(ExportResult {
+        exported_count: accounts_export_count(export),
+        cancelled: false,
+    })
 }
 
 pub fn start_oauth(state: AppState) -> Result<OAuthLoginStart, String> {
@@ -570,6 +665,13 @@ pub fn import_api_key(
 }
 
 pub(crate) fn parse_export(value: Value) -> Result<ParsedImport, String> {
+    if value
+        .get("format")
+        .and_then(Value::as_str)
+        .is_some_and(|format| format == GSWITCH_EXPORT_FORMAT)
+    {
+        return parse_gswitch_export(value);
+    }
     if let Some(candidate) = current_cockpit_candidate(&value) {
         return Ok(ParsedImport {
             candidates: vec![candidate],
@@ -600,6 +702,40 @@ pub(crate) fn parse_export(value: Value) -> Result<ParsedImport, String> {
             })
             .ok_or_else(|| "The selected file is not a supported Codex account export".to_string()),
     }
+}
+
+fn parse_gswitch_export(value: Value) -> Result<ParsedImport, String> {
+    let export: GSwitchPortableExport = serde_json::from_value(value)
+        .map_err(|_| "The selected GSwitch account export is invalid".to_string())?;
+    if export.format != GSWITCH_EXPORT_FORMAT || export.version != GSWITCH_EXPORT_VERSION {
+        return Err("Unsupported GSwitch account export version".to_string());
+    }
+    if export.accounts.is_empty() {
+        return Err("The selected GSwitch account export has no accounts".to_string());
+    }
+
+    let mut candidates = Vec::new();
+    let mut unsupported_count = 0u32;
+    for account in export.accounts {
+        let candidate = direct_auth_candidate(&account.credential)
+            .or_else(|| portable_candidate(&account.credential, account.label.clone()));
+        if let Some(mut candidate) = candidate {
+            candidate.label = clean_label(account.label).or(candidate.label);
+            candidates.push(candidate);
+        } else {
+            unsupported_count = unsupported_count.saturating_add(1);
+        }
+    }
+    if candidates.is_empty() {
+        return Err(
+            "The selected GSwitch account export has no supported Codex accounts".to_string(),
+        );
+    }
+    Ok(ParsedImport {
+        candidates,
+        unsupported_count,
+        duplicate_count: 0,
+    })
 }
 
 fn parse_portable_entries(entries: Vec<Value>) -> Result<ParsedImport, String> {
@@ -1225,6 +1361,190 @@ mod tests {
     }
 
     #[test]
+    fn writes_a_versioned_portable_export_without_operational_account_state() {
+        let store_path = test_path("portable-export-store", "json");
+        let export_path = test_path("portable-export-output", "json");
+        let credential = official_credential("user", "workspace", "access-token");
+        let state = AppState::new(store_path.clone()).expect("state");
+        let identity =
+            identity::derive_identity(&AccountKind::ChatGpt, &credential).expect("identity");
+        let operation = state.acquire_operation().expect("operation");
+        let saved = state
+            .upsert_under_operation(
+                &operation,
+                AccountDraft {
+                    label: Some("Portable label".to_string()),
+                    default_label: "Default label".to_string(),
+                    kind: AccountKind::ChatGpt,
+                    email: Some("person@example.com".to_string()),
+                    plan_type: Some("plus".to_string()),
+                    workspace_name: Some("Personal".to_string()),
+                    account_structure: Some("workspace".to_string()),
+                    identity,
+                    credential: credential.clone(),
+                },
+            )
+            .expect("save account");
+        drop(operation);
+
+        let export = prepare_accounts_export(&state, vec![saved.id]).expect("prepare export");
+        assert_eq!(accounts_export_count(&export), 1);
+        let result = complete_accounts_export(&export, Some(&export_path)).expect("write export");
+        assert_eq!(result.exported_count, 1);
+        assert!(!result.cancelled);
+        let value: Value =
+            serde_json::from_str(&fs::read_to_string(&export_path).expect("read export"))
+                .expect("export JSON");
+
+        assert_eq!(
+            value.get("format").and_then(Value::as_str),
+            Some("gswitch-accounts")
+        );
+        assert_eq!(value.get("version").and_then(Value::as_u64), Some(1));
+        assert_eq!(
+            value.pointer("/accounts/0/credential"),
+            Some(&credential),
+            "the complete credential remains available for a later import"
+        );
+        assert_eq!(
+            value.pointer("/accounts/0/label").and_then(Value::as_str),
+            Some("Portable label")
+        );
+        assert_eq!(
+            value
+                .pointer("/accounts/0/workspace_name")
+                .and_then(Value::as_str),
+            Some("Personal")
+        );
+        let round_trip = parse_export(value.clone()).expect("portable round trip");
+        assert_eq!(round_trip.candidates.len(), 1);
+        assert_eq!(round_trip.candidates[0].credential, credential);
+        for omitted in [
+            "/accounts/0/id",
+            "/accounts/0/kind",
+            "/accounts/0/email",
+            "/accounts/0/plan_type",
+            "/accounts/0/identity",
+            "/accounts/0/quota",
+            "/accounts/0/reset_credits",
+            "/accounts/0/pending_reset_credit",
+        ] {
+            assert!(
+                value.pointer(omitted).is_none(),
+                "unexpected export field: {omitted}"
+            );
+        }
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&export_path)
+                    .expect("export metadata")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+
+        let _ = fs::remove_file(&export_path);
+        let _ = fs::remove_dir_all(export_path.parent().expect("parent"));
+        let _ = fs::remove_dir_all(store_path.parent().expect("parent"));
+    }
+
+    #[test]
+    fn export_rejects_an_empty_or_stale_selection_before_a_file_can_be_written() {
+        let store_path = test_path("portable-export-selection", "json");
+        let output_path = test_path("portable-export-selection-output", "json");
+        let state = AppState::new(store_path.clone()).expect("state");
+
+        let empty = prepare_accounts_export(&state, Vec::new()).expect_err("empty selection");
+        assert_eq!(empty, "Select at least one saved account to export");
+        let stale = prepare_accounts_export(&state, vec!["missing".to_string()])
+            .expect_err("stale selection");
+        assert_eq!(stale, "The selected account is no longer saved");
+        assert!(!output_path.exists());
+
+        let _ = fs::remove_dir_all(output_path.parent().expect("parent"));
+        let _ = fs::remove_dir_all(store_path.parent().expect("parent"));
+    }
+
+    #[test]
+    fn cancelled_export_does_not_write_a_file_or_expose_export_contents() {
+        let store_path = test_path("portable-export-cancel", "json");
+        let output_path = test_path("portable-export-cancel-output", "json");
+        let credential = official_credential("user", "workspace", "access-token");
+        let state = AppState::new(store_path.clone()).expect("state");
+        let identity =
+            identity::derive_identity(&AccountKind::ChatGpt, &credential).expect("identity");
+        let operation = state.acquire_operation().expect("operation");
+        let saved = state
+            .upsert_under_operation(
+                &operation,
+                AccountDraft {
+                    label: None,
+                    default_label: "Export candidate".to_string(),
+                    kind: AccountKind::ChatGpt,
+                    email: None,
+                    plan_type: None,
+                    workspace_name: None,
+                    account_structure: None,
+                    identity,
+                    credential,
+                },
+            )
+            .expect("save account");
+        drop(operation);
+
+        let export = prepare_accounts_export(&state, vec![saved.id]).expect("prepare export");
+        let result = complete_accounts_export(&export, None).expect("cancelled export");
+        assert_eq!(result.exported_count, 0);
+        assert!(result.cancelled);
+        assert!(!output_path.exists());
+        let serialized = serde_json::to_string(&result).expect("safe result JSON");
+        assert!(!serialized.contains("access-token"));
+
+        let _ = fs::remove_dir_all(output_path.parent().expect("parent"));
+        let _ = fs::remove_dir_all(store_path.parent().expect("parent"));
+    }
+
+    #[test]
+    fn parses_a_valid_portable_export_and_rejects_unknown_versions() {
+        let document = json!({
+            "format": "gswitch-accounts",
+            "version": 1,
+            "accounts": [{
+                "credential": official_credential("user", "workspace", "access-token"),
+                "label": "Imported label",
+                "workspace_name": "Personal"
+            }]
+        });
+        let parsed = parse_export(document).expect("portable export");
+        assert_eq!(parsed.candidates.len(), 1);
+        assert_eq!(
+            parsed.candidates[0].label.as_deref(),
+            Some("Imported label")
+        );
+        assert_eq!(
+            parsed.candidates[0]
+                .credential
+                .pointer("/future_field/must_not_cross"),
+            Some(&Value::Bool(true))
+        );
+
+        let error = match parse_export(json!({
+            "format": "gswitch-accounts",
+            "version": 2,
+            "accounts": []
+        })) {
+            Err(error) => error,
+            Ok(_) => panic!("unknown version must be rejected"),
+        };
+        assert_eq!(error, "Unsupported GSwitch account export version");
+    }
+
+    #[test]
     fn batch_zero_import_result_distinguishes_unsupported_and_failed_files() {
         let store_path = test_path("batch-empty", "json");
         let unsupported_path = test_path("batch-unsupported", "json");
@@ -1263,7 +1583,15 @@ mod tests {
         let credential = official_credential("user", "workspace", "access-token");
         fs::write(
             &import_path,
-            serde_json::to_string(&credential).expect("credential JSON"),
+            serde_json::to_string(&json!({
+                "format": "gswitch-accounts",
+                "version": 1,
+                "accounts": [{
+                    "credential": credential,
+                    "label": "Imported duplicate"
+                }]
+            }))
+            .expect("portable export JSON"),
         )
         .expect("import file");
         let state = AppState::new(store_path.clone()).expect("state");

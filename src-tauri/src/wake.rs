@@ -97,6 +97,39 @@ pub fn start_all(state: AppState) -> Result<WakeStart, String> {
     start(state, targets)
 }
 
+/// Starts Wake for the current selection. The WebView supplies only saved
+/// account IDs; Rust validates the snapshot and still owns the actual queue.
+pub fn start_selected(state: AppState, selected_ids: Vec<String>) -> Result<WakeStart, String> {
+    state.ensure_store_ready()?;
+    let mut seen = std::collections::HashSet::new();
+    let selected_ids: Vec<_> = selected_ids
+        .into_iter()
+        .filter(|id| seen.insert(id.clone()))
+        .collect();
+    if selected_ids.is_empty() {
+        return Err("Select at least one ChatGPT account to wake".to_string());
+    }
+
+    let accounts = state.list()?;
+    let targets = selected_ids
+        .iter()
+        .map(|id| {
+            accounts
+                .iter()
+                .find(|account| account.id == *id)
+                .ok_or_else(|| "The selected account is no longer saved".to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .filter(|account| account.kind == AccountKind::ChatGpt)
+        .map(|account| WakeTarget {
+            id: account.id.clone(),
+            label: account.label.clone(),
+        })
+        .collect();
+    start(state, targets)
+}
+
 pub fn operation(state: &AppState, operation_id: &str) -> Result<WakeOperationView, String> {
     state.wake_operation(operation_id)
 }

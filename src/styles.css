@@ -442,6 +442,51 @@ summary:focus-visible {
   text-align: right;
 }
 
+.section-heading-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+.section-heading-actions > p {
+  max-width: 270px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.45;
+  text-align: right;
+}
+
+.account-selection-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: -6px 0 16px;
+  padding: 9px 11px;
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border));
+  border-radius: 11px;
+  color: var(--text);
+  background: var(--accent-soft);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.account-selection-controls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 9px;
+}
+
+.account-selection-controls .button {
+  min-height: 31px;
+  padding: 0 10px;
+  font-size: 11.5px;
+}
+
 .loading-state {
   display: flex;
   min-height: 260px;
@@ -520,6 +565,11 @@ summary:focus-visible {
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 15%, transparent), var(--shadow);
 }
 
+.account-selected {
+  border-color: color-mix(in srgb, var(--accent) 62%, var(--border));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 16%, transparent), var(--shadow-soft);
+}
+
 .account-card-head {
   display: flex;
   min-width: 0;
@@ -531,6 +581,20 @@ summary:focus-visible {
 .account-identity {
   min-width: 0;
   gap: 10px;
+}
+
+.account-select-control {
+  display: grid;
+  width: 18px;
+  height: 34px;
+  flex: 0 0 auto;
+  place-items: center;
+}
+
+.account-select-control input {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--accent);
 }
 
 .account-avatar {
@@ -949,7 +1013,39 @@ summary:focus-visible {
 
 .add-methods {
   display: grid;
+  gap: 14px;
+}
+
+.add-method-group {
+  display: grid;
   gap: 8px;
+}
+
+.add-method-group h3 {
+  margin: 0 2px;
+  color: var(--soft-muted);
+  font-size: 10.5px;
+  font-weight: 760;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.add-other-methods {
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
+
+.add-other-methods summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.add-other-methods > div {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
 }
 
 .add-method-card {
@@ -1466,8 +1562,27 @@ textarea {
     text-align: left;
   }
 
+  .section-heading-actions {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .section-heading-actions > p {
+    max-width: none;
+    text-align: left;
+  }
+
   .account-grid {
     grid-template-columns: 1fr;
+  }
+
+  .account-selection-bar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .account-selection-controls {
+    justify-content: flex-start;
   }
 
   .first-run {
