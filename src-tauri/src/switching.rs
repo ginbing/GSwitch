@@ -80,24 +80,44 @@ pub fn live_account(state: &AppState) -> Result<LiveAccountView, String> {
 pub fn save_current_account(state: &AppState) -> Result<AccountView, String> {
     let operation = state.acquire_operation()?;
     ensure_ready_for_credential_operation(state, &operation)?;
-    runtime::ensure_no_external_codex(&[])?;
 
     let codex_home = codex::codex_home()?;
-    let mut server = start_effective_file_store(&codex_home)?;
+    // Saving never writes the live profile, so an external Codex process is
+    // not a reason to reject it. Validate a copy in a GSwitch-owned profile,
+    // then make sure the live identity did not change before committing only
+    // to GSwitch's account library.
+    require_file_store(&codex_home)?;
     let original_credential = codex::read_optional_auth_document(&codex_home)?
         .ok_or_else(|| "Codex is not signed in with a file-backed credential".to_string())?;
     let kind = document_kind(&original_credential)?;
     let identity = derive_identity(&kind, &original_credential)?;
-    let metadata = account_metadata(&server.account_read(2, false)?)?;
+    let temporary = TempCodexHome::create(&state.isolated_profile_root()?)?;
+    temporary.write_auth(&original_credential)?;
+    let mut server = AppServer::start(&temporary.path)?;
+    let metadata = account_metadata(&server.account_read(2, kind == AccountKind::ChatGpt)?)?;
     ensure_metadata_kind(&metadata, &kind)?;
-    let credential = codex::read_auth_document(&codex_home)?;
-    if document_kind(&credential)? != kind || derive_identity(&kind, &credential)? != identity {
-        return Err("Codex credentials changed while saving the current account".to_string());
-    }
-    let default_label = metadata.email.clone().unwrap_or_else(|| match kind {
-        AccountKind::ChatGpt => "Current Codex account".to_string(),
-        AccountKind::ApiKey => "Current API key".to_string(),
-    });
+    let credential = temporary.read_auth()?;
+    ensure_credential_identity(
+        &credential,
+        &kind,
+        &identity,
+        "Codex did not confirm the current account identity",
+    )?;
+    let current_credential = codex::read_auth_document(&codex_home)?;
+    ensure_credential_identity(
+        &current_credential,
+        &kind,
+        &identity,
+        "Codex credentials changed while saving the current account",
+    )?;
+    let default_label = metadata
+        .email
+        .clone()
+        .or_else(|| metadata.workspace_name.clone())
+        .unwrap_or_else(|| match kind {
+            AccountKind::ChatGpt => "Current Codex account".to_string(),
+            AccountKind::ApiKey => "Current API key".to_string(),
+        });
     let recovery_credential = credential.clone();
 
     let result = state.upsert_under_operation(
@@ -108,6 +128,8 @@ pub fn save_current_account(state: &AppState) -> Result<AccountView, String> {
             kind,
             email: metadata.email,
             plan_type: metadata.plan_type,
+            workspace_name: metadata.workspace_name,
+            account_structure: metadata.account_structure,
             identity,
             credential,
         },
@@ -523,6 +545,20 @@ fn credential_identity(credential: &Value) -> Result<(AccountKind, AccountIdenti
     Ok((kind, identity))
 }
 
+fn ensure_credential_identity(
+    credential: &Value,
+    expected_kind: &AccountKind,
+    expected_identity: &AccountIdentity,
+    message: &str,
+) -> Result<(), String> {
+    if document_kind(credential)? != *expected_kind
+        || derive_identity(expected_kind, credential)? != *expected_identity
+    {
+        return Err(message.to_string());
+    }
+    Ok(())
+}
+
 fn ensure_metadata_kind(metadata: &AccountMetadata, expected: &AccountKind) -> Result<(), String> {
     if &metadata.kind == expected {
         Ok(())
@@ -582,6 +618,21 @@ fn config_store_value(config: &Value) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+
+    fn credential(user: &str, workspace: &str, access_token: &str) -> Value {
+        let claims = json!({
+            "https://api.openai.com/auth": {
+                "chatgpt_user_id": user,
+                "chatgpt_account_id": workspace
+            }
+        });
+        let id_token = format!(
+            "header.{}.signature",
+            URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims).expect("claims"))
+        );
+        json!({"tokens": {"id_token": id_token, "access_token": access_token}})
+    }
 
     #[test]
     fn rejects_a_managed_credential_store_origin() {
@@ -600,5 +651,29 @@ mod tests {
         let camel = json!({"config": {"cliAuthCredentialsStore": "file"}});
         assert_eq!(config_store_value(&snake), Some("file"));
         assert_eq!(config_store_value(&camel), Some("file"));
+    }
+
+    #[test]
+    fn saving_current_account_accepts_a_rotated_token_for_the_same_identity() {
+        let original = credential("user", "workspace", "old-token");
+        let rotated = credential("user", "workspace", "new-token");
+        let identity = derive_identity(&AccountKind::ChatGpt, &original).expect("identity");
+
+        ensure_credential_identity(&rotated, &AccountKind::ChatGpt, &identity, "changed")
+            .expect("same account");
+        assert_ne!(original, rotated);
+    }
+
+    #[test]
+    fn saving_current_account_rejects_a_live_identity_change() {
+        let original = credential("user", "workspace", "old-token");
+        let changed = credential("other-user", "workspace", "new-token");
+        let identity = derive_identity(&AccountKind::ChatGpt, &original).expect("identity");
+
+        assert_eq!(
+            ensure_credential_identity(&changed, &AccountKind::ChatGpt, &identity, "changed")
+                .expect_err("different account"),
+            "changed"
+        );
     }
 }

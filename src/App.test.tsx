@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { open } from "@tauri-apps/plugin-dialog";
 
 import App from "./App";
 import type { AccountView, QuotaView } from "./types";
@@ -16,7 +17,10 @@ const mocks = vi.hoisted(() => ({
   cancelOAuth: vi.fn(),
   openOAuth: vi.fn(),
   importAuthJson: vi.fn(),
-  importAuthFile: vi.fn(),
+  importAuthFiles: vi.fn(),
+  exportAccounts: vi.fn(),
+  discoverLocalAccounts: vi.fn(),
+  importLocalAccounts: vi.fn(),
   importApiKey: vi.fn(),
   saveCurrentAccount: vi.fn(),
   enableAccountSwitching: vi.fn(),
@@ -29,6 +33,7 @@ const mocks = vi.hoisted(() => ({
   recoverPendingResetCredit: vi.fn(),
   startWake: vi.fn(),
   startWakeAll: vi.fn(),
+  startWakeSelected: vi.fn(),
   wakeOperation: vi.fn(),
   cancelWake: vi.fn(),
   updateDelivery: vi.fn(),
@@ -61,6 +66,7 @@ const chatAccount: AccountView = {
   label: "Personal",
   kind: "chat_gpt",
   email: "person@example.com",
+  workspace_name: "Personal",
   plan_type: "Plus",
   active: false,
 };
@@ -133,7 +139,20 @@ function prepareDefaults() {
   mocks.cancelOAuth.mockResolvedValue(undefined);
   mocks.openOAuth.mockResolvedValue(undefined);
   mocks.importAuthJson.mockResolvedValue(chatAccount);
-  mocks.importAuthFile.mockResolvedValue({ imported: [chatAccount], skipped_count: 0 });
+  mocks.importAuthFiles.mockResolvedValue({
+    imported: [chatAccount],
+    duplicate_count: 0,
+    unsupported_count: 0,
+    failed_count: 0,
+  });
+  mocks.exportAccounts.mockResolvedValue({ exported_count: 1, cancelled: false });
+  mocks.discoverLocalAccounts.mockResolvedValue({ candidates: [] });
+  mocks.importLocalAccounts.mockResolvedValue({
+    imported: [chatAccount],
+    duplicate_count: 0,
+    unsupported_count: 0,
+    failed_count: 0,
+  });
   mocks.importApiKey.mockResolvedValue({
     id: "api-1",
     label: "Key",
@@ -156,6 +175,7 @@ function prepareDefaults() {
   });
   mocks.startWake.mockResolvedValue({ operation_id: "wake-1" });
   mocks.startWakeAll.mockResolvedValue({ operation_id: "wake-all" });
+  mocks.startWakeSelected.mockResolvedValue({ operation_id: "wake-selected" });
   mocks.wakeOperation.mockResolvedValue({
     id: "wake-1",
     status: "completed",
@@ -209,12 +229,165 @@ describe("GSwitch account workspace", () => {
     render(<App />);
 
     expect(await screen.findByRole("heading", { name: "0 saved accounts" })).toBeInTheDocument();
-    expect(screen.getByText(/never reads another app/i)).toBeInTheDocument();
+    expect(screen.getByText(/does not inspect another application's account storage automatically/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Import account files" })).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: "Add manually" }));
-    expect(await screen.findByRole("dialog", { name: "Add a Codex account" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Paste auth JSON/ })).toBeInTheDocument();
-    expect(screen.getByText(/does not access Cockpit Tools/i)).toBeInTheDocument();
+    const dialog = await screen.findByRole("dialog", { name: "Add a Codex account" });
+    expect(dialog).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: /Paste auth JSON/ })).toBeInTheDocument();
+    expect(within(dialog).getByText("Import existing")).toBeInTheDocument();
+    expect(within(dialog).getByText("Add new")).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: /Choose files/ })).toBeInTheDocument();
+    expect(within(dialog).getByText(/Select one or more account files/i)).toBeInTheDocument();
+    expect(within(dialog).getByText(/only reads accounts you choose to import/i)).toBeInTheDocument();
+  });
+
+  it("keeps the ready status halo outside the truncated toolbar label", async () => {
+    mocks.liveAccount.mockResolvedValue({
+      status: "ready",
+      credential_store: "file",
+      account: { label: "a-very-long-account-name-that-must-truncate@example.com" },
+    });
+    const { container } = render(<App />);
+
+    await screen.findByRole("heading", { name: "0 saved accounts" });
+    expect(container.querySelector(".brand-status > .status-ready")).toBeInTheDocument();
+    expect(container.querySelector(".brand-status-label")).toHaveTextContent("a-very-long-account-name-that-must-truncate@example.com");
+  });
+
+  it("does not scan local account sources at startup or when the method row opens", async () => {
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "0 saved accounts" })).toBeInTheDocument();
+    expect(mocks.discoverLocalAccounts).not.toHaveBeenCalled();
+
+    await userEvent.click(screen.getByRole("button", { name: "Add manually" }));
+    await userEvent.click(screen.getByRole("button", { name: /Find on this computer/ }));
+    expect(screen.getByText(/Before scanning, GSwitch will read only/i)).toBeInTheDocument();
+    expect(mocks.discoverLocalAccounts).not.toHaveBeenCalled();
+  });
+
+  it("shows a sanitized migration preview and imports only selected new candidates", async () => {
+    mocks.discoverLocalAccounts.mockResolvedValue({
+      candidates: [
+        {
+          id: "new-id",
+          source: "official_codex",
+          email: "person@example.com",
+          workspace_name: "Personal",
+          plan_type: "Plus",
+          state: "new",
+        },
+        {
+          id: "existing-id",
+          source: "cockpit_tools",
+          email: "saved@example.com",
+          state: "already_present",
+        },
+        {
+          id: "unsupported-id",
+          source: "cockpit_tools",
+          email: "unknown@example.com",
+          state: "unsupported",
+        },
+      ],
+    });
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Add manually" }));
+    await userEvent.click(screen.getByRole("button", { name: /Find on this computer/ }));
+    await userEvent.click(screen.getByRole("button", { name: "Scan supported locations" }));
+
+    expect(await screen.findByText("person@example.com")).toBeInTheDocument();
+    expect(screen.getByText(/Official Codex · New/)).toBeInTheDocument();
+    expect(screen.getByText(/Already in GSwitch/)).toBeInTheDocument();
+    expect(screen.getByText(/Unsupported/)).toBeInTheDocument();
+    expect(screen.getAllByRole("checkbox")).toHaveLength(3);
+    expect(screen.getAllByRole("checkbox")[0]).toBeChecked();
+    expect(screen.getAllByRole("checkbox")[1]).toBeDisabled();
+    expect(screen.getAllByRole("checkbox")[2]).toBeDisabled();
+
+    await userEvent.click(screen.getByRole("button", { name: "Import selected" }));
+    await waitFor(() => expect(mocks.importLocalAccounts).toHaveBeenCalledWith(undefined, ["new-id"]));
+  });
+
+  it("uses the explicit folder choice only for a migration scan", async () => {
+    vi.mocked(open).mockResolvedValue("C:\\custom\\cockpit");
+    mocks.discoverLocalAccounts.mockResolvedValue({ candidates: [] });
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Add manually" }));
+    await userEvent.click(screen.getByRole("button", { name: /Find on this computer/ }));
+    await userEvent.click(screen.getByRole("button", { name: "Choose another Cockpit folder" }));
+
+    await waitFor(() => expect(mocks.discoverLocalAccounts).toHaveBeenCalledWith("C:\\custom\\cockpit"));
+    expect(open).toHaveBeenCalledWith(expect.objectContaining({ directory: true, multiple: false }));
+  });
+
+  it("opens the native picker for multiple account files and reports one summary", async () => {
+    vi.mocked(open).mockResolvedValue(["C:\\exports\\one.json", "C:\\exports\\two.json"]);
+    mocks.importAuthFiles.mockResolvedValue({
+      imported: [chatAccount, { ...chatAccount, id: "account-2", email: "other@example.com" }],
+      duplicate_count: 1,
+      unsupported_count: 1,
+      failed_count: 1,
+    });
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Import account files" }));
+    await waitFor(() =>
+      expect(mocks.importAuthFiles).toHaveBeenCalledWith([
+        "C:\\exports\\one.json",
+        "C:\\exports\\two.json",
+      ]),
+    );
+    expect(open).toHaveBeenCalledWith(expect.objectContaining({ multiple: true }));
+    expect(await screen.findByText("Imported 2 account(s); 1 already present or duplicate; 2 unsupported or failed.")).toBeInTheDocument();
+  });
+
+  it("uses the same bounded batch command for one selected file", async () => {
+    vi.mocked(open).mockResolvedValue(["C:\\exports\\one.json"]);
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Import account files" }));
+    await waitFor(() => expect(mocks.importAuthFiles).toHaveBeenCalledWith(["C:\\exports\\one.json"]));
+  });
+
+  it("keeps a saved batch account when its later quota refresh fails", async () => {
+    const imported = { ...chatAccount, id: "batch-account" };
+    vi.mocked(open).mockResolvedValue(["C:\\exports\\one.json"]);
+    mocks.importAuthFiles.mockImplementation(async () => {
+      mocks.listAccounts.mockResolvedValue([imported]);
+      return {
+        imported: [imported],
+        duplicate_count: 0,
+        unsupported_count: 0,
+        failed_count: 0,
+      };
+    });
+    mocks.accountQuota.mockResolvedValue({ account_id: imported.id, status: "unknown" });
+    mocks.refreshAccountQuota.mockRejectedValue(new Error("quota cache unavailable"));
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Import account files" }));
+    expect(await screen.findByRole("heading", { name: "person@example.com" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Switch to person@example.com" })).toBeEnabled();
+  });
+
+  it("passes every dropped path to the bounded batch command", async () => {
+    Object.defineProperty(window, "__TAURI_INTERNALS__", { configurable: true, value: {} });
+    render(<App />);
+
+    await waitFor(() => expect(webviewMocks.onDragDropEvent).toHaveBeenCalledOnce());
+    const onEvent = webviewMocks.onDragDropEvent.mock.calls[0][0] as (event: unknown) => void;
+    onEvent({ payload: { type: "drop", paths: ["C:\\exports\\one.json", "C:\\exports\\two.json"] } });
+    await waitFor(() =>
+      expect(mocks.importAuthFiles).toHaveBeenCalledWith([
+        "C:\\exports\\one.json",
+        "C:\\exports\\two.json",
+      ]),
+    );
   });
 
   it("contains a damaged account library until the user explicitly resets only GSwitch storage", async () => {
@@ -291,6 +464,69 @@ describe("GSwitch account workspace", () => {
     );
   });
 
+  it("uses ChatGPT email as the primary identity and workspace as context", async () => {
+    mocks.listAccounts.mockResolvedValue([chatAccount]);
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "person@example.com" })).toBeInTheDocument();
+    expect(screen.getByText("Personal")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Refresh person@example.com" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Wake person@example.com" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Switch to person@example.com" })).toBeEnabled();
+  });
+
+  it("localizes ChatGPT card actions in Simplified Chinese", async () => {
+    Object.defineProperty(window.navigator, "language", { configurable: true, value: "zh-CN" });
+    mocks.listAccounts.mockResolvedValue([chatAccount]);
+    render(<App />);
+
+    expect(await screen.findByRole("button", { name: "切换到 person@example.com" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "唤醒 person@example.com" })).toBeEnabled();
+  });
+
+  it("identifies the current account in its disabled action", async () => {
+    mocks.listAccounts.mockResolvedValue([{ ...chatAccount, active: true }]);
+    render(<App />);
+
+    const current = await screen.findByRole("button", { name: "Current account: person@example.com" });
+    expect(current).toBeDisabled();
+  });
+
+  it("keeps same-workspace ChatGPT accounts distinct by email", async () => {
+    mocks.listAccounts.mockResolvedValue([
+      chatAccount,
+      { ...chatAccount, id: "account-2", email: "other@example.com" },
+    ]);
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "person@example.com" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "other@example.com" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Switch to person@example.com" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Switch to other@example.com" })).toBeEnabled();
+  });
+
+  it("omits a duplicate workspace and falls back to a distinct legacy label", async () => {
+    mocks.listAccounts.mockResolvedValue([
+      { ...chatAccount, workspace_name: "person@example.com", label: "person@example.com" },
+      { ...chatAccount, id: "account-2", workspace_name: undefined, label: "Legacy workspace" },
+    ]);
+    const { container } = render(<App />);
+
+    expect(await screen.findAllByRole("heading", { name: "person@example.com" })).toHaveLength(2);
+    expect(container.querySelectorAll(".account-copy p")).toHaveLength(1);
+    expect(screen.getByText("Legacy workspace")).toBeInTheDocument();
+  });
+
+  it("keeps API-key cards label-first", async () => {
+    mocks.listAccounts.mockResolvedValue([
+      { id: "api-1", label: "Build key", kind: "api_key", active: false },
+    ]);
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Build key" })).toBeInTheDocument();
+    expect(screen.getByText("Stored locally")).toBeInTheDocument();
+  });
+
   it("requires a deliberate recovery of the original pending reset request", async () => {
     mocks.listAccounts.mockResolvedValue([chatAccount]);
     mocks.accountQuota.mockResolvedValue(staleQuota);
@@ -320,8 +556,72 @@ describe("GSwitch account workspace", () => {
     render(<App />);
 
     expect(await screen.findByText("Personal")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Switch" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Switch to person@example.com" })).toBeEnabled();
     expect(screen.getAllByText("Not available")).toHaveLength(2);
+  });
+
+  it("saves the current account and refreshes its unknown quota in the background", async () => {
+    mocks.liveAccount.mockResolvedValue({
+      status: "unknown_account",
+      credential_store: "file",
+      message: "Save the current Codex account before replacing its credentials",
+    });
+    mocks.accountQuota.mockResolvedValue({ account_id: "account-1", status: "unknown" });
+    mocks.saveCurrentAccount.mockImplementation(async () => {
+      mocks.listAccounts.mockResolvedValue([chatAccount]);
+      mocks.liveAccount.mockResolvedValue({
+        status: "ready",
+        credential_store: "file",
+        account: { ...chatAccount, active: true },
+      });
+      return chatAccount;
+    });
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Save current account" }));
+    await waitFor(() => expect(mocks.saveCurrentAccount).toHaveBeenCalledOnce());
+    await waitFor(() => expect(mocks.refreshAccountQuota).toHaveBeenCalledWith("account-1"));
+    expect(await screen.findByText("Personal was saved safely.")).toBeInTheDocument();
+  });
+
+  it("coalesces a manual refresh with the background quota refresh", async () => {
+    mocks.listAccounts.mockResolvedValue([chatAccount]);
+    mocks.accountQuota.mockResolvedValue({ account_id: "account-1", status: "unknown" });
+    let resolveRefresh: ((quota: QuotaView) => void) | undefined;
+    mocks.refreshAccountQuota.mockImplementation(
+      () => new Promise<QuotaView>((resolve) => { resolveRefresh = resolve; }),
+    );
+    render(<App />);
+
+    await screen.findByText("Personal");
+    await waitFor(() => expect(mocks.refreshAccountQuota).toHaveBeenCalledOnce());
+    await userEvent.click(screen.getByRole("button", { name: "Refresh person@example.com" }));
+    expect(mocks.refreshAccountQuota).toHaveBeenCalledOnce();
+
+    mocks.accountQuota.mockResolvedValue(staleQuota);
+    resolveRefresh?.(staleQuota);
+    expect(await screen.findByText("30%")).toBeInTheDocument();
+  });
+
+  it("keeps account actions available when the live Codex account cannot be identified", async () => {
+    mocks.listAccounts.mockResolvedValue([chatAccount]);
+    mocks.accountQuota.mockResolvedValue({ account_id: "account-1", status: "unknown" });
+    mocks.refreshAccountQuota.mockRejectedValue(
+      new Error("Codex is running and GSwitch cannot safely identify its active account"),
+    );
+    render(<App />);
+
+    expect(await screen.findByText(/could not identify Codex's live account/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Switch to person@example.com" })).toBeEnabled();
+  });
+
+  it("maps the existing Quit Codex guard to an actionable retry message", async () => {
+    mocks.listAccounts.mockResolvedValue([chatAccount]);
+    mocks.switchAccount.mockRejectedValue(new Error("Quit Codex before changing the active account"));
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Switch to person@example.com" }));
+    expect(await screen.findByText(/Quit the other Codex session/)).toBeInTheDocument();
   });
 
   it("lets the user cancel a browser OAuth flow", async () => {
@@ -330,7 +630,7 @@ describe("GSwitch account workspace", () => {
 
     await userEvent.click(screen.getByRole("button", { name: /^Add account$/ }));
     const dialog = await screen.findByRole("dialog", { name: "Add a Codex account" });
-    await userEvent.click(within(dialog).getByRole("button", { name: /Sign in with your browser/ }));
+    await userEvent.click(within(dialog).getByRole("button", { name: /Sign in with Codex/ }));
     expect(await screen.findByText("Finish sign-in in your browser")).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: "Cancel sign-in" }));
@@ -348,6 +648,43 @@ describe("GSwitch account workspace", () => {
     expect(await screen.findByRole("dialog", { name: "Wake" })).toBeInTheDocument();
     expect(screen.getByText("Wake is running safely")).toBeInTheDocument();
     expect(mocks.startWakeAll).toHaveBeenCalledOnce();
+  });
+
+  it("selects saved accounts, wakes only selected ChatGPT accounts, and exports through a warning", async () => {
+    const apiAccount: AccountView = {
+      id: "api-1",
+      label: "Key",
+      kind: "api_key",
+      active: false,
+    };
+    mocks.listAccounts.mockResolvedValue([chatAccount, apiAccount]);
+    mocks.accountQuota.mockResolvedValue(staleQuota);
+    render(<App />);
+    await screen.findByText("Personal");
+
+    await userEvent.click(screen.getByRole("button", { name: "Select" }));
+    await userEvent.click(screen.getByRole("button", { name: "Select all" }));
+    expect(screen.getAllByRole("checkbox")).toHaveLength(2);
+    for (const checkbox of screen.getAllByRole("checkbox")) {
+      expect(checkbox).toBeChecked();
+    }
+    await userEvent.click(screen.getByRole("button", { name: "Clear" }));
+    const accountChoice = screen.getByRole("checkbox", { name: "Select person@example.com" });
+    expect(accountChoice).not.toBeChecked();
+    await userEvent.click(accountChoice);
+    await userEvent.click(screen.getByRole("button", { name: "Wake" }));
+    await waitFor(() => expect(mocks.startWakeSelected).toHaveBeenCalledWith(["account-1"]));
+    expect(await screen.findByRole("dialog", { name: "Wake" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: /Close Wake/ }));
+
+    await userEvent.click(screen.getByRole("button", { name: "Export" }));
+    const exportDialog = await screen.findByRole("dialog", { name: "Export selected accounts" });
+    expect(within(exportDialog).getByText(/Usage, quota, reset, and local state stay in GSwitch/i)).toBeInTheDocument();
+    await userEvent.click(within(exportDialog).getByRole("button", { name: "Continue" }));
+    expect(within(exportDialog).getByText(/Anyone who can read this JSON file can use its credentials/i)).toBeInTheDocument();
+    await userEvent.click(within(exportDialog).getByRole("button", { name: "Export unencrypted accounts" }));
+    await waitFor(() => expect(mocks.exportAccounts).toHaveBeenCalledWith(["account-1"]));
+    expect(await screen.findByText("Exported 1 selected account(s). Keep this unencrypted file private.")).toBeInTheDocument();
   });
 
   it("offers a signed update once and keeps Later local to the current session", async () => {

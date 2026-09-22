@@ -33,6 +33,10 @@ pub struct StoredAccount {
     #[serde(default)]
     pub plan_type: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_structure: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub identity: Option<AccountIdentity>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quota: Option<QuotaSnapshot>,
@@ -48,18 +52,69 @@ pub struct AccountView {
     pub kind: AccountKind,
     pub email: Option<String>,
     pub plan_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_name: Option<String>,
     pub active: bool,
 }
 
-/// A display-only outcome for a user-selected account export. Parsed
-/// credentials stay in Rust; the WebView receives only the saved profiles and
-/// a count of entries that were incomplete or outside GSwitch's supported
-/// Codex formats.
+/// A display-only outcome for one bounded user-selected account-file batch.
+/// Parsed credentials and failure details stay in Rust; the WebView receives
+/// only saved profiles and aggregate counts.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ImportResult {
     #[serde(default)]
     pub imported: Vec<AccountView>,
-    pub skipped_count: u32,
+    pub duplicate_count: u32,
+    pub unsupported_count: u32,
+    pub failed_count: u32,
+}
+
+/// Aggregate outcome of an explicit portable account export. The selected
+/// credential documents and destination path stay Rust-owned.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExportResult {
+    pub exported_count: u32,
+    pub cancelled: bool,
+}
+
+/// A source adapter exposed by the one-shot local migration assistant. The
+/// enum is intentionally closed: discovery never becomes a generic plugin or
+/// filesystem search surface.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MigrationSource {
+    OfficialCodex,
+    CockpitTools,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MigrationCandidateState {
+    New,
+    AlreadyPresent,
+    Unsupported,
+}
+
+/// Sanitized preview data for a local migration candidate. Credential
+/// documents, raw source records, keys, paths, and provider payloads remain
+/// Rust-owned and never cross the Tauri boundary.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MigrationCandidateView {
+    pub id: String,
+    pub source: MigrationSource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_type: Option<String>,
+    pub state: MigrationCandidateState,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MigrationPreview {
+    #[serde(default)]
+    pub candidates: Vec<MigrationCandidateView>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -237,12 +292,12 @@ pub struct ResetCreditOutcome {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum WakeResultKind {
+    Started,
     AlreadyActive,
-    WindowStarted,
-    RequestCompletedUnconfirmed,
-    NeedsModelSelection,
+    NoOrdinaryCapacity,
+    NeedsSignIn,
+    SentNotConfirmed,
     Failed,
-    Skipped,
     Cancelled,
 }
 
@@ -252,10 +307,6 @@ pub struct WakeAccountResult {
     pub label: String,
     pub result: WakeResultKind,
     pub message: String,
-    /// Only model names suitable for an explicit user choice. The automatic
-    /// policy never falls back to this list by itself.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub available_models: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
