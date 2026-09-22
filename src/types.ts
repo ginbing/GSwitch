@@ -56,6 +56,18 @@ export interface SwitchOutcome {
   account: AccountView;
 }
 
+export type SwitchFailureCode =
+  | "codex_open"
+  | "account_needs_sign_in"
+  | "file_store_required"
+  | "credentials_changed"
+  | "recovery_required"
+  | "verification_failed";
+
+export interface SwitchFailure {
+  code: SwitchFailureCode;
+}
+
 export interface OAuthLoginStart {
   login_id: string;
   auth_url: string;

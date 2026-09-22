@@ -124,19 +124,38 @@ ephemeral, or ambiguous states it cannot migrate safely.
 The visible interaction is one **Switch** action. Rust owns the full transaction:
 
 1. acquire the single credential-operation lock;
-2. reject a pending recovery or active/uninspectable external Codex runtime;
-3. confirm the effective file-backed store;
+2. reject a pending recovery, then reject an active or uninspectable external
+   Codex runtime before any provider request;
+3. confirm the effective file-backed store through the supported Codex
+   configuration surface, then stop that helper process;
 4. read the live credential and preserve it into the matching saved profile;
-5. validate and refresh the target in an isolated Codex profile;
-6. persist pending-switch recovery state;
-7. check the external process state and live credential fingerprint again;
-8. atomically replace the live credential;
-9. ask Codex to confirm the effective target identity;
-10. commit the active profile only after verification.
+5. validate the target snapshot: ChatGPT uses the saved access token for one
+   read-only account check, while API-key identity is checked locally without a
+   network request;
+6. only when that ChatGPT check returns 401 or 403, check the external process
+   state again and allow one isolated managed refresh; identity-check the
+   refreshed complete document before saving it;
+7. persist pending-switch recovery state;
+8. check the external process state and live credential fingerprint again;
+9. atomically replace the live credential;
+10. reread `auth.json` and confirm the requested identity locally;
+11. commit the active profile only after that verification.
+
+A successful ChatGPT snapshot check updates only normalized non-secret account
+metadata. It does not start an isolated App Server, refresh the token, or rewrite
+the saved credential. Rate limits, transport and TLS failures, timeouts, 5xx
+responses, and malformed responses fail the switch without entering managed
+refresh. The write-time verification never starts a second App Server.
 
 If verification fails, restore the previous credential only when the live file
 still matches what GSwitch wrote. An external change makes the result ambiguous,
 so recovery fails closed instead of overwriting it.
+
+Switch failures cross the Tauri boundary only as one sanitized code:
+`codex_open`, `account_needs_sign_in`, `file_store_required`,
+`credentials_changed`, `recovery_required`, or `verification_failed`. The
+frontend combines that code with already-present account display data; provider
+errors, credential contents, and filesystem paths remain in Rust.
 
 The UI never marks a target active optimistically. If Codex is running, ask the
 user to quit it and retry; v1 does not kill or restart Codex.

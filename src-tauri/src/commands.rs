@@ -199,7 +199,7 @@ pub fn enable_account_switching(state: State<'_, AppState>) -> Result<bool, Stri
 pub fn switch_account(
     state: State<'_, AppState>,
     target_id: String,
-) -> Result<SwitchOutcome, String> {
+) -> Result<SwitchOutcome, crate::types::SwitchFailure> {
     switching::switch_account(state.inner(), &target_id)
 }
 

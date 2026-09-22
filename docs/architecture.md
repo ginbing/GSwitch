@@ -16,7 +16,8 @@ smaller than a general account-management platform.
 
 The frontend asks for user-level actions such as add, switch, refresh, redeem,
 or Wake. It does not orchestrate their internal steps or receive the stored
-credential document.
+credential document. Switch failures cross IPC as a small serialized error code,
+not a Rust display string or raw provider error.
 
 ## State ownership
 
@@ -99,24 +100,30 @@ or recovery records.
 
 ## Isolated Codex profiles
 
-OAuth, imported-account validation, quota fallback, and reset redemption may
-run an official Codex App Server in a short-lived GSwitch-owned
+OAuth, authentication-only switch/import/quota fallback, and reset redemption
+may run an official Codex App Server in a short-lived GSwitch-owned
 `CODEX_HOME`. This isolates the operation from the user's live Codex identity.
 Refreshed credentials are accepted only after the returned document still
-matches the expected account identity. Ordinary quota, account metadata, and
-Wake use the small Rust-owned ChatGPT HTTP boundary first; ordinary reads and
-active-account Wake never start App Server or write a credential.
+matches the expected account identity. Ordinary switch validation, quota,
+account metadata, and Wake use the small Rust-owned ChatGPT HTTP boundary first.
+A valid switch snapshot updates only normalized non-secret metadata; it neither
+refreshes nor rewrites credentials. API-key switching does no provider request.
 
 ## Mutation boundary
 
 Operations that may persist or refresh credentials share one Rust-owned
 in-process mutex and cross-process file lock. Live switching adds external Codex
 process checks because a GSwitch lock has no authority over another Codex
-process.
+process. The first check precedes provider work; a second check plus the original
+live fingerprint gates the atomic `auth.json` replacement.
 
 A switch is one backend transaction, not a frontend sequence or file-copy
-shortcut. See [workflows.md](./workflows.md) for its semantics and
-[security.md](./security.md) for its invariants.
+shortcut. It validates a saved snapshot first, permits one isolated managed
+refresh only after a ChatGPT 401 or 403, and verifies the write by locally
+rereading identity without starting another App Server. Pending state, guarded
+rollback, and recovery remain inside the same transaction. See
+[workflows.md](./workflows.md) for its semantics and [security.md](./security.md)
+for its invariants.
 
 ## Dependency rule
 

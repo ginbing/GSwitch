@@ -74,8 +74,23 @@ as applicable:
   source on explicit reset, and leaving unrelated live Codex files untouched;
 - external or uninspectable Codex runtimes blocking sensitive mutation;
 - current live credentials being reconciled before replacement;
-- target identity confirmation before switch success;
+- switch process rejection happening before target-network validation and the
+  process/fingerprint checks running again before live replacement;
+- a valid ChatGPT switch snapshot using one read-only account check without
+  managed refresh or credential rewrite;
+- one 401/403 switch fallback through an isolated managed refresh, with all
+  rate-limit, network, TLS, timeout, 5xx, and malformed-response failures
+  refusing that fallback;
+- API-key switching performing local structure and stable-identity checks with
+  no provider request;
+- target identity mismatch and live-fingerprint races preventing mutation;
+- post-write identity confirmation using only a local `auth.json` reread;
+- verification failure restoring the previous credential only when the live
+  file still equals GSwitch's write, otherwise preserving pending recovery;
 - interrupted-switch and protected-credential recovery;
+- structured switch-error codes producing account-specific frontend guidance
+  without parsing Rust strings or exposing credential/provider details;
+- successful switching reloading the account view with the active account first;
 - quota bucket normalization, zero remaining, and stale-cache labeling;
 - a quota projection failure leaving the saved-account workspace and Switch
   action available;
