@@ -47,7 +47,9 @@ remain in Rust-owned storage.
 Keep the backend flat and organized by concrete responsibility:
 
 - `lib.rs`: Tauri setup, managed state, plugins, and command registration;
-- `commands.rs`: thin IPC adapters and sanitized application snapshots;
+- `commands.rs`: thin IPC adapters, sanitized application snapshots, and the
+  `spawn_blocking` scheduling boundary for filesystem, provider, process, and
+  App Server work;
 - `accounts.rs`: saved profiles, operation serialization, store coordination,
   damaged-store recovery, pending credential recovery, and in-memory operation
   state;
@@ -97,6 +99,14 @@ an in-memory login session.
 The WebView may persist its selected display language only. Language selection
 is not account state and must not share storage with credentials, provider data,
 or recovery records.
+
+Potentially blocking Rust commands are asynchronous and move their existing
+synchronous domain operation to Tauri's blocking worker pool. This keeps the
+window able to repaint, scroll, and accept unrelated input without weakening
+the Rust operation mutex or cross-process lock. React keeps point-operation
+state local: a single-account quota refresh replaces only that account's quota
+projection, while a full workspace reload is reserved for initial state or a
+real topology change.
 
 ## Isolated Codex profiles
 
