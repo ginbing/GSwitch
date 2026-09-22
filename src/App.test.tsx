@@ -240,7 +240,20 @@ describe("GSwitch account workspace", () => {
     expect(within(dialog).getByText("Add new")).toBeInTheDocument();
     expect(within(dialog).getByRole("button", { name: /Choose files/ })).toBeInTheDocument();
     expect(within(dialog).getByText(/Select one or more account files/i)).toBeInTheDocument();
-    expect(within(dialog).getByText(/does not inspect another application's account storage automatically/i)).toBeInTheDocument();
+    expect(within(dialog).getByText(/only reads accounts you choose to import/i)).toBeInTheDocument();
+  });
+
+  it("keeps the ready status halo outside the truncated toolbar label", async () => {
+    mocks.liveAccount.mockResolvedValue({
+      status: "ready",
+      credential_store: "file",
+      account: { label: "a-very-long-account-name-that-must-truncate@example.com" },
+    });
+    const { container } = render(<App />);
+
+    await screen.findByRole("heading", { name: "0 saved accounts" });
+    expect(container.querySelector(".brand-status > .status-ready")).toBeInTheDocument();
+    expect(container.querySelector(".brand-status-label")).toHaveTextContent("a-very-long-account-name-that-must-truncate@example.com");
   });
 
   it("does not scan local account sources at startup or when the method row opens", async () => {

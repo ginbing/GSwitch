@@ -137,20 +137,19 @@ summary:focus-visible {
 }
 
 .brand-lockup {
+  flex: 1 1 auto;
   min-width: 0;
   gap: 11px;
 }
 
 .brand-mark {
-  display: grid;
   width: 39px;
   height: 39px;
   flex: 0 0 auto;
-  place-items: center;
-  border-radius: 12px;
-  color: #ffffff;
-  background: linear-gradient(140deg, #616cf1, #454ed4);
-  box-shadow: 0 5px 12px rgba(74, 83, 221, 0.24);
+}
+
+.brand-copy {
+  min-width: 0;
 }
 
 .brand-lockup h1 {
@@ -161,16 +160,21 @@ summary:focus-visible {
   line-height: 1.2;
 }
 
-.brand-lockup p {
+.brand-status {
   display: flex;
   min-width: 0;
   align-items: center;
   gap: 6px;
   margin: 3px 0 0;
-  overflow: hidden;
   color: var(--muted);
   font-size: 12.5px;
   font-weight: 510;
+  white-space: nowrap;
+}
+
+.brand-status-label {
+  min-width: 0;
+  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -573,7 +577,7 @@ summary:focus-visible {
 .account-card-head {
   display: flex;
   min-width: 0;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 9px;
 }
@@ -586,7 +590,7 @@ summary:focus-visible {
 .account-select-control {
   display: grid;
   width: 18px;
-  height: 34px;
+  height: 36px;
   flex: 0 0 auto;
   place-items: center;
 }
@@ -600,7 +604,7 @@ summary:focus-visible {
 .account-avatar {
   display: grid;
   width: 34px;
-  height: 34px;
+  height: 36px;
   flex: 0 0 auto;
   place-items: center;
   border-radius: 10px;
@@ -621,7 +625,7 @@ summary:focus-visible {
   font-size: 14px;
   font-weight: 710;
   letter-spacing: -0.015em;
-  line-height: 1.3;
+  line-height: 1.25;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -631,7 +635,7 @@ summary:focus-visible {
   margin: 2px 0 0;
   color: var(--muted);
   font-size: 11.5px;
-  line-height: 1.3;
+  line-height: 1.25;
   text-overflow: ellipsis;
   white-space: nowrap;
 }

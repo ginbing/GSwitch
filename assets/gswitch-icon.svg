@@ -1,17 +1,11 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
   <title id="title">GSwitch</title>
-  <desc id="desc">Two opposing arrows representing account switching</desc>
-  <defs>
-    <linearGradient id="background" x1="128" y1="896" x2="896" y2="128" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#4338CA" />
-      <stop offset="1" stop-color="#7C3AED" />
-    </linearGradient>
-  </defs>
-  <rect x="64" y="64" width="896" height="896" rx="220" fill="url(#background)" />
-  <g fill="none" stroke="#FFFFFF" stroke-linecap="round" stroke-linejoin="round" stroke-width="88">
-    <path d="M250 362h488" />
-    <path d="m648 262 100 100-100 100" />
-    <path d="M774 662H286" />
-    <path d="m376 562-100 100 100 100" />
+  <desc id="desc">A compact continuous loop for switching accounts</desc>
+  <rect x="64" y="64" width="896" height="896" rx="224" fill="#4F46E5" />
+  <g fill="none" stroke="#FFFFFF" stroke-linecap="round" stroke-linejoin="round" stroke-width="82">
+    <path d="M288 454c0-82 66-148 148-148h180" />
+    <path d="m550 216 92 90-92 90" />
+    <path d="M736 570c0 82-66 148-148 148H408" />
+    <path d="m474 808-92-90 92-90" />
   </g>
 </svg>
