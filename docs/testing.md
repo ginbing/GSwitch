@@ -99,6 +99,12 @@ as applicable:
   identity deduplication, saved-identity duplicates, mixed parse outcomes,
   batch file/byte limits, sequential validation, sanitized aggregate results,
   and successful persistence when post-import quota refresh fails.
+- versioned portable export structure, intentional omissions, empty/stale
+  selections, cancellation before write, Unix private permissions, version-1
+  import round-trip, unknown-version rejection, saved-identity deduplication,
+  and aggregate-only command output;
+- Add Account import-first hierarchy, account selection controls, selected Wake,
+  unencrypted-export confirmation, and result feedback without credential data.
 - system-language selection, unsupported-locale fallback, immediate manual
   language selection, language preference persistence, locale-aware reset-time
   formatting, and the main account flow in Simplified Chinese.

@@ -10,6 +10,7 @@ It gets the job done.
 ## What it does
 
 - Keep multiple Codex accounts on your computer
+- Import or export selected accounts as one portable file
 - Show the active account
 - Show quota, reset times, and available reset credits
 - Change accounts safely

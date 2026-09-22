@@ -1,13 +1,14 @@
 use tauri::{AppHandle, State};
+use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
 
 use crate::{
     accounts::AppState,
     codex, intake, migration, quota, switching,
     types::{
-        AccountView, AppSnapshot, ImportResult, LiveAccountView, MigrationPreview, OAuthLoginStart,
-        OAuthLoginStatus, QuotaView, ResetCreditOutcome, RuntimeInfo, StorageStatus, SwitchOutcome,
-        UpdateDelivery, WakeOperationView, WakeStart,
+        AccountView, AppSnapshot, ExportResult, ImportResult, LiveAccountView, MigrationPreview,
+        OAuthLoginStart, OAuthLoginStatus, QuotaView, ResetCreditOutcome, RuntimeInfo,
+        StorageStatus, SwitchOutcome, UpdateDelivery, WakeOperationView, WakeStart,
     },
     wake,
 };
@@ -131,6 +132,29 @@ pub fn import_auth_files(
 }
 
 #[tauri::command]
+pub fn export_accounts(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    selected_ids: Vec<String>,
+) -> Result<ExportResult, String> {
+    let export = intake::prepare_accounts_export(state.inner(), selected_ids)?;
+    let destination = app
+        .dialog()
+        .file()
+        .set_title("Export GSwitch accounts")
+        .set_file_name("gswitch-accounts.json")
+        .add_filter("JSON", &["json"])
+        .blocking_save_file()
+        .map(|destination| {
+            destination
+                .into_path()
+                .map_err(|_| "Unable to use the selected export location".to_string())
+        })
+        .transpose()?;
+    intake::complete_accounts_export(&export, destination.as_deref())
+}
+
+#[tauri::command]
 pub fn discover_local_accounts(
     state: State<'_, AppState>,
     custom_root: Option<String>,
@@ -222,6 +246,14 @@ pub fn start_wake(state: State<'_, AppState>, id: String) -> Result<WakeStart, S
 #[tauri::command]
 pub fn start_wake_all(state: State<'_, AppState>) -> Result<WakeStart, String> {
     wake::start_all(state.inner().clone())
+}
+
+#[tauri::command]
+pub fn start_wake_selected(
+    state: State<'_, AppState>,
+    selected_ids: Vec<String>,
+) -> Result<WakeStart, String> {
+    wake::start_selected(state.inner().clone(), selected_ids)
 }
 
 #[tauri::command]

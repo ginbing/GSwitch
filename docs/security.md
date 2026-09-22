@@ -18,8 +18,8 @@ product behavior, not optional implementation polish.
   storage or returned in the aggregate result.
 - Import support for Cockpit Tools, Sub2API, and CPA applies to files the user
   explicitly selects or drops. GSwitch does not inspect another application's
-  account storage automatically. After the user explicitly starts **Import
-  from this computer**, it may read only the documented Official Codex profile
+  account storage automatically. After the user explicitly starts **Find on
+  this computer**, it may read only the documented Official Codex profile
   and Cockpit allowlist, including the existing secure-storage key needed to
   decode a supported Codex detail. The read is bounded and strictly
   read-only: no key creation, rotation, repair, source rewrite, watcher,
@@ -36,6 +36,11 @@ product behavior, not optional implementation polish.
   login is checked.
 - Credential-bearing files use atomic replacement and restrictive permissions
   where the operating system and filesystem support them.
+- Portable export is explicit credential egress: Rust validates selected saved
+  IDs, opens the native save dialog, and writes only after the user accepts the
+  unencrypted-export warning. The WebView receives neither credential content
+  nor destination path. The versioned format excludes account operational
+  state, reset/recovery IDs, provider payloads, paths, and source metadata.
 
 The GSwitch account store lives under the application's config directory. It is
 a small versioned JSON store because the product owns a handful of local

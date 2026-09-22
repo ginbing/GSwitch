@@ -69,6 +69,14 @@ pub struct ImportResult {
     pub failed_count: u32,
 }
 
+/// Aggregate outcome of an explicit portable account export. The selected
+/// credential documents and destination path stay Rust-owned.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExportResult {
+    pub exported_count: u32,
+    pub cancelled: bool,
+}
+
 /// A source adapter exposed by the one-shot local migration assistant. The
 /// enum is intentionally closed: discovery never becomes a generic plugin or
 /// filesystem search surface.
