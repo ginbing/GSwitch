@@ -54,9 +54,10 @@ after a file replacement. Before any live credential mutation, GSwitch detects
 known Codex Desktop, CLI, App Server, and IDE-owned processes. A relevant process
 whose command line cannot be inspected is unsafe, not absent.
 
-The operation fails before live mutation and tells the user to quit Codex.
-GSwitch does not silently kill, restart, or manage external Codex processes.
-Switching checks again immediately before replacement to narrow the race window.
+The switch operation fails before any provider request and tells the user to
+quit Codex. GSwitch does not silently kill, restart, or manage external Codex
+processes. Switching checks again before an authentication-only managed refresh
+and immediately before replacement to narrow both race windows.
 
 GSwitch-owned isolated App Server children are scoped to their operation and
 excluded only from that operation's external-process check. They are terminated
@@ -84,17 +85,26 @@ and expected prior state.
 Before replacing live credentials:
 
 1. the effective store must be confirmed as file-backed and unmanaged;
-2. no external Codex runtime may be active or uninspectable;
+2. no external Codex runtime may be active or uninspectable, and that check must
+   happen before target-network validation;
 3. the current live identity must be saved or the live profile must be empty;
 4. the newest live credential must be reconciled into its saved profile;
-5. the target must validate in isolation and still match its saved identity;
-6. pending recovery intent must be durably stored;
-7. the live credential fingerprint must still match the preflight observation.
+5. a ChatGPT target must pass a read-only account check with its saved snapshot,
+   or an API-key target must pass local structure and stable-identity checks;
+6. a ChatGPT 401 or 403 may use one isolated managed refresh after another
+   external-process check, but rate limits, transport, TLS, timeout, 5xx, and
+   parse failures must not enter that fallback;
+7. any refreshed credential must still match the saved identity before it is
+   persisted;
+8. pending recovery intent must be durably stored;
+9. the external process state and live credential fingerprint must still match
+   the preflight observations.
 
-After replacement, success requires Codex to confirm the requested identity.
-Rollback is allowed only if the live file still matches the credential GSwitch
-wrote. Otherwise fail closed and require recovery. A stale saved refresh token
-must never overwrite a newer live token.
+After replacement, success requires a local reread of `auth.json` to derive the
+requested identity. That check does not start App Server or make a provider
+request. Rollback is allowed only if the live file still matches the credential
+GSwitch wrote. Otherwise fail closed and require recovery. A stale saved refresh
+token must never overwrite a newer live token.
 
 Changing Codex credential-store policy is explicit. Never extract keyring or
 ephemeral credentials, bypass managed policy, or assume that writing
@@ -102,12 +112,14 @@ ephemeral credentials, bypass managed policy, or assume that writing
 
 ## Isolated-operation invariants
 
-OAuth, managed import fallback, quota fallback, and reset redemption use
-short-lived GSwitch-owned Codex profiles. Ordinary ChatGPT import validation
-and account metadata use the Rust-only read-only backend client first. Before
-persisting any refreshed credential, verify that its account kind and identity
-are unchanged. Delete the isolated profile after success unless it must be
-retained as a last-resort protected recovery copy.
+OAuth, authentication-only switch/import/quota fallback, and reset redemption
+use short-lived GSwitch-owned Codex profiles. Ordinary ChatGPT switch and import
+validation use the Rust-only read-only backend client first. A valid switch
+snapshot may update normalized non-secret metadata but must not refresh or
+rewrite the saved credential. Before persisting any refreshed credential,
+verify that its account kind and identity are unchanged. Delete the isolated
+profile after success unless it must be retained as a last-resort protected
+recovery copy.
 
 Ordinary quota refresh is a read-only provider projection. When Codex is
 running, GSwitch rereads the file-backed live credential immediately before
@@ -140,6 +152,10 @@ instead of retrying.
 - The WebView receives only whether reset recovery is pending. It cannot read
   the recorded account, provider credit, or idempotency key.
 - Ambiguous external changes are preserved, not overwritten.
+- Switch errors returned to the WebView contain only a structured code for
+  Codex-open, sign-in-required, file-store-required, credentials-changed,
+  recovery-required, or verification-failed. Detailed provider, filesystem,
+  and recovery errors stay in Rust.
 - A failed account-store write must not silently discard a credential refreshed
   by Codex; retain a protected recovery copy.
 - A corrupt GSwitch store blocks mutation. Reset preserves the damaged file and

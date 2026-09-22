@@ -56,6 +56,8 @@ import type {
   QuotaWindow,
   RuntimeInfo,
   StorageView,
+  SwitchFailure,
+  SwitchFailureCode,
   WakeOperationView,
 } from "./types";
 import { updater, type AvailableUpdate } from "./updater";
@@ -122,6 +124,39 @@ function friendlyError(t: Translator, error: unknown, fallback = t("error.action
     return t("error.importUnsupported");
   }
   return `${fallback} ${t("error.currentUnchanged")}`;
+}
+
+const switchFailureCodes = new Set<SwitchFailureCode>([
+  "codex_open",
+  "account_needs_sign_in",
+  "file_store_required",
+  "credentials_changed",
+  "recovery_required",
+  "verification_failed",
+]);
+
+function asSwitchFailure(error: unknown): SwitchFailure | undefined {
+  if (typeof error !== "object" || error === null || !("code" in error)) {
+    return undefined;
+  }
+  const code = (error as { code?: unknown }).code;
+  return typeof code === "string" && switchFailureCodes.has(code as SwitchFailureCode)
+    ? { code: code as SwitchFailureCode }
+    : undefined;
+}
+
+function switchFailureMessage(t: Translator, error: unknown, account: AccountView) {
+  const failure = asSwitchFailure(error);
+  const messages = {
+    codex_open: "switch.error.codexOpen",
+    account_needs_sign_in: "switch.error.needsSignIn",
+    file_store_required: "switch.error.fileStoreRequired",
+    credentials_changed: "switch.error.credentialsChanged",
+    recovery_required: "switch.error.recoveryRequired",
+    verification_failed: "switch.error.verificationFailed",
+  } as const;
+  const key = failure ? messages[failure.code] : messages.verification_failed;
+  return t(key, { name: accountPrimaryName(account) });
 }
 
 function quotaRefreshMessage(t: Translator, error: unknown) {
@@ -633,7 +668,12 @@ export default function App() {
     setLoading(true);
     try {
       const initial = await api.appSnapshot();
-      const nextAccounts = initial.accounts;
+      const activeAccountId = initial.live?.account?.id;
+      const nextAccounts = [...initial.accounts].sort(
+        (left, right) =>
+          Number(right.active || right.id === activeAccountId) -
+          Number(left.active || left.id === activeAccountId),
+      );
       setAccounts(nextAccounts);
       setSelectedAccountIds((current) =>
         current.filter((id) => nextAccounts.some((account) => account.id === id)),
@@ -1110,9 +1150,18 @@ export default function App() {
   };
 
   const switchAccount = async (account: AccountView) => {
-    const result = await runTask("switch:" + account.id, () => api.switchAccount(account.id));
-    if (result) {
-      setNotice({ kind: "success", text: t("notice.switched", { name: account.label }) });
+    setBusy("switch:" + account.id);
+    try {
+      await api.switchAccount(account.id);
+      await loadSnapshot();
+      setNotice({
+        kind: "success",
+        text: t("notice.switched", { name: accountPrimaryName(account) }),
+      });
+    } catch (error) {
+      setNotice({ kind: "error", text: switchFailureMessage(t, error, account) });
+    } finally {
+      setBusy(null);
     }
   };
 
