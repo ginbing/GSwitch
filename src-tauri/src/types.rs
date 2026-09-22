@@ -284,12 +284,12 @@ pub struct ResetCreditOutcome {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum WakeResultKind {
+    Started,
     AlreadyActive,
-    WindowStarted,
-    RequestCompletedUnconfirmed,
-    NeedsModelSelection,
+    NoOrdinaryCapacity,
+    NeedsSignIn,
+    SentNotConfirmed,
     Failed,
-    Skipped,
     Cancelled,
 }
 
@@ -299,10 +299,6 @@ pub struct WakeAccountResult {
     pub label: String,
     pub result: WakeResultKind,
     pub message: String,
-    /// Only model names suitable for an explicit user choice. The automatic
-    /// policy never falls back to this list by itself.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub available_models: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -19,6 +19,17 @@ use crate::{
     },
 };
 
+/// The externally running Codex process is the refresh-token owner for a
+/// matching account. A Wake may still use a token snapshot in every state,
+/// but only a definitely inactive account may use an isolated refresh.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum ExternalCredentialState {
+    NotRunning,
+    Matching(Value),
+    DifferentAccount,
+    Unidentifiable,
+}
+
 const CACHE_FRESH_FOR_MS: i64 = 5 * 60 * 1000;
 
 /// Returns the last provider snapshot without initiating a provider request.
@@ -37,9 +48,17 @@ pub fn refresh_quota(state: &AppState, account_id: &str) -> Result<QuotaView, St
         return Ok(not_applicable(&account));
     }
     let identity = verified_chatgpt_identity(&account)?;
-    let live_credential = live_credential_for_identity(&identity)?;
-    if let Some(credential) = live_credential {
-        return refresh_active_read_only(state, &operation, &account, &identity, credential);
+    match external_credential_state_for_identity(&identity)? {
+        ExternalCredentialState::Matching(credential) => {
+            return refresh_active_read_only(state, &operation, &account, &identity, credential)
+        }
+        ExternalCredentialState::Unidentifiable => {
+            return Err(
+                "Codex is running and GSwitch cannot safely identify its active account"
+                    .to_string(),
+            )
+        }
+        ExternalCredentialState::NotRunning | ExternalCredentialState::DifferentAccount => {}
     }
 
     match refresh_read_only(state, &operation, &account, &identity, &account.credential) {
@@ -84,6 +103,20 @@ fn refresh_read_only(
     identity: &AccountIdentity,
     credential: &Value,
 ) -> Result<QuotaView, ReadOnlyRefreshFailure> {
+    let snapshot = refresh_quota_snapshot(state, operation, account, identity, credential)?;
+    Ok(view_from_snapshot(&account.id, snapshot, now_unix_ms()))
+}
+
+/// Refreshes only the account's quota projection from a supplied access-token
+/// snapshot. It never updates credentials and is safe for an externally owned
+/// active account.
+pub(crate) fn refresh_quota_snapshot(
+    state: &AppState,
+    operation: &OperationGuard<'_>,
+    account: &StoredAccount,
+    identity: &AccountIdentity,
+    credential: &Value,
+) -> Result<QuotaSnapshot, ReadOnlyRefreshFailure> {
     let client = ChatGptClient::new().map_err(ReadOnlyRefreshFailure::Message)?;
     let response = client
         .quota(credential)
@@ -114,16 +147,20 @@ fn refresh_read_only(
             normalized.reset_credits,
         )
         .map_err(ReadOnlyRefreshFailure::Message)?;
-    Ok(view_from_snapshot(&account.id, snapshot, now_unix_ms()))
+    Ok(snapshot)
 }
 
-enum ReadOnlyRefreshFailure {
+pub(crate) enum ReadOnlyRefreshFailure {
     Provider(RequestFailure),
     Message(String),
 }
 
 impl ReadOnlyRefreshFailure {
-    fn message(self) -> String {
+    pub(crate) fn can_fallback_to_managed_refresh(&self) -> bool {
+        matches!(self, Self::Provider(error) if error.can_fallback_to_managed_refresh())
+    }
+
+    pub(crate) fn message(self) -> String {
         match self {
             Self::Message(message) => message,
             Self::Provider(error) => match error.kind {
@@ -151,6 +188,27 @@ fn refresh_via_managed_profile(
     account: &StoredAccount,
     identity: &AccountIdentity,
 ) -> Result<QuotaView, String> {
+    let refreshed = refresh_via_managed_profile_for_wake(state, operation, account, identity)?;
+    Ok(view_from_snapshot(
+        &account.id,
+        refreshed.snapshot,
+        now_unix_ms(),
+    ))
+}
+
+pub(crate) struct ManagedQuotaRefresh {
+    pub(crate) credential: Value,
+    pub(crate) snapshot: QuotaSnapshot,
+}
+
+/// Refreshes an inactive credential only through an isolated profile. Callers
+/// must first establish that no external Codex process owns this identity.
+pub(crate) fn refresh_via_managed_profile_for_wake(
+    state: &AppState,
+    operation: &OperationGuard<'_>,
+    account: &StoredAccount,
+    identity: &AccountIdentity,
+) -> Result<ManagedQuotaRefresh, String> {
     let mut temporary = TempCodexHome::create(&state.isolated_profile_root()?)?;
     temporary.write_auth(&account.credential)?;
     let mut server = AppServer::start(&temporary.path)?;
@@ -174,7 +232,10 @@ fn refresh_via_managed_profile(
         normalized.reset_credits,
         &mut temporary,
     )?;
-    Ok(view_from_snapshot(&account.id, snapshot, now_unix_ms()))
+    Ok(ManagedQuotaRefresh {
+        credential: refreshed_credential,
+        snapshot,
+    })
 }
 
 /// Redeems one user-confirmed reset credit through the official App Server.
@@ -463,29 +524,41 @@ pub(crate) fn verified_chatgpt_identity(
 pub(crate) fn live_credential_for_identity(
     identity: &AccountIdentity,
 ) -> Result<Option<Value>, String> {
+    match external_credential_state_for_identity(identity)? {
+        ExternalCredentialState::Matching(credential) => Ok(Some(credential)),
+        ExternalCredentialState::NotRunning | ExternalCredentialState::DifferentAccount => Ok(None),
+        ExternalCredentialState::Unidentifiable => Err(
+            "Codex is running and GSwitch cannot safely identify its active account".to_string(),
+        ),
+    }
+}
+
+pub(crate) fn external_credential_state_for_identity(
+    identity: &AccountIdentity,
+) -> Result<ExternalCredentialState, String> {
     if !runtime::external_codex_running(&[])? {
-        return Ok(None);
+        return Ok(ExternalCredentialState::NotRunning);
     }
 
     let codex_home = codex::codex_home()?;
     if codex::credential_store_mode(&codex_home)? != crate::types::CredentialStoreMode::File {
-        return Err(
-            "Codex is running and GSwitch cannot safely identify its active account".to_string(),
-        );
+        return Ok(ExternalCredentialState::Unidentifiable);
     }
-    let live = codex::read_optional_auth_document(&codex_home)?.ok_or_else(|| {
-        "Codex is running and GSwitch cannot safely identify its active account".to_string()
-    })?;
-    let live_kind = document_kind(&live).map_err(|_| {
-        "Codex is running and GSwitch cannot safely identify its active account".to_string()
-    })?;
-    let live_identity = derive_identity(&live_kind, &live).map_err(|_| {
-        "Codex is running and GSwitch cannot safely identify its active account".to_string()
-    })?;
+    let Some(live) = codex::read_optional_auth_document(&codex_home)? else {
+        return Ok(ExternalCredentialState::Unidentifiable);
+    };
+    let live_kind = match document_kind(&live) {
+        Ok(kind) => kind,
+        Err(_) => return Ok(ExternalCredentialState::Unidentifiable),
+    };
+    let live_identity = match derive_identity(&live_kind, &live) {
+        Ok(identity) => identity,
+        Err(_) => return Ok(ExternalCredentialState::Unidentifiable),
+    };
     if live_kind == AccountKind::ChatGpt && &live_identity == identity {
-        return Ok(Some(live));
+        return Ok(ExternalCredentialState::Matching(live));
     }
-    Ok(None)
+    Ok(ExternalCredentialState::DifferentAccount)
 }
 
 #[cfg(test)]

@@ -64,8 +64,8 @@ Keep the backend flat and organized by concrete responsibility:
   removal, and interrupted-switch recovery;
 - `quota.rs`: quota normalization/cache, reset-credit selection, redemption,
   and redemption recovery;
-- `wake.rs`: Wake policy, isolated execution, sequential Wake All, cancellation,
-  and per-account outcomes;
+- `wake.rs`: Wake policy, narrow Responses transport, sequential Wake All,
+  cancellation, and per-account outcomes;
 - `runtime.rs`: external Codex process detection;
 - `storage.rs`: versioned JSON persistence and atomic/private writes;
 - `types.rs`: backend state and sanitized serializable view models.
@@ -98,13 +98,13 @@ or recovery records.
 
 ## Isolated Codex profiles
 
-OAuth, imported-account validation, quota fallback, reset redemption, and Wake
-may run an official Codex App Server in a short-lived GSwitch-owned
+OAuth, imported-account validation, quota fallback, and reset redemption may
+run an official Codex App Server in a short-lived GSwitch-owned
 `CODEX_HOME`. This isolates the operation from the user's live Codex identity.
 Refreshed credentials are accepted only after the returned document still
-matches the expected account identity. Ordinary quota and account metadata
-reads use the small read-only ChatGPT HTTP boundary first; that path never
-starts App Server or writes a credential.
+matches the expected account identity. Ordinary quota, account metadata, and
+Wake use the small Rust-owned ChatGPT HTTP boundary first; ordinary reads and
+active-account Wake never start App Server or write a credential.
 
 ## Mutation boundary
 

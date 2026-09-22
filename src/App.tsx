@@ -196,12 +196,12 @@ function wakeStatusLabel(status: WakeOperationView["status"], t: Translator) {
 
 function wakeResultLabel(result: WakeOperationView["results"][number]["result"], t: Translator) {
   const labels = {
+    started: "wake.started",
     already_active: "wake.alreadyActive",
-    window_started: "wake.windowStarted",
-    request_completed_unconfirmed: "wake.unconfirmed",
-    needs_model_selection: "wake.chooseModel",
+    no_ordinary_capacity: "wake.noOrdinaryCapacity",
+    needs_sign_in: "wake.needsSignIn",
+    sent_not_confirmed: "wake.sentNotConfirmed",
     failed: "wake.failed",
-    skipped: "wake.skipped",
     cancelled: "wake.cancelled",
   } as const;
   return t(labels[result]);
@@ -1097,11 +1097,11 @@ export default function App() {
     }
   };
 
-  const startWake = async (accountId?: string, model?: string) => {
+  const startWake = async (accountId?: string) => {
     const key = accountId ? "wake:" + accountId : "wake-all";
     const result = await runTask(
       key,
-      () => accountId ? api.startWake(accountId, model) : api.startWakeAll(),
+      () => accountId ? api.startWake(accountId) : api.startWakeAll(),
       false,
     );
     if (result) {
@@ -1809,13 +1809,7 @@ export default function App() {
                   <div>
                     <strong>{result.label}</strong>
                     <p>{wakeResultLabel(result.result, t)}</p>
-                    {result.result === "needs_model_selection" && result.available_models?.length ? (
-                      <div className="model-choices">
-                        {result.available_models.map((model) => (
-                          <button className="button button-secondary" key={model} onClick={() => void startWake(result.account_id, model)} type="button">{t("wake.useModel", { model })}</button>
-                        ))}
-                      </div>
-                    ) : null}
+                    <p className="wake-result-detail">{result.message}</p>
                   </div>
                 </li>
               ))}

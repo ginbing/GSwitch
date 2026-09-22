@@ -1,37 +1,33 @@
 use std::{
-    fs,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
     thread,
-    time::Duration,
 };
 
-use serde_json::{json, Value};
+use serde_json::Value;
 use uuid::Uuid;
 
 use crate::{
     accounts::{AppState, OperationGuard},
-    app_server::{AppServer, TempCodexHome},
-    codex,
-    identity::{derive_identity, document_kind},
+    chatgpt::{ChatGptClient, RequestFailureKind},
     quota::{
-        normalize_rate_limits_data, now_unix_ms, persist_refreshed_credential_and_quota,
-        verified_chatgpt_identity,
+        external_credential_state_for_identity, now_unix_ms, refresh_quota_snapshot,
+        refresh_via_managed_profile_for_wake, verified_chatgpt_identity, ExternalCredentialState,
+        ReadOnlyRefreshFailure,
     },
-    runtime,
     types::{
-        AccountIdentity, AccountKind, CredentialStoreMode, QuotaBucketKind, QuotaSnapshot,
-        QuotaWindowKind, StoredAccount, WakeAccountResult, WakeOperationStatus, WakeOperationView,
-        WakeResultKind, WakeStart,
+        AccountIdentity, AccountKind, QuotaBucketKind, QuotaSnapshot, QuotaWindowKind,
+        StoredAccount, WakeAccountResult, WakeOperationStatus, WakeOperationView, WakeResultKind,
+        WakeStart,
     },
 };
 
-const TURN_TIMEOUT: Duration = Duration::from_secs(90);
-const MODEL_PREFERENCE: [&str; 2] = ["gpt-5.6-luna", "gpt-5.4-mini"];
-const REASONING_PREFERENCE: [&str; 7] =
-    ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+/// Current Codex exposes this lightweight visible text model on the standard
+/// service tier. Wake deliberately sends one request only; it never probes or
+/// falls back to another model after the provider may have received it.
+const WAKE_MODEL: &str = "gpt-5.6-luna";
 
 #[derive(Clone)]
 struct WakeTarget {
@@ -39,28 +35,9 @@ struct WakeTarget {
     label: String,
 }
 
-struct WakeModel {
-    model: String,
-    reasoning_effort: String,
-    service_tier: Option<String>,
-}
-
-struct WakePersistence<'a> {
-    account: &'a StoredAccount,
-    identity: &'a AccountIdentity,
-    before: &'a QuotaSnapshot,
-    reset_credits: Option<crate::types::StoredResetCredits>,
-}
-
-enum ModelSelection {
-    Selected(WakeModel),
-    NeedsExplicitChoice(Vec<String>),
-}
-
 struct WakeAccountOutcome {
     result: WakeResultKind,
     message: String,
-    available_models: Vec<String>,
 }
 
 impl WakeAccountOutcome {
@@ -68,28 +45,31 @@ impl WakeAccountOutcome {
         Self {
             result,
             message: message.into(),
-            available_models: Vec::new(),
-        }
-    }
-
-    fn needs_model_selection(models: Vec<String>) -> Self {
-        Self {
-            result: WakeResultKind::NeedsModelSelection,
-            message:
-                "No approved automatic Wake model is available. Choose a listed model explicitly."
-                    .to_string(),
-            available_models: models,
         }
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CredentialOwnership {
+    /// Codex owns refresh-token changes for this identity. GSwitch may only
+    /// read a live access-token snapshot.
+    External,
+    /// No external Codex process owns this identity, so an authentication
+    /// failure may safely use one isolated managed refresh.
+    Inactive,
+    /// A Codex process is present but its identity cannot be proved. Wake
+    /// remains eligible using its saved token, but no isolated refresh starts.
+    Uncertain,
+}
+
+struct WakeCredential {
+    value: Value,
+    ownership: CredentialOwnership,
+}
+
 /// Starts a user-triggered one-account Wake operation. The returned ID refers
 /// only to in-memory progress for this GSwitch process.
-pub fn start_one(
-    state: AppState,
-    account_id: String,
-    model: Option<String>,
-) -> Result<WakeStart, String> {
+pub fn start_one(state: AppState, account_id: String) -> Result<WakeStart, String> {
     state.ensure_store_ready()?;
     let account = state.account_by_id(&account_id)?;
     start(
@@ -98,7 +78,6 @@ pub fn start_one(
             id: account.id,
             label: account.label,
         }],
-        model.filter(|model| !model.trim().is_empty()),
     )
 }
 
@@ -115,7 +94,7 @@ pub fn start_all(state: AppState) -> Result<WakeStart, String> {
             label: account.label,
         })
         .collect::<Vec<_>>();
-    start(state, targets, None)
+    start(state, targets)
 }
 
 pub fn operation(state: &AppState, operation_id: &str) -> Result<WakeOperationView, String> {
@@ -126,11 +105,7 @@ pub fn cancel(state: &AppState, operation_id: &str) -> Result<(), String> {
     state.cancel_wake(operation_id)
 }
 
-fn start(
-    state: AppState,
-    targets: Vec<WakeTarget>,
-    explicit_model: Option<String>,
-) -> Result<WakeStart, String> {
+fn start(state: AppState, targets: Vec<WakeTarget>) -> Result<WakeStart, String> {
     if targets.is_empty() {
         return Err("There are no ChatGPT accounts to wake".to_string());
     }
@@ -151,7 +126,7 @@ fn start(
     let worker_id = operation_id.clone();
     if thread::Builder::new()
         .name("gswitch-wake".to_string())
-        .spawn(move || run_queue(worker_state, worker_id, targets, explicit_model, cancelled))
+        .spawn(move || run_queue(worker_state, worker_id, targets, cancelled))
         .is_err()
     {
         let _ = state.update_wake_operation(WakeOperationView {
@@ -170,19 +145,11 @@ fn run_queue(
     state: AppState,
     operation_id: String,
     targets: Vec<WakeTarget>,
-    explicit_model: Option<String>,
     cancelled: Arc<AtomicBool>,
 ) {
-    let result = state.acquire_operation().and_then(|operation| {
-        run_targets(
-            &state,
-            &operation,
-            &operation_id,
-            &targets,
-            explicit_model.as_deref(),
-            &cancelled,
-        )
-    });
+    let result = state
+        .acquire_operation()
+        .and_then(|operation| run_targets(&state, &operation, &operation_id, &targets, &cancelled));
 
     if let Err(message) = result {
         let _ = fail_operation(&state, &operation_id, &targets, message);
@@ -194,7 +161,6 @@ fn run_targets(
     operation: &OperationGuard<'_>,
     operation_id: &str,
     targets: &[WakeTarget],
-    explicit_model: Option<&str>,
     cancelled: &AtomicBool,
 ) -> Result<(), String> {
     let mut view = state.wake_operation(operation_id)?;
@@ -209,7 +175,7 @@ fn run_targets(
         view.current_account_id = Some(target.id.clone());
         state.update_wake_operation(view.clone())?;
         let outcome = match state.account_by_id_under_operation(operation, &target.id) {
-            Ok(account) => wake_account(state, operation, &account, explicit_model, cancelled),
+            Ok(account) => wake_account(state, operation, &account, cancelled),
             Err(error) => WakeAccountOutcome::new(WakeResultKind::Failed, error),
         };
         view.results.push(WakeAccountResult {
@@ -217,7 +183,6 @@ fn run_targets(
             label: target.label.clone(),
             result: outcome.result,
             message: outcome.message,
-            available_models: outcome.available_models,
         });
         state.update_wake_operation(view.clone())?;
     }
@@ -240,7 +205,6 @@ fn append_cancelled_targets(view: &mut WakeOperationView, targets: &[WakeTarget]
             label: target.label.clone(),
             result: WakeResultKind::Cancelled,
             message: "Wake queue was cancelled before this account started".to_string(),
-            available_models: Vec::new(),
         });
     }
 }
@@ -260,7 +224,6 @@ fn fail_operation(
             label: target.label.clone(),
             result: WakeResultKind::Failed,
             message: message.clone(),
-            available_models: Vec::new(),
         });
     }
     state.update_wake_operation(view)
@@ -270,13 +233,12 @@ fn wake_account(
     state: &AppState,
     operation: &OperationGuard<'_>,
     account: &StoredAccount,
-    explicit_model: Option<&str>,
     cancelled: &AtomicBool,
 ) -> WakeAccountOutcome {
     if account.kind != AccountKind::ChatGpt {
         return WakeAccountOutcome::new(
-            WakeResultKind::Skipped,
-            "API-key accounts do not use ChatGPT subscription windows",
+            WakeResultKind::Failed,
+            "Wake is not available for API-key accounts",
         );
     }
     if cancelled.load(Ordering::SeqCst) {
@@ -287,533 +249,192 @@ fn wake_account(
         Ok(identity) => identity,
         Err(error) => return WakeAccountOutcome::new(WakeResultKind::Failed, error),
     };
-    match external_runtime_uses_account(&identity) {
-        Ok(true) => {
-            return WakeAccountOutcome::new(
-                WakeResultKind::Skipped,
-                "Codex is currently running with this account, so Wake skipped it safely",
-            )
-        }
-        Ok(false) => {}
-        Err(error) => return WakeAccountOutcome::new(WakeResultKind::Skipped, error),
-    }
-
-    let profile_root = match state.isolated_profile_root() {
-        Ok(root) => root,
-        Err(error) => return WakeAccountOutcome::new(WakeResultKind::Failed, error),
+    let mut credential = wake_credential(account, &identity);
+    let mut before = match preflight_quota(state, operation, account, &identity, &mut credential) {
+        Ok(snapshot) => snapshot,
+        Err(outcome) => return outcome,
     };
-    let mut profile = match TempCodexHome::create(&profile_root) {
-        Ok(profile) => profile,
-        Err(error) => return WakeAccountOutcome::new(WakeResultKind::Failed, error),
-    };
-    if let Err(error) = profile.write_auth(&account.credential) {
-        return WakeAccountOutcome::new(WakeResultKind::Failed, error);
-    }
-    let workspace = profile.path.join("wake-workspace");
-    if fs::create_dir(&workspace).is_err() {
-        return WakeAccountOutcome::new(
-            WakeResultKind::Failed,
-            "Unable to prepare an isolated Wake workspace",
-        );
-    }
-    let mut server = match AppServer::start(&profile.path) {
-        Ok(server) => server,
-        Err(error) => return WakeAccountOutcome::new(WakeResultKind::Failed, error),
-    };
-
-    let before_raw = match server.rate_limits_read(1) {
-        Ok(value) => value,
-        Err(error) => return WakeAccountOutcome::new(WakeResultKind::Failed, error),
-    };
-    let before = normalize_rate_limits_data(&before_raw, now_unix_ms());
-    if let Err(error) = persist_wake_state(
-        state,
-        operation,
-        account,
-        &identity,
-        &before.snapshot,
-        before.reset_credits.clone(),
-        &mut profile,
-    ) {
-        return WakeAccountOutcome::new(WakeResultKind::Failed, error);
-    }
-
-    let now_seconds = now_unix_ms() / 1000;
-    if window_is_active(&before.snapshot, now_seconds) {
-        return WakeAccountOutcome::new(
-            WakeResultKind::AlreadyActive,
-            "The five-hour window is already active",
-        );
-    }
-    if ordinary_quota_exhausted(&before.snapshot, now_seconds) {
-        return WakeAccountOutcome::new(
-            WakeResultKind::Skipped,
-            "Ordinary Codex quota is exhausted; Wake will not use Reserve or reset credits",
-        );
+    if let Some(outcome) = quota_eligibility(&before) {
+        return outcome;
     }
     if cancelled.load(Ordering::SeqCst) {
         return WakeAccountOutcome::new(WakeResultKind::Cancelled, "Wake was cancelled");
     }
 
-    let models = match list_models(&mut server) {
-        Ok(models) => models,
-        Err(error) => return WakeAccountOutcome::new(WakeResultKind::Failed, error),
-    };
-    // Any App Server request may rotate a token. Persist after catalog lookup
-    // before the potentially billable turn begins.
-    if let Err(error) = persist_wake_state(
-        state,
-        operation,
-        account,
-        &identity,
-        &before.snapshot,
-        before.reset_credits.clone(),
-        &mut profile,
+    // Codex can rotate its access token while it owns this identity. Re-read
+    // once immediately before the one Wake request, then repeat only the safe
+    // quota preflight if the snapshot changed.
+    if refresh_credential_ownership_before_wake(
+        &mut credential,
+        external_credential_state_for_identity(&identity),
     ) {
-        return WakeAccountOutcome::new(WakeResultKind::Failed, error);
-    }
-    let selected = match select_model(&models, explicit_model) {
-        Ok(ModelSelection::Selected(model)) => model,
-        Ok(ModelSelection::NeedsExplicitChoice(models)) => {
-            return WakeAccountOutcome::needs_model_selection(models)
-        }
-        Err(error) => return WakeAccountOutcome::new(WakeResultKind::Failed, error),
-    };
-    if cancelled.load(Ordering::SeqCst) {
-        return WakeAccountOutcome::new(WakeResultKind::Cancelled, "Wake was cancelled");
-    }
-
-    let mut thread_params = json!({
-        "model": selected.model,
-        "cwd": workspace.to_string_lossy(),
-        "approvalPolicy": "never",
-        "sandbox": "read-only",
-        "ephemeral": true,
-        "baseInstructions": "Reply only to the user message. Do not use tools or inspect files.",
-        "developerInstructions": "Return exactly OK."
-    });
-    if let Some(service_tier) = selected.service_tier {
-        thread_params["serviceTier"] = Value::String(service_tier);
-    }
-    let thread = match server.thread_start(50, thread_params) {
-        Ok(thread) => thread,
-        Err(error) => {
-            return persist_after_turn(
-                state,
-                operation,
-                WakePersistence {
-                    account,
-                    identity: &identity,
-                    before: &before.snapshot,
-                    reset_credits: before.reset_credits.clone(),
-                },
-                &mut profile,
-                WakeResultKind::Failed,
-                error,
-            )
-        }
-    };
-    let Some(thread_id) = thread.pointer("/thread/id").and_then(Value::as_str) else {
-        return persist_after_turn(
-            state,
-            operation,
-            WakePersistence {
-                account,
-                identity: &identity,
-                before: &before.snapshot,
-                reset_credits: before.reset_credits.clone(),
-            },
-            &mut profile,
-            WakeResultKind::Failed,
-            "Codex did not return a Wake thread".to_string(),
-        );
-    };
-    if cancelled.load(Ordering::SeqCst) {
-        return persist_after_turn(
-            state,
-            operation,
-            WakePersistence {
-                account,
-                identity: &identity,
-                before: &before.snapshot,
-                reset_credits: before.reset_credits.clone(),
-            },
-            &mut profile,
-            WakeResultKind::Cancelled,
-            "Wake was cancelled before its request started".to_string(),
-        );
-    }
-    let turn = match server.turn_start(
-        51,
-        json!({
-            "threadId": thread_id,
-            "effort": selected.reasoning_effort,
-            "input": [{"type": "text", "text": "Reply with exactly OK."}]
-        }),
-    ) {
-        Ok(turn) => turn,
-        Err(error) => {
-            return unconfirmed_after_turn(
-                state,
-                operation,
-                WakePersistence {
-                    account,
-                    identity: &identity,
-                    before: &before.snapshot,
-                    reset_credits: before.reset_credits.clone(),
-                },
-                &mut profile,
-                format!("Wake could not confirm whether its request started: {error}"),
-            )
-        }
-    };
-    let Some(turn_id) = turn.pointer("/turn/id").and_then(Value::as_str) else {
-        return unconfirmed_after_turn(
-            state,
-            operation,
-            WakePersistence {
-                account,
-                identity: &identity,
-                before: &before.snapshot,
-                reset_credits: before.reset_credits.clone(),
-            },
-            &mut profile,
-            "Wake could not confirm whether its request started".to_string(),
-        );
-    };
-
-    let notification = match server.wait_for_notification_cancelled(
-        TURN_TIMEOUT,
-        |message| {
-            message.get("method").and_then(Value::as_str) == Some("turn/completed")
-                && message.pointer("/params/threadId").and_then(Value::as_str) == Some(thread_id)
-                && message.pointer("/params/turn/id").and_then(Value::as_str) == Some(turn_id)
-        },
-        || cancelled.load(Ordering::SeqCst),
-    ) {
-        Ok(notification) => notification,
-        Err(error) if error == "The operation was cancelled" => {
-            let _ = server.turn_interrupt(90, thread_id, turn_id);
-            return persist_after_turn(
-                state,
-                operation,
-                WakePersistence {
-                    account,
-                    identity: &identity,
-                    before: &before.snapshot,
-                    reset_credits: before.reset_credits.clone(),
-                },
-                &mut profile,
-                WakeResultKind::Cancelled,
-                "Wake was cancelled".to_string(),
-            );
-        }
-        Err(error) => {
-            return unconfirmed_after_turn(
-                state,
-                operation,
-                WakePersistence {
-                    account,
-                    identity: &identity,
-                    before: &before.snapshot,
-                    reset_credits: before.reset_credits.clone(),
-                },
-                &mut profile,
-                format!("Wake request result is unknown and was not retried: {error}"),
-            )
-        }
-    };
-    if notification
-        .pointer("/params/turn/status")
-        .and_then(Value::as_str)
-        != Some("completed")
-    {
-        return persist_after_turn(
-            state,
-            operation,
-            WakePersistence {
-                account,
-                identity: &identity,
-                before: &before.snapshot,
-                reset_credits: before.reset_credits.clone(),
-            },
-            &mut profile,
-            WakeResultKind::Failed,
-            "The Wake request did not complete successfully".to_string(),
-        );
-    }
-
-    let after_raw =
-        match server.rate_limits_read(60) {
-            Ok(value) => value,
-            Err(_) => return unconfirmed_after_turn(
-                state,
-                operation,
-                WakePersistence {
-                    account,
-                    identity: &identity,
-                    before: &before.snapshot,
-                    reset_credits: before.reset_credits.clone(),
-                },
-                &mut profile,
-                "The Wake request completed, but the quota response did not confirm a new window"
-                    .to_string(),
-            ),
+        before = match preflight_quota(state, operation, account, &identity, &mut credential) {
+            Ok(snapshot) => snapshot,
+            Err(outcome) => return outcome,
         };
-    let after = normalize_rate_limits_data(&after_raw, now_unix_ms());
-    if let Err(error) = persist_wake_state(
-        state,
-        operation,
-        account,
-        &identity,
-        &after.snapshot,
-        after.reset_credits,
-        &mut profile,
-    ) {
-        return WakeAccountOutcome::new(
-            WakeResultKind::RequestCompletedUnconfirmed,
-            format!("The Wake request completed, but {error}"),
-        );
+        if let Some(outcome) = quota_eligibility(&before) {
+            return outcome;
+        }
     }
-    if window_started(&before.snapshot, &after.snapshot, now_unix_ms() / 1000) {
-        WakeAccountOutcome::new(
-            WakeResultKind::WindowStarted,
-            "The five-hour window is active",
-        )
+    if cancelled.load(Ordering::SeqCst) {
+        return WakeAccountOutcome::new(WakeResultKind::Cancelled, "Wake was cancelled");
+    }
+
+    let client = match ChatGptClient::new() {
+        Ok(client) => client,
+        Err(error) => return WakeAccountOutcome::new(WakeResultKind::Failed, error),
+    };
+    match client.wake(&credential.value, WAKE_MODEL) {
+        Ok(()) => {}
+        Err(error) => {
+            return match error.kind {
+                // A send failure may occur after the provider received the
+                // request. Do not retry it or start an auth refresh.
+                RequestFailureKind::Transport | RequestFailureKind::InvalidJson => {
+                    WakeAccountOutcome::new(
+                        WakeResultKind::SentNotConfirmed,
+                        "Wake may have reached ChatGPT, but delivery was not confirmed and was not retried",
+                    )
+                }
+                RequestFailureKind::Authentication => WakeAccountOutcome::new(
+                    WakeResultKind::NeedsSignIn,
+                    "ChatGPT rejected the Wake credential; sign in again before trying another Wake",
+                ),
+                RequestFailureKind::RateLimited => WakeAccountOutcome::new(
+                    WakeResultKind::NoOrdinaryCapacity,
+                    "ChatGPT reported no ordinary Codex capacity; Wake did not use Reserve or reset credits",
+                ),
+                RequestFailureKind::Http => WakeAccountOutcome::new(
+                    WakeResultKind::Failed,
+                    "ChatGPT rejected the Wake request before it could start",
+                ),
+            };
+        }
+    }
+
+    // The request has been sent. A subsequent quota problem is confirmation
+    // only, never a reason to send another Wake request.
+    let after =
+        match refresh_quota_snapshot(state, operation, account, &identity, &credential.value) {
+            Ok(snapshot) => snapshot,
+            Err(_) => {
+                return WakeAccountOutcome::new(
+                    WakeResultKind::SentNotConfirmed,
+                    "Wake was sent, but the quota response did not confirm a new five-hour window",
+                )
+            }
+        };
+    if window_started(&before, &after, now_unix_ms() / 1000) {
+        WakeAccountOutcome::new(WakeResultKind::Started, "The five-hour window is active")
     } else {
         WakeAccountOutcome::new(
-            WakeResultKind::RequestCompletedUnconfirmed,
-            "The Wake request completed, but the quota response did not confirm a new window",
+            WakeResultKind::SentNotConfirmed,
+            "Wake was sent, but the quota response did not confirm a new five-hour window",
         )
     }
 }
 
-fn external_runtime_uses_account(identity: &AccountIdentity) -> Result<bool, String> {
-    if !runtime::external_codex_running(&[])? {
-        return Ok(false);
-    }
-    let home = codex::codex_home()?;
-    if codex::credential_store_mode(&home)? != CredentialStoreMode::File {
-        return Err(
-            "Codex is running and GSwitch cannot safely identify its account for Wake".to_string(),
-        );
-    }
-    let credential = codex::read_optional_auth_document(&home)?.ok_or_else(|| {
-        "Codex is running and GSwitch cannot safely identify its account for Wake".to_string()
-    })?;
-    let kind = document_kind(&credential)?;
-    if kind != AccountKind::ChatGpt {
-        return Ok(false);
-    }
-    Ok(derive_identity(&kind, &credential)? == *identity)
+fn wake_credential(account: &StoredAccount, identity: &AccountIdentity) -> WakeCredential {
+    wake_credential_from_external_state(
+        account.credential.clone(),
+        external_credential_state_for_identity(identity),
+    )
 }
 
-fn persist_wake_state(
+fn wake_credential_from_external_state(
+    saved_credential: Value,
+    external_state: Result<ExternalCredentialState, String>,
+) -> WakeCredential {
+    match external_state {
+        Ok(ExternalCredentialState::Matching(value)) => WakeCredential {
+            value,
+            ownership: CredentialOwnership::External,
+        },
+        Ok(ExternalCredentialState::NotRunning | ExternalCredentialState::DifferentAccount) => {
+            WakeCredential {
+                value: saved_credential,
+                ownership: CredentialOwnership::Inactive,
+            }
+        }
+        Ok(ExternalCredentialState::Unidentifiable) | Err(_) => WakeCredential {
+            value: saved_credential,
+            ownership: CredentialOwnership::Uncertain,
+        },
+    }
+}
+
+fn refresh_credential_ownership_before_wake(
+    credential: &mut WakeCredential,
+    external_state: Result<ExternalCredentialState, String>,
+) -> bool {
+    match external_state {
+        Ok(ExternalCredentialState::Matching(latest)) => {
+            let changed =
+                credential.ownership != CredentialOwnership::External || latest != credential.value;
+            credential.value = latest;
+            credential.ownership = CredentialOwnership::External;
+            changed
+        }
+        Ok(ExternalCredentialState::Unidentifiable) | Err(_) => {
+            credential.ownership = CredentialOwnership::Uncertain;
+            false
+        }
+        Ok(ExternalCredentialState::NotRunning | ExternalCredentialState::DifferentAccount) => {
+            false
+        }
+    }
+}
+
+fn preflight_quota(
     state: &AppState,
     operation: &OperationGuard<'_>,
     account: &StoredAccount,
     identity: &AccountIdentity,
-    snapshot: &QuotaSnapshot,
-    reset_credits: Option<crate::types::StoredResetCredits>,
-    profile: &mut TempCodexHome,
-) -> Result<(), String> {
-    let credential = profile.read_auth()?;
-    if document_kind(&credential)? != AccountKind::ChatGpt
-        || derive_identity(&AccountKind::ChatGpt, &credential)? != *identity
-    {
-        profile.retain_for_recovery();
-        return Err(
-            "Codex changed identity during Wake. A protected recovery copy was retained."
-                .to_string(),
-        );
-    }
-    persist_refreshed_credential_and_quota(
-        state,
-        operation,
-        &account.id,
-        &credential,
-        snapshot.clone(),
-        reset_credits,
-        profile,
-    )
-}
-
-fn unconfirmed_after_turn(
-    state: &AppState,
-    operation: &OperationGuard<'_>,
-    persistence: WakePersistence<'_>,
-    profile: &mut TempCodexHome,
-    message: String,
-) -> WakeAccountOutcome {
-    persist_after_turn(
-        state,
-        operation,
-        persistence,
-        profile,
-        WakeResultKind::RequestCompletedUnconfirmed,
-        message,
-    )
-}
-
-fn persist_after_turn(
-    state: &AppState,
-    operation: &OperationGuard<'_>,
-    persistence: WakePersistence<'_>,
-    profile: &mut TempCodexHome,
-    result: WakeResultKind,
-    message: String,
-) -> WakeAccountOutcome {
-    let mut stale = persistence.before.clone();
-    stale.fetched_at_unix_ms = 0;
-    match persist_wake_state(
-        state,
-        operation,
-        persistence.account,
-        persistence.identity,
-        &stale,
-        persistence.reset_credits,
-        profile,
-    ) {
-        Ok(()) => WakeAccountOutcome::new(result, message),
-        Err(error) => WakeAccountOutcome::new(result, format!("{message}. {error}")),
-    }
-}
-
-fn list_models(server: &mut AppServer) -> Result<Vec<Value>, String> {
-    let mut cursor = None;
-    let mut models = Vec::new();
-    for request_id in 100..120 {
-        let page = server.model_list(request_id, cursor.as_deref())?;
-        models.extend(
-            page.get("data")
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default(),
-        );
-        cursor = page
-            .get("nextCursor")
-            .and_then(Value::as_str)
-            .filter(|cursor| !cursor.is_empty())
-            .map(ToString::to_string);
-        if cursor.is_none() {
-            return Ok(models);
+    credential: &mut WakeCredential,
+) -> Result<QuotaSnapshot, WakeAccountOutcome> {
+    match refresh_quota_snapshot(state, operation, account, identity, &credential.value) {
+        Ok(snapshot) => Ok(snapshot),
+        Err(error) if can_use_managed_refresh(credential.ownership, &error) => {
+            let refreshed =
+                refresh_via_managed_profile_for_wake(state, operation, account, identity)
+                    .map_err(|error| WakeAccountOutcome::new(WakeResultKind::NeedsSignIn, error))?;
+            credential.value = refreshed.credential;
+            Ok(refreshed.snapshot)
         }
+        Err(error) => Err(preflight_failure(error)),
     }
-    Err("Codex returned too many model catalog pages".to_string())
 }
 
-fn select_model(models: &[Value], explicit: Option<&str>) -> Result<ModelSelection, String> {
-    if let Some(explicit) = explicit {
-        return models
-            .iter()
-            .find(|model| model_matches(model, explicit))
-            .and_then(wake_model_from)
-            .map(ModelSelection::Selected)
-            .ok_or_else(|| {
-                "The selected Wake model is not available as a visible text model".to_string()
-            });
-    }
+fn can_use_managed_refresh(ownership: CredentialOwnership, error: &ReadOnlyRefreshFailure) -> bool {
+    ownership == CredentialOwnership::Inactive && error.can_fallback_to_managed_refresh()
+}
 
-    for preferred in MODEL_PREFERENCE {
-        if let Some(model) = models
-            .iter()
-            .find(|model| model_matches(model, preferred))
-            .and_then(wake_model_from)
-        {
-            return Ok(ModelSelection::Selected(model));
-        }
-    }
-
-    let mut alternatives = models
-        .iter()
-        .filter_map(wake_model_from)
-        .map(|model| model.model)
-        .collect::<Vec<_>>();
-    alternatives.sort();
-    alternatives.dedup();
-    if alternatives.is_empty() {
-        Err("No visible text model can perform Wake for this account".to_string())
+fn preflight_failure(error: ReadOnlyRefreshFailure) -> WakeAccountOutcome {
+    if error.can_fallback_to_managed_refresh() {
+        WakeAccountOutcome::new(
+            WakeResultKind::NeedsSignIn,
+            "ChatGPT rejected the Wake credential; sign in again before trying another Wake",
+        )
     } else {
-        Ok(ModelSelection::NeedsExplicitChoice(alternatives))
+        WakeAccountOutcome::new(WakeResultKind::Failed, error.message())
     }
 }
 
-fn wake_model_from(model: &Value) -> Option<WakeModel> {
-    if model
-        .get("hidden")
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-        || !supports_text(model)
-    {
-        return None;
+fn quota_eligibility(snapshot: &QuotaSnapshot) -> Option<WakeAccountOutcome> {
+    let now_seconds = now_unix_ms() / 1000;
+    if window_is_active(snapshot, now_seconds) {
+        return Some(WakeAccountOutcome::new(
+            WakeResultKind::AlreadyActive,
+            "The five-hour window is already active",
+        ));
     }
-    let model_id = model_identifier(model)?.to_string();
-    let reasoning_effort = lowest_reasoning_effort(model)?;
-    let service_tier = normal_service_tier(model)?;
-    Some(WakeModel {
-        model: model_id,
-        reasoning_effort,
-        service_tier,
-    })
-}
-
-fn model_matches(model: &Value, candidate: &str) -> bool {
-    [model.get("id"), model.get("model")]
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
-        .any(|id| id == candidate)
-}
-
-fn model_identifier(model: &Value) -> Option<&str> {
-    model
-        .get("model")
-        .or_else(|| model.get("id"))
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
-}
-
-fn supports_text(model: &Value) -> bool {
-    model
-        .get("inputModalities")
-        .and_then(Value::as_array)
-        .is_none_or(|modalities| {
-            modalities
-                .iter()
-                .any(|modality| modality.as_str() == Some("text"))
-        })
-}
-
-fn lowest_reasoning_effort(model: &Value) -> Option<String> {
-    let efforts = model
-        .get("supportedReasoningEfforts")
-        .and_then(Value::as_array)?
-        .iter()
-        .filter_map(|effort| {
-            effort
-                .get("reasoningEffort")
-                .or(Some(effort))
-                .and_then(Value::as_str)
-        })
-        .collect::<Vec<_>>();
-    REASONING_PREFERENCE
-        .iter()
-        .find(|candidate| efforts.iter().any(|effort| effort == *candidate))
-        .map(|effort| (*effort).to_string())
-}
-
-fn normal_service_tier(model: &Value) -> Option<Option<String>> {
-    let Some(tiers) = model.get("serviceTiers").and_then(Value::as_array) else {
-        return Some(None);
-    };
-    if tiers.is_empty() {
-        return Some(None);
+    if ordinary_quota_exhausted(snapshot, now_seconds) {
+        return Some(WakeAccountOutcome::new(
+            WakeResultKind::NoOrdinaryCapacity,
+            "Ordinary Codex quota is exhausted; Wake will not use Reserve or reset credits",
+        ));
     }
-    let standard = tiers
-        .iter()
-        .find(|tier| tier.get("id").and_then(Value::as_str) == Some("standard"))
-        .map(|_| "standard".to_string());
-    standard.map(Some)
+    None
 }
 
 fn five_hour(snapshot: &QuotaSnapshot) -> Option<&crate::types::QuotaWindow> {
@@ -866,6 +487,8 @@ fn window_started(before: &QuotaSnapshot, after: &QuotaSnapshot, now_seconds: i6
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::*;
 
     fn snapshot(used: u8, remaining: u8, resets_at: i64) -> QuotaSnapshot {
@@ -892,83 +515,85 @@ mod tests {
     }
 
     #[test]
-    fn selects_an_approved_model_with_the_lowest_supported_effort() {
-        let models = vec![json!({
-            "id": "gpt-5.6-luna",
-            "model": "gpt-5.6-luna",
-            "hidden": false,
-            "inputModalities": ["text"],
-            "supportedReasoningEfforts": [
-                {"reasoningEffort": "medium"},
-                {"reasoningEffort": "low"}
-            ],
-            "serviceTiers": [{"id": "standard"}]
-        })];
+    fn keeps_externally_owned_and_inactive_refresh_paths_distinct() {
+        let saved = json!({"tokens": {"access_token": "saved"}});
+        let live = json!({"tokens": {"access_token": "live"}});
 
-        let ModelSelection::Selected(selected) = select_model(&models, None).expect("model") else {
-            panic!("automatic model expected")
+        let active = wake_credential_from_external_state(
+            saved.clone(),
+            Ok(ExternalCredentialState::Matching(live.clone())),
+        );
+        assert_eq!(active.value, live);
+        assert_eq!(active.ownership, CredentialOwnership::External);
+
+        let inactive = wake_credential_from_external_state(
+            saved.clone(),
+            Ok(ExternalCredentialState::DifferentAccount),
+        );
+        assert_eq!(inactive.value, saved);
+        assert_eq!(inactive.ownership, CredentialOwnership::Inactive);
+
+        let uncertain = wake_credential_from_external_state(
+            json!({"tokens": {"access_token": "saved"}}),
+            Ok(ExternalCredentialState::Unidentifiable),
+        );
+        assert_eq!(uncertain.ownership, CredentialOwnership::Uncertain);
+    }
+
+    #[test]
+    fn rereads_a_changed_or_newly_active_token_before_wake() {
+        let mut credential = WakeCredential {
+            value: json!({"tokens": {"access_token": "before"}}),
+            ownership: CredentialOwnership::External,
         };
-        assert_eq!(selected.model, "gpt-5.6-luna");
-        assert_eq!(selected.reasoning_effort, "low");
-        assert_eq!(selected.service_tier.as_deref(), Some("standard"));
+        assert!(refresh_credential_ownership_before_wake(
+            &mut credential,
+            Ok(ExternalCredentialState::Matching(
+                json!({"tokens": {"access_token": "after"}}),
+            )),
+        ));
+        assert_eq!(credential.value["tokens"]["access_token"], "after");
+        let unchanged = credential.value.clone();
+        assert!(!refresh_credential_ownership_before_wake(
+            &mut credential,
+            Ok(ExternalCredentialState::Matching(unchanged)),
+        ));
+
+        credential.ownership = CredentialOwnership::Inactive;
+        let newly_active = credential.value.clone();
+        assert!(refresh_credential_ownership_before_wake(
+            &mut credential,
+            Ok(ExternalCredentialState::Matching(newly_active)),
+        ));
+        assert_eq!(credential.ownership, CredentialOwnership::External);
     }
 
     #[test]
-    fn never_automatically_falls_back_to_an_unapproved_model() {
-        let models = vec![json!({
-            "id": "gpt-6-astra",
-            "model": "gpt-6-astra",
-            "hidden": false,
-            "inputModalities": ["text"],
-            "supportedReasoningEfforts": [{"reasoningEffort": "low"}],
-            "serviceTiers": [{"id": "standard"}]
-        })];
-
-        let ModelSelection::NeedsExplicitChoice(alternatives) =
-            select_model(&models, None).expect("explicit choice")
-        else {
-            panic!("automatic selection must not use Astra")
-        };
-        assert_eq!(alternatives, vec!["gpt-6-astra"]);
+    fn only_a_definitely_inactive_auth_failure_can_refresh() {
+        let auth_failure = ReadOnlyRefreshFailure::Provider(crate::chatgpt::RequestFailure {
+            kind: RequestFailureKind::Authentication,
+            status: Some(401),
+        });
+        assert!(can_use_managed_refresh(
+            CredentialOwnership::Inactive,
+            &auth_failure
+        ));
+        assert!(!can_use_managed_refresh(
+            CredentialOwnership::External,
+            &auth_failure
+        ));
+        assert!(!can_use_managed_refresh(
+            CredentialOwnership::Uncertain,
+            &auth_failure
+        ));
     }
 
     #[test]
-    fn rejects_hidden_or_non_text_explicit_models() {
-        let models = vec![
-            json!({
-                "id": "hidden", "model": "hidden", "hidden": true,
-                "supportedReasoningEfforts": [{"reasoningEffort": "low"}]
-            }),
-            json!({
-                "id": "audio", "model": "audio", "hidden": false,
-                "inputModalities": ["audio"],
-                "supportedReasoningEfforts": [{"reasoningEffort": "low"}]
-            }),
-        ];
-        assert!(select_model(&models, Some("hidden")).is_err());
-        assert!(select_model(&models, Some("audio")).is_err());
-    }
-
-    #[test]
-    fn requires_the_normal_service_tier_for_automatic_and_explicit_wake() {
-        let models = vec![json!({
-            "id": "gpt-5.6-luna",
-            "model": "gpt-5.6-luna",
-            "hidden": false,
-            "inputModalities": ["text"],
-            "supportedReasoningEfforts": [{"reasoningEffort": "low"}],
-            "serviceTiers": [{"id": "priority"}]
-        })];
-
-        assert!(select_model(&models, None).is_err());
-        assert!(select_model(&models, Some("gpt-5.6-luna")).is_err());
-    }
-
-    #[test]
-    fn skips_active_or_exhausted_ordinary_windows() {
-        assert!(window_is_active(&snapshot(10, 90, 200), 100));
-        assert!(ordinary_quota_exhausted(&snapshot(100, 0, 200), 100));
-        assert!(!ordinary_quota_exhausted(&snapshot(100, 0, 99), 100));
+    fn reports_active_or_exhausted_ordinary_windows_without_sending_wake() {
+        let active = quota_eligibility(&snapshot(10, 90, i64::MAX)).expect("active result");
+        assert_eq!(active.result, WakeResultKind::AlreadyActive);
+        let exhausted = quota_eligibility(&snapshot(100, 0, i64::MAX)).expect("capacity result");
+        assert_eq!(exhausted.result, WakeResultKind::NoOrdinaryCapacity);
     }
 
     #[test]

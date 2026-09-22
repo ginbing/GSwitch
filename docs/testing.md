@@ -83,7 +83,9 @@ as applicable:
 - earliest eligible unexpired reset-credit selection and idempotent outcomes;
 - a pending reset being surfaced as a boolean-only recovery prompt and replayed
   only after a new explicit user action;
-- Wake model allowlisting, low reasoning effort, quota guards, and confirmation;
+- Wake's fixed minimal Responses payload, quota guards, active-token reread,
+  externally owned no-refresh path, inactive authentication-only refresh,
+  no-retry sent-but-unconfirmed outcome, and sequential queue continuation;
 - frontend clearing secret inputs, confirming reset consumption, and disabling
   conflicting actions;
 - browser-login cancellation, selected-file import boundaries, account-space

@@ -120,6 +120,52 @@ impl ChatGptClient {
         self.get_json("/wham/accounts/check", &snapshot)
     }
 
+    /// Sends the one minimal Responses request used by an explicit Wake.
+    ///
+    /// This is intentionally not a general Responses client. The request has
+    /// no tools, file context, retained state, or retry policy; callers must
+    /// treat a transport failure as potentially delivered.
+    pub(crate) fn wake(&self, credential: &Value, model: &str) -> Result<(), RequestFailure> {
+        let snapshot = credential_snapshot(credential).map_err(|_| RequestFailure {
+            kind: RequestFailureKind::Authentication,
+            status: Some(401),
+        })?;
+        let response = self
+            .client
+            .post(format!("{}/codex/responses", self.base_url))
+            .headers(headers(&snapshot)?)
+            .json(&json!({
+                "model": model,
+                "instructions": "Reply with exactly OK. Do not use tools or inspect files.",
+                "input": [{
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "OK"}]
+                }],
+                "tools": [],
+                "tool_choice": "none",
+                "parallel_tool_calls": false,
+                "reasoning": {"effort": "none"},
+                "store": false,
+                "stream": false,
+                "include": [],
+                "service_tier": "standard"
+            }))
+            .send()
+            .map_err(|_error| RequestFailure {
+                kind: RequestFailureKind::Transport,
+                status: None,
+            })?;
+        let status = response.status();
+        if !status.is_success() {
+            return Err(RequestFailure {
+                kind: request_failure_kind(status),
+                status: Some(status.as_u16()),
+            });
+        }
+        Ok(())
+    }
+
     #[cfg(test)]
     fn get_usage(&self, credential: &Value) -> Result<Value, RequestFailure> {
         let snapshot = credential_snapshot(credential).map_err(|_| RequestFailure {
@@ -418,6 +464,33 @@ mod tests {
         assert_eq!(response["accounts"][0]["id"], "workspace");
         let request = handle.join().expect("server");
         assert!(request.starts_with("GET /wham/accounts/check HTTP/1.1"));
+    }
+
+    #[test]
+    fn sends_one_minimal_codex_responses_wake_request() {
+        let (base_url, handle) = fixture(200, "{}");
+        let client = ChatGptClient::with_base_url(&base_url).expect("client");
+        client
+            .wake(&credential(), "gpt-5.6-luna")
+            .expect("wake request");
+
+        let request = handle.join().expect("server");
+        assert!(request.starts_with("POST /codex/responses HTTP/1.1"));
+        assert!(request.contains("authorization: Bearer live-access-token"));
+        assert!(request.contains("chatgpt-account-id: workspace"));
+        let body = request.split("\r\n\r\n").nth(1).expect("request body");
+        let payload: Value = serde_json::from_str(body).expect("JSON payload");
+        assert_eq!(payload["model"], "gpt-5.6-luna");
+        assert_eq!(payload["input"][0]["role"], "user");
+        assert_eq!(payload["input"][0]["content"][0]["type"], "input_text");
+        assert_eq!(payload["input"][0]["content"][0]["text"], "OK");
+        assert_eq!(payload["tools"], json!([]));
+        assert_eq!(payload["tool_choice"], "none");
+        assert_eq!(payload["parallel_tool_calls"], false);
+        assert_eq!(payload["reasoning"]["effort"], "none");
+        assert_eq!(payload["service_tier"], "standard");
+        assert_eq!(payload["store"], false);
+        assert_eq!(payload["stream"], false);
     }
 
     #[test]
