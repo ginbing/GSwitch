@@ -83,7 +83,9 @@ as applicable:
 - earliest eligible unexpired reset-credit selection and idempotent outcomes;
 - a pending reset being surfaced as a boolean-only recovery prompt and replayed
   only after a new explicit user action;
-- Wake model allowlisting, low reasoning effort, quota guards, and confirmation;
+- Wake's fixed minimal Responses payload, quota guards, active-token reread,
+  externally owned no-refresh path, inactive authentication-only refresh,
+  no-retry sent-but-unconfirmed outcome, and sequential queue continuation;
 - frontend clearing secret inputs, confirming reset consumption, and disabling
   conflicting actions;
 - browser-login cancellation, selected-file import boundaries, account-space
@@ -97,6 +99,14 @@ as applicable:
   identity deduplication, saved-identity duplicates, mixed parse outcomes,
   batch file/byte limits, sequential validation, sanitized aggregate results,
   and successful persistence when post-import quota refresh fails.
+- versioned portable export structure, intentional omissions, empty/stale
+  selections, cancellation before write, Unix private permissions, version-1
+  import round-trip, unknown-version rejection, saved-identity deduplication,
+  and aggregate-only command output;
+- Add Account import-first hierarchy, account selection controls, selected Wake,
+  unencrypted-export confirmation, and result feedback without credential data.
+- the toolbar's visible ready indicator beside a separately truncatable account
+  label, plus the canonical SVG and generated native/installer icon dimensions.
 - system-language selection, unsupported-locale fallback, immediate manual
   language selection, language preference persistence, locale-aware reset-time
   formatting, and the main account flow in Simplified Chinese.

@@ -32,7 +32,7 @@ credential document.
 | Quota and reset-credit facts | Codex/OpenAI response | Normalize and cache them without inventing missing values |
 | External Codex process state | Operating system | Detect known or uninspectable runtimes before sensitive operations |
 | Pending switch/reset recovery | GSwitch account store | Persist enough intent to resume safely and idempotently |
-| Screen and dialog state | React component tree | Keep it transient, derived, and free of stored secrets |
+| Screen and dialog state | React component tree | Keep it transient, derived, and free of stored secrets; selected saved-account IDs are permitted, credentials and export paths are not |
 
 Unknown, stale, timed-out, or conflicting state remains unknown. A cache is a
 projection, not a second authority over runtime or provider facts.
@@ -56,7 +56,7 @@ Keep the backend flat and organized by concrete responsibility:
 - `codex.rs`: `CODEX_HOME`, effective storage mode, and live auth-file access;
 - `identity.rs`: credential classification, stable non-secret identity, and
   fingerprints used for comparisons;
-- `intake.rs`: OAuth, bounded auth-document batch import, and API-key intake;
+- `intake.rs`: OAuth, bounded auth-document batch import, versioned portable export serialization, and API-key intake;
 - `migration.rs`: one-shot, allowlisted local Codex/Cockpit discovery,
   read-only envelope decoding, sanitized previews, and revalidated handoff to
   `intake.rs`;
@@ -64,8 +64,8 @@ Keep the backend flat and organized by concrete responsibility:
   removal, and interrupted-switch recovery;
 - `quota.rs`: quota normalization/cache, reset-credit selection, redemption,
   and redemption recovery;
-- `wake.rs`: Wake policy, isolated execution, sequential Wake All, cancellation,
-  and per-account outcomes;
+- `wake.rs`: Wake policy, narrow Responses transport, sequential Wake All,
+  cancellation, and per-account outcomes;
 - `runtime.rs`: external Codex process detection;
 - `storage.rs`: versioned JSON persistence and atomic/private writes;
 - `types.rs`: backend state and sanitized serializable view models.
@@ -83,14 +83,15 @@ and forms. A global store, router, component framework, or generic API client
 requires a demonstrated current need.
 
 The native dialog is used to choose account-export paths or, after an explicit
-user action, one documented Cockpit data folder. Rust reads those paths and
-returns only a sanitized aggregate import result or local-account preview; raw
-file bytes, source records, keys, and credential documents do not cross the
-WebView boundary. File-count, per-file, and aggregate-size limits plus identity
-deduplication belong to Rust rather than React. Local migration is a one-shot
-command with no startup scan, watcher, scheduler, or background job. OAuth
-links are short-lived, user-visible links associated with an in-memory login
-session.
+user action, one documented Cockpit data folder. Rust reads selected import
+paths and owns portable export lookup, serialization, destination, and write;
+it returns only sanitized import summaries, local-account previews, and export
+counts. Raw file bytes, source records, paths, keys, and credential documents
+do not cross the WebView boundary. File-count, per-file, and aggregate-size
+limits plus identity deduplication belong to Rust rather than React. Local
+migration is a one-shot command with no startup scan, watcher, scheduler, or
+background job. OAuth links are short-lived, user-visible links associated with
+an in-memory login session.
 
 The WebView may persist its selected display language only. Language selection
 is not account state and must not share storage with credentials, provider data,
@@ -98,13 +99,13 @@ or recovery records.
 
 ## Isolated Codex profiles
 
-OAuth, imported-account validation, quota fallback, reset redemption, and Wake
-may run an official Codex App Server in a short-lived GSwitch-owned
+OAuth, imported-account validation, quota fallback, and reset redemption may
+run an official Codex App Server in a short-lived GSwitch-owned
 `CODEX_HOME`. This isolates the operation from the user's live Codex identity.
 Refreshed credentials are accepted only after the returned document still
-matches the expected account identity. Ordinary quota and account metadata
-reads use the small read-only ChatGPT HTTP boundary first; that path never
-starts App Server or writes a credential.
+matches the expected account identity. Ordinary quota, account metadata, and
+Wake use the small Rust-owned ChatGPT HTTP boundary first; ordinary reads and
+active-account Wake never start App Server or write a credential.
 
 ## Mutation boundary
 

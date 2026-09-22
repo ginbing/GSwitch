@@ -235,37 +235,6 @@ impl AppServer {
         )
     }
 
-    pub fn model_list(&mut self, id: i64, cursor: Option<&str>) -> Result<Value, String> {
-        self.call(
-            id,
-            "model/list",
-            json!({"cursor": cursor, "limit": 100, "includeHidden": false}),
-            REQUEST_TIMEOUT,
-        )
-    }
-
-    pub fn thread_start(&mut self, id: i64, params: Value) -> Result<Value, String> {
-        self.call(id, "thread/start", params, REQUEST_TIMEOUT)
-    }
-
-    pub fn turn_start(&mut self, id: i64, params: Value) -> Result<Value, String> {
-        self.call(id, "turn/start", params, REQUEST_TIMEOUT)
-    }
-
-    pub fn turn_interrupt(
-        &mut self,
-        id: i64,
-        thread_id: &str,
-        turn_id: &str,
-    ) -> Result<Value, String> {
-        self.call(
-            id,
-            "turn/interrupt",
-            json!({"threadId": thread_id, "turnId": turn_id}),
-            REQUEST_TIMEOUT,
-        )
-    }
-
     pub fn config_value_write(
         &mut self,
         id: i64,
