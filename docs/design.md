@@ -22,7 +22,8 @@ or recovery; they do not create a second navigation system.
 The toolbar contains the current Codex account, Refresh, Wake all, Add account,
 and a lightweight Settings button. It is a command bar, not a dashboard header
 or a custom window chrome. Its status dot always remains visible; only a long
-account label may truncate.
+account label may truncate. The status is also written in text so ready, unknown,
+signed-out, setup, and recovery states do not rely on color.
 
 An account card should show only the state needed for a decision:
 
@@ -72,6 +73,9 @@ explicit reset preserves GSwitch's damaged file without touching Codex.
 ## Interaction states
 
 - Do not optimistically display a switch or redemption as complete.
+- Opening a dialog moves keyboard focus inside it. Tab stays inside, and closing
+  restores focus to the launching control. A dialog cannot be dismissed while
+  its non-cancellable action is in progress.
 - Disable conflicting credential actions while one is in progress.
 - Show progress on the affected row or in the focused operation dialog.
 - Keep Wake results per account; cancellation and partial failure are explicit.

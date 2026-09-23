@@ -243,6 +243,46 @@ describe("GSwitch account workspace", () => {
     expect(within(dialog).getByText(/only reads accounts you choose to import/i)).toBeInTheDocument();
   });
 
+  it("keeps keyboard focus in a dialog and returns it to the launcher", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole("heading", { name: "0 saved accounts" });
+    const launcher = screen.getByRole("button", { name: "Add manually" });
+    await user.click(launcher);
+    const dialog = screen.getByRole("dialog", { name: "Add a Codex account" });
+    expect(dialog).toHaveFocus();
+
+    await user.tab();
+    expect(within(dialog).getByRole("button", { name: "Close Add a Codex account" })).toHaveFocus();
+    await user.tab({ shift: true });
+    expect(within(dialog).getByText("Other methods")).toHaveFocus();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(launcher).toHaveFocus();
+  });
+
+  it("keeps an export confirmation open while its save operation is pending", async () => {
+    let finishExport!: (value: { exported_count: number; cancelled: boolean }) => void;
+    mocks.exportAccounts.mockImplementation(() => new Promise((resolve) => { finishExport = resolve; }));
+    mocks.listAccounts.mockResolvedValue([chatAccount]);
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText("person@example.com");
+    await user.click(screen.getByRole("button", { name: "Select" }));
+    await user.click(screen.getByRole("button", { name: "Select all" }));
+    await user.click(screen.getByRole("button", { name: "Export" }));
+    const dialog = screen.getByRole("dialog", { name: "Export selected accounts" });
+    await user.click(within(dialog).getByRole("button", { name: "Continue" }));
+    await user.click(within(dialog).getByRole("button", { name: "Export unencrypted accounts" }));
+    await waitFor(() => expect(mocks.exportAccounts).toHaveBeenCalledOnce());
+    expect(within(dialog).getByRole("button", { name: "Close Export selected accounts" })).toBeDisabled();
+    expect(within(dialog).getByRole("button", { name: "Cancel" })).toBeDisabled();
+    await user.keyboard("{Escape}");
+    expect(dialog).toBeInTheDocument();
+    finishExport({ exported_count: 1, cancelled: false });
+    await waitFor(() => expect(dialog).not.toBeInTheDocument());
+  });
+
   it("keeps the ready status halo outside the truncated toolbar label", async () => {
     mocks.liveAccount.mockResolvedValue({
       status: "ready",

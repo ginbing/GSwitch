@@ -179,6 +179,10 @@ summary:focus-visible {
   white-space: nowrap;
 }
 
+.brand-status-state {
+  flex: 0 0 auto;
+}
+
 .status-dot {
   width: 7px;
   height: 7px;
@@ -994,6 +998,18 @@ summary:focus-visible {
   font-size: 15px;
   font-weight: 720;
   letter-spacing: -0.015em;
+}
+
+.modal-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.modal-progress {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
 }
 
 .modal-header .icon-button {
