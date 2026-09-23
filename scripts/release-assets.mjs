@@ -74,7 +74,13 @@ async function sign(id) {
     if (file.endsWith(".dmg")) continue;
     const source = join(target.base, folder, file);
     await requireFile(source);
-    const signed = spawnSync(process.execPath, [resolve("node_modules/@tauri-apps/cli/tauri.js"), "signer", "sign", "--app-version", version, source], {
+    const signerArgs = [
+      resolve("node_modules/@tauri-apps/cli/tauri.js"), "signer", "sign",
+      "--app-version", version,
+    ];
+    if (!process.env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD) signerArgs.push("--password", "");
+    signerArgs.push(source);
+    const signed = spawnSync(process.execPath, signerArgs, {
       stdio: "inherit",
     });
     requireCondition(signed.status === 0, `Could not sign final bytes of ${file}`);
