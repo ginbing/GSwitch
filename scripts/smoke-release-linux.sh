@@ -12,6 +12,7 @@ smoke="$RUNNER_TEMP/gswitch-release-smoke"
 mkdir -p "$smoke/deb" "$smoke/appimage"
 dpkg-deb --extract "$deb" "$smoke/deb"
 find "$smoke/deb" -type f -name gswitch -print -quit | grep -q .
+find "$smoke/deb" -type f \( -iname '*.png' -o -iname '*.svg' \) -print -quit | grep -q .
 (
   cd "$smoke/appimage"
   "$GITHUB_WORKSPACE/$appimage" --appimage-extract >/dev/null
@@ -19,4 +20,5 @@ find "$smoke/deb" -type f -name gswitch -print -quit | grep -q .
 test -f "$smoke/appimage/squashfs-root/AppRun"
 find "$smoke/appimage/squashfs-root" -name '*.desktop' -print -quit | grep -q .
 find "$smoke/appimage/squashfs-root" -type f -name gswitch -print -quit | grep -q .
+find "$smoke/appimage/squashfs-root" -type f \( -iname '*.png' -o -iname '*.svg' \) -print -quit | grep -q .
 echo "Debian metadata, package payload, and AppImage extraction passed for $version"
