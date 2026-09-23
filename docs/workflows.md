@@ -17,10 +17,14 @@ the user's live Codex identity.
 4. Wait for the matching completion event, read the complete resulting
    credential document, and use its fresh access-token snapshot for the
    read-only account metadata check. Do not request a proactive refresh.
-5. Persist the verified profile only after its identity is known.
+5. Write the verified complete document to a new protected-vault generation,
+   then atomically commit metadata pointing at it only after its identity is
+   known.
 
 Cancellation and timeout end the isolated login. OAuth is the default login
 experience; GSwitch does not implement a parallel OAuth protocol.
+The App Server is stopped before the isolated profile is removed, including
+after cancellation or validation failure; cleanup failure is reported.
 
 ### JSON or file import
 
@@ -77,9 +81,9 @@ dropped rather than copied into GSwitch.
 
 Selection mode is the normal way to act on several saved accounts. The
 WebView holds only selected account IDs; Rust verifies those IDs under the
-operation lock, collects the matching saved snapshots, opens the native save
-dialog, and writes one explicitly user-authorized portable document. It returns
-only an aggregate count or cancellation state.
+operation lock, reads the matching complete snapshots from the protected vault,
+opens the native save dialog, and writes one explicitly user-authorized
+portable document. It returns only an aggregate count or cancellation state.
 
 The version-1 format is a single JSON object:
 
@@ -149,7 +153,7 @@ The visible interaction is one **Switch** action. Rust owns the full transaction
 6. only when that ChatGPT check returns 401 or 403, check the external process
    state again and allow one isolated managed refresh; identity-check the
    refreshed complete document before saving it;
-7. persist pending-switch recovery state;
+7. persist pending-switch metadata and protected rollback auth;
 8. check the external process state and live credential fingerprint again;
 9. atomically replace the live credential;
 10. reread `auth.json` and confirm the requested identity locally;
@@ -226,7 +230,8 @@ display and action eligibility.
 2. keeps only available and unexpired credits;
 3. chooses the eligible credit with the earliest expiry, placing credits without
    an expiry after dated credits;
-4. persists the selected credit and a unique idempotency key;
+4. persists a non-secret pending reference plus the selected credit and unique
+   idempotency key in protected storage;
 5. consumes that exact credit through Codex;
 6. clears the pending record only after an authoritative outcome;
 7. refreshes quota and reset-credit state.
@@ -283,10 +288,23 @@ surface.
 
 ## Recovery
 
-Interrupted switch and reset-credit actions retain durable intent so a retry can
-distinguish a completed operation from one that is still pending. If a validated
-credential refresh cannot be written to the main store, GSwitch retains a
-protected recovery copy instead of discarding it.
+Interrupted switch and reset-credit actions retain non-secret durable intent
+plus protected recovery material so a retry can distinguish a completed
+operation from one that is still pending. If a validated credential refresh
+cannot be committed to metadata, GSwitch retains a copy only after the
+encrypted-vault write and readback succeed. If protected recovery also fails,
+the isolated profile is removed instead of being retained as plaintext. Legacy
+version-3 and unversioned inline account stores migrate each complete document
+into the vault and verify stable identity before atomically replacing active
+metadata; interruption leaves the old source recoverable.
+
+Pending-credential recovery is an explicit Rust command, not automatic startup
+replay. It rederives identity, checks the saved generation before replacing an
+existing credential, and refuses a stale or ambiguous entry. For an account
+not yet saved, it creates one local recovered profile without a provider
+request. A successful metadata commit precedes removal of the encrypted queue
+entry; the command returns only the number recovered. The current WebView does
+not yet offer a control for this command.
 
 A damaged GSwitch account store starts in recovery mode. Resetting it preserves
 the damaged file under a recovery name and creates an empty GSwitch store; it
