@@ -9,7 +9,7 @@ case "$id" in
 esac
 bundle="src-tauri/target/$target/release/bundle"
 dmg="$bundle/dmg/GSwitch_${version}_${suffix}.dmg"
-archive="$bundle/macos/GSwitch_${version}_${suffix}.app.tar.gz"
+archive="$bundle/macos/GSwitch.app.tar.gz"
 test -s "$dmg"
 test -s "$archive"
 mount="$RUNNER_TEMP/gswitch-release-smoke-$id"

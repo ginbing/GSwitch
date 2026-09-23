@@ -13,11 +13,11 @@ const platformFiles = {
   windows: [["src-tauri/target/release/bundle/nsis", `${base}x64-setup.exe`]],
   "macos-silicon": [
     ["src-tauri/target/aarch64-apple-darwin/release/bundle/dmg", `${base}aarch64.dmg`],
-    ["src-tauri/target/aarch64-apple-darwin/release/bundle/macos", `${base}aarch64.app.tar.gz`],
+    ["src-tauri/target/aarch64-apple-darwin/release/bundle/macos", `${base}aarch64.app.tar.gz`, "GSwitch.app.tar.gz"],
   ],
   "macos-intel": [
     ["src-tauri/target/x86_64-apple-darwin/release/bundle/dmg", `${base}x64.dmg`],
-    ["src-tauri/target/x86_64-apple-darwin/release/bundle/macos", `${base}x64.app.tar.gz`],
+    ["src-tauri/target/x86_64-apple-darwin/release/bundle/macos", `${base}x64.app.tar.gz`, "GSwitch.app.tar.gz"],
   ],
   linux: [
     ["src-tauri/target/release/bundle/appimage", `${base}amd64.AppImage`],
@@ -39,14 +39,17 @@ test("stages exact platform bytes and rejects changed release assets", async () 
     await mkdir(release);
     for (const [platform, files] of Object.entries(platformFiles)) {
       const staging = join(root, `stage-${platform}`);
-      for (const [folder, file] of files) {
-        const path = join(root, folder, file);
+      for (const [folder, file, sourceName = file] of files) {
+        const path = join(root, folder, sourceName);
         await mkdir(dirname(path), { recursive: true });
-        await writeFile(path, `final bytes for ${file}`);
+        await writeFile(path, `final bytes for ${platform}/${file}`);
         if (!file.endsWith(".dmg")) await writeFile(`${path}.sig`, signature);
       }
       const result = run(root, "stage", platform, staging);
       assert.equal(result.status, 0, result.stderr);
+      for (const [, file] of files) {
+        assert.equal(await readFile(join(staging, file), "utf8"), `final bytes for ${platform}/${file}`);
+      }
       for (const file of await readdir(staging)) await copyFile(join(staging, file), join(release, file));
     }
     const components = [

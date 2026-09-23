@@ -12,11 +12,11 @@ const targets = {
   },
   "macos-silicon": {
     base: "src-tauri/target/aarch64-apple-darwin/release/bundle",
-    files: [["dmg", name("aarch64.dmg")], ["macos", name("aarch64.app.tar.gz")]],
+    files: [["dmg", name("aarch64.dmg")], ["macos", name("aarch64.app.tar.gz"), "GSwitch.app.tar.gz"]],
   },
   "macos-intel": {
     base: "src-tauri/target/x86_64-apple-darwin/release/bundle",
-    files: [["dmg", name("x64.dmg")], ["macos", name("x64.app.tar.gz")]],
+    files: [["dmg", name("x64.dmg")], ["macos", name("x64.app.tar.gz"), "GSwitch.app.tar.gz"]],
   },
   linux: {
     base: "src-tauri/target/release/bundle",
@@ -51,9 +51,9 @@ async function stage(id, destination) {
   const target = targets[id];
   requireCondition(target, `Unknown release platform: ${id}`);
   await mkdir(destination, { recursive: true });
-  const files = target.files.flatMap(([folder, file]) => [
-    [join(target.base, folder, file), file],
-    ...(!file.endsWith(".dmg") ? [[join(target.base, folder, `${file}.sig`), `${file}.sig`]] : []),
+  const files = target.files.flatMap(([folder, file, sourceName = file]) => [
+    [join(target.base, folder, sourceName), file],
+    ...(!file.endsWith(".dmg") ? [[join(target.base, folder, `${sourceName}.sig`), `${file}.sig`]] : []),
   ]);
   const hashes = [];
   for (const [source, file] of files) {
@@ -70,9 +70,9 @@ async function sign(id) {
   const target = targets[id];
   requireCondition(target, `Unknown release platform: ${id}`);
   requireCondition(process.env.TAURI_SIGNING_PRIVATE_KEY, "Missing updater signing key");
-  for (const [folder, file] of target.files) {
+  for (const [folder, file, sourceName = file] of target.files) {
     if (file.endsWith(".dmg")) continue;
-    const source = join(target.base, folder, file);
+    const source = join(target.base, folder, sourceName);
     await requireFile(source);
     const signerArgs = [
       resolve("node_modules/@tauri-apps/cli/tauri.js"), "signer", "sign",
