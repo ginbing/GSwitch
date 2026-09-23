@@ -137,11 +137,14 @@ pub fn save_current_account(state: &AppState) -> Result<AccountView, String> {
         },
     );
     if result.is_err() {
-        let _ = state.record_pending_credential(&operation, &recovery_credential);
-        return Err(
-            "GSwitch could not save the current account. A protected recovery copy was retained."
-                .to_string(),
-        );
+        return if state
+            .record_pending_credential(&operation, &recovery_credential)
+            .is_ok()
+        {
+            Err("GSwitch could not save the current account. A protected recovery copy was retained.".to_string())
+        } else {
+            Err("GSwitch could not save the current account or write protected recovery. No plaintext recovery copy was retained.".to_string())
+        };
     }
     result
 }
@@ -260,6 +263,8 @@ pub fn switch_account(state: &AppState, target_id: &str) -> Result<SwitchOutcome
         previous_active_id: state
             .active_account_id_under_operation(&operation)
             .map_err(|_| switch_failure(SwitchFailureCode::VerificationFailed))?,
+        secret_ref: None,
+        secret_generation: 0,
         previous_auth: previous_auth.clone(),
         stage: PendingSwitchStage::Prepared,
     };
@@ -452,7 +457,6 @@ fn validate_target_snapshot(
 struct ManagedRefresh {
     credential: Value,
     metadata: AccountMetadata,
-    recovery_profile: Option<TempCodexHome>,
 }
 
 fn validate_chatgpt_snapshot_with<P, F>(
@@ -480,12 +484,12 @@ where
                 workspace_name: projection.workspace_name,
                 account_structure: projection.account_structure,
             };
-            persist_switch_validation(state, operation, target, &metadata, None, None)?;
+            persist_switch_validation(state, operation, target, &metadata, None)?;
             Ok(target.credential.clone())
         }
         Err(error) if error.kind == RequestFailureKind::Authentication => {
             refresh_precondition()?;
-            let mut refreshed = managed_refresh()
+            let refreshed = managed_refresh()
                 .map_err(|_| switch_failure(SwitchFailureCode::AccountNeedsSignIn))?;
             ensure_metadata_kind(&refreshed.metadata, &AccountKind::ChatGpt)
                 .map_err(|_| switch_failure(SwitchFailureCode::AccountNeedsSignIn))?;
@@ -502,7 +506,6 @@ where
                 target,
                 &refreshed.metadata,
                 Some(refreshed.credential.clone()),
-                refreshed.recovery_profile.as_mut(),
             )?;
             Ok(refreshed.credential)
         }
@@ -522,7 +525,6 @@ fn managed_refresh_target(
     Ok(ManagedRefresh {
         credential,
         metadata,
-        recovery_profile: Some(profile),
     })
 }
 
@@ -532,7 +534,6 @@ fn persist_switch_validation(
     target: &StoredAccount,
     metadata: &AccountMetadata,
     credential: Option<Value>,
-    recovery_profile: Option<&mut TempCodexHome>,
 ) -> Result<(), SwitchFailure> {
     if state
         .update_switch_validation_under_operation(
@@ -549,14 +550,7 @@ fn persist_switch_validation(
     let Some(credential) = credential else {
         return Err(switch_failure(SwitchFailureCode::VerificationFailed));
     };
-    if state
-        .record_pending_credential(operation, &credential)
-        .is_err()
-    {
-        if let Some(profile) = recovery_profile {
-            profile.retain_for_recovery();
-        }
-    }
+    let _ = state.record_pending_credential(operation, &credential);
     Err(switch_failure(SwitchFailureCode::RecoveryRequired))
 }
 
@@ -658,7 +652,7 @@ fn update_credential_or_record(
                 .to_string(),
         );
     }
-    Err("GSwitch could not save refreshed credentials or retain a recovery copy".to_string())
+    Err("GSwitch could not save refreshed credentials or write protected recovery. No plaintext recovery copy was retained.".to_string())
 }
 
 fn stored_identity(account: &StoredAccount) -> Result<(AccountKind, AccountIdentity), String> {
@@ -942,7 +936,6 @@ mod tests {
                         workspace_name: Some("Personal".into()),
                         account_structure: Some("workspace".into()),
                     },
-                    recovery_profile: None,
                 })
             },
         )
@@ -1037,6 +1030,8 @@ mod tests {
                     target_id: target.id.clone(),
                     target_identity: identity.clone(),
                     previous_active_id: None,
+                    secret_ref: None,
+                    secret_generation: 0,
                     previous_auth: None,
                     stage: PendingSwitchStage::Prepared,
                 },
@@ -1072,6 +1067,8 @@ mod tests {
                     target_id: target.id.clone(),
                     target_identity: identity,
                     previous_active_id: None,
+                    secret_ref: None,
+                    secret_generation: 0,
                     previous_auth: Some(previous.clone()),
                     stage: PendingSwitchStage::Prepared,
                 },
@@ -1118,6 +1115,8 @@ mod tests {
                     target_id: target.id.clone(),
                     target_identity: identity,
                     previous_active_id: None,
+                    secret_ref: None,
+                    secret_generation: 0,
                     previous_auth: Some(previous.clone()),
                     stage: PendingSwitchStage::Prepared,
                 },

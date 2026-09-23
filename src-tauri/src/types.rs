@@ -40,8 +40,21 @@ pub struct StoredAccount {
     pub identity: Option<AccountIdentity>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quota: Option<QuotaSnapshot>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Reset-credit identifiers are credential-adjacent provider secrets. They
+    /// are hydrated only inside Rust from the protected vault.
+    #[serde(default, skip_serializing)]
     pub reset_credits: Option<StoredResetCredits>,
+    /// Opaque key for the encrypted credential material. It is not a secret
+    /// and allows metadata to retain logical account ownership across token
+    /// rotation.
+    #[serde(default)]
+    pub credential_ref: String,
+    #[serde(default)]
+    pub credential_generation: u64,
+    /// Kept in Rust memory for existing domain operations, but never written
+    /// back into accounts.json. Legacy stores deserialize it only long enough
+    /// for the one-time protected-vault migration.
+    #[serde(default, skip_serializing)]
     pub credential: Value,
 }
 
@@ -122,6 +135,11 @@ pub struct PendingSwitch {
     pub target_id: String,
     pub target_identity: AccountIdentity,
     pub previous_active_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret_ref: Option<String>,
+    #[serde(default)]
+    pub secret_generation: u64,
+    #[serde(default, skip_serializing)]
     pub previous_auth: Option<Value>,
     pub stage: PendingSwitchStage,
 }
@@ -268,14 +286,14 @@ pub struct ResetCreditDetailView {
 
 /// Rust-owned reset-credit data. The opaque ID is never part of a Tauri
 /// command response or WebView state.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StoredResetCredits {
     pub available_count: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credits: Option<Vec<StoredResetCredit>>,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StoredResetCredit {
     pub id: String,
     pub status: String,
@@ -286,9 +304,37 @@ pub struct StoredResetCredit {
 #[derive(Clone, Serialize, Deserialize)]
 pub struct PendingResetCredit {
     pub account_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret_ref: Option<String>,
+    #[serde(default)]
+    pub secret_generation: u64,
+    #[serde(default, skip_serializing)]
     pub credit_id: String,
+    #[serde(default, skip_serializing)]
     pub idempotency_key: String,
     pub created_at_unix_ms: i64,
+}
+
+/// Complete account material kept exclusively in the encrypted vault. The
+/// metadata store intentionally owns neither a credential document nor reset
+/// credit identifiers.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct AccountSecret {
+    pub credential: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reset_credits: Option<StoredResetCredits>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct PendingSwitchSecret {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_auth: Option<Value>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct PendingResetCreditSecret {
+    pub credit_id: String,
+    pub idempotency_key: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
