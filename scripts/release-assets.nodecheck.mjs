@@ -8,7 +8,7 @@ import test from "node:test";
 const script = resolve("scripts/release-assets.mjs");
 const version = JSON.parse(await readFile("src-tauri/tauri.conf.json", "utf8")).version;
 const base = `GSwitch_${version}_`;
-const signature = Buffer.from("untrusted comment: test signature\ntrusted comment: version:test\n").toString("base64");
+const signature = Buffer.from(`untrusted comment: test signature\ntrusted comment: timestamp:0\tfile:test\tversion:${version}\n`).toString("base64");
 const platformFiles = {
   windows: [["src-tauri/target/release/bundle/nsis", `${base}x64-setup.exe`]],
   "macos-silicon": [

@@ -101,6 +101,8 @@ async function signature(directory, file) {
   requireCondition(/^[A-Za-z0-9+/]+={0,2}$/.test(encoded), `Invalid signature encoding for ${file}`);
   const decoded = Buffer.from(encoded, "base64").toString("utf8");
   requireCondition(decoded.includes("untrusted comment:") && decoded.includes("trusted comment:"), `Invalid Tauri signature for ${file}`);
+  const trusted = decoded.split(/\r?\n/).find((line) => line.startsWith("trusted comment:"));
+  requireCondition(trusted?.split("\t").includes(`version:${version}`), `Signature version does not match ${version} for ${file}`);
   return encoded;
 }
 
