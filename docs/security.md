@@ -5,8 +5,15 @@ product behavior, not optional implementation polish.
 
 ## Secret boundary
 
-- Complete saved credential documents and individual reset-credit IDs stay in
-  Rust-owned storage and are never returned to React.
+- Complete saved credential documents, individual reset-credit IDs,
+  idempotency keys, rollback auth, and protected recovery copies stay in the
+  Rust-only Stronghold vault and are never returned to React. `accounts.json`
+  holds only non-secret metadata plus opaque secret references and generations.
+- The Stronghold snapshot is encrypted with a random root key held by the
+  native platform credential manager (Keychain, Windows Credential Manager, or
+  Secret Service). GSwitch never exposes a Stronghold command/capability to the
+  WebView, writes a root key beside the snapshot, or falls back to plaintext
+  when protected storage is unavailable.
 - Preserve the complete Codex-generated document rather than rebuilding known
   token fields; unknown future fields must survive a round trip.
 - A pasted auth document or API key may exist only in its transient input until
@@ -42,10 +49,10 @@ product behavior, not optional implementation polish.
   nor destination path. The versioned format excludes account operational
   state, reset/recovery IDs, provider payloads, paths, and source metadata.
 
-The GSwitch account store lives under the application's config directory. It is
-a small versioned JSON store because the product owns a handful of local
-profiles, not relational data. Do not add a database or export subsystem without
-a concrete accepted need.
+The GSwitch metadata store and encrypted vault live under the application's
+config directory. The versioned JSON store owns a handful of profile projections,
+not credential material or relational data. Do not add a database or export
+subsystem without a concrete accepted need.
 
 ## Process boundary
 
@@ -73,8 +80,11 @@ process guard.
 ## Storage and concurrency
 
 Credential-affecting operations are serialized by an in-process mutex and a
-cross-process file lock. Persist the store successfully before changing its
-in-memory projection.
+cross-process file lock. A new secret generation is durably written and
+readable in the vault before metadata points at it; metadata commits before an
+old reachable generation can be retired. Persist metadata successfully before
+changing its in-memory projection. Startup hydration and legacy migration hold
+the same cross-process operation lock through their metadata commit.
 
 Atomic writes protect against partial files; they do not by themselves prove
 that the data being written is current. Every mutation must also verify identity
@@ -118,8 +128,9 @@ validation use the Rust-only read-only backend client first. A valid switch
 snapshot may update normalized non-secret metadata but must not refresh or
 rewrite the saved credential. Before persisting any refreshed credential,
 verify that its account kind and identity are unchanged. Delete the isolated
-profile after success unless it must be retained as a last-resort protected
-recovery copy.
+profile on every exit. If a refreshed credential cannot be committed to
+metadata, any recovery copy must first be committed to the encrypted vault;
+never leave a plaintext isolated `auth.json` as a fallback.
 
 Ordinary quota refresh is a read-only provider projection. When Codex is
 running, GSwitch rereads the file-backed live credential immediately before
@@ -145,10 +156,12 @@ instead of retrying.
 
 ## Recovery invariants
 
-- A pending switch records the target, expected identity, previous live
-  credential, previous active profile, and transaction stage.
-- A pending reset records the account, exact credit, idempotency key, and start
-  time so retry cannot intentionally double-consume.
+- A pending switch records the target, expected identity, previous active
+  profile, transaction stage, and an opaque reference to protected previous
+  live auth.
+- A pending reset records the account, start time, and an opaque reference to
+  the exact protected credit and idempotency key so retry cannot intentionally
+  double-consume.
 - The WebView receives only whether reset recovery is pending. It cannot read
   the recorded account, provider credit, or idempotency key.
 - Ambiguous external changes are preserved, not overwritten.
@@ -157,11 +170,25 @@ instead of retrying.
   recovery-required, or verification-failed. Detailed provider, filesystem,
   and recovery errors stay in Rust.
 - A failed account-store write must not silently discard a credential refreshed
-  by Codex; retain a protected recovery copy.
-- A corrupt GSwitch store blocks mutation. Reset preserves the damaged file and
-  never changes `CODEX_HOME/auth.json`. The recovery-only UI disables account
-  intake, switching, quota refresh, reset credits, and Wake until the user
-  explicitly confirms that GSwitch-only reset.
+  by Codex: keep a recovery copy in the encrypted vault when possible. If that
+  write also fails, remove the isolated profile rather than retain plaintext
+  `auth.json` as a fallback.
+- An explicit pending-credential recovery reads the encrypted index only in
+  Rust. It derives the document identity again, accepts an existing account
+  only at the recorded generation, and refuses to overwrite a newer secret.
+  It commits metadata before retiring the queue entry, so interruption can be
+  retried. A document that fails the intended identity check remains protected
+  but cannot be applied as another account. IPC receives only a count, never a
+  credential or vault reference.
+- OAuth ends its App Server process before attempting to delete the isolated
+  profile. Failure to remove that plaintext profile is reported as failure,
+  not hidden by its destructor.
+- A damaged metadata store, unavailable/locked vault, missing metadata secret
+  reference, or incomplete legacy migration blocks mutation. None becomes an
+  empty library or plaintext fallback. Metadata reset preserves the damaged
+  file and never changes `CODEX_HOME/auth.json`. The recovery-only UI disables
+  account intake, switching, quota refresh, reset credits, and Wake until the
+  user explicitly confirms that GSwitch-only reset.
 - Removing a saved account never removes the live Codex login.
 
 Unknown, missing, stale, timed-out, or conflicting state remains unknown. Never
