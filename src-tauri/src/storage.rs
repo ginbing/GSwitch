@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use crate::types::{PendingResetCredit, PendingSwitch, StoredAccount};
 
-const STORE_VERSION: u32 = 3;
+pub const STORE_VERSION: u32 = 4;
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct AccountStore {
@@ -40,7 +40,10 @@ impl Default for AccountStore {
 }
 
 fn default_store_version() -> u32 {
-    STORE_VERSION
+    // Stores written before an explicit version field still contain inline
+    // credentials and therefore must pass through the protected-vault
+    // migration instead of being mistaken for current metadata.
+    0
 }
 
 pub fn load(path: &Path) -> Result<AccountStore, String> {
@@ -193,12 +196,14 @@ mod tests {
             }),
             quota: None,
             reset_credits: None,
+            credential_ref: "account:test".into(),
+            credential_generation: 1,
             credential,
         }
     }
 
     #[test]
-    fn round_trips_complete_credential_document() {
+    fn metadata_store_never_serializes_complete_credential_documents() {
         let path = temp_store_path("roundtrip");
         let credential = json!({
             "tokens": {"access_token": "secret", "refresh_token": "rotate-me"},
@@ -214,8 +219,13 @@ mod tests {
         };
 
         save_atomic(&path, &store).expect("save");
+        let metadata = fs::read_to_string(&path).expect("metadata");
+        assert!(!metadata.contains("secret"));
+        assert!(!metadata.contains("rotate-me"));
+        assert!(!metadata.contains("future_field"));
         let loaded = load(&path).expect("load");
-        assert_eq!(loaded.accounts[0].credential, credential);
+        assert_eq!(loaded.accounts[0].credential, Value::Null);
+        assert_eq!(loaded.accounts[0].credential_ref, "account:test");
 
         let _ = fs::remove_dir_all(path.parent().expect("parent"));
     }
@@ -260,7 +270,7 @@ mod tests {
         .expect("write legacy store");
 
         let loaded = load(&path).expect("load legacy store");
-        assert_eq!(loaded.version, STORE_VERSION);
+        assert_eq!(loaded.version, 0);
         assert_eq!(loaded.accounts.len(), 1);
         assert_eq!(loaded.accounts[0].identity, None);
         assert_eq!(loaded.accounts[0].quota, None);
@@ -285,7 +295,7 @@ mod tests {
     }
 
     #[test]
-    fn preserves_a_pending_reset_credit_for_idempotent_recovery() {
+    fn metadata_store_keeps_only_pending_reset_references() {
         let path = temp_store_path("pending-reset-credit");
         let store = AccountStore {
             version: STORE_VERSION,
@@ -294,6 +304,8 @@ mod tests {
             pending_switch: None,
             pending_reset_credit: Some(PendingResetCredit {
                 account_id: "one".into(),
+                secret_ref: Some("pending-reset-credit:test".into()),
+                secret_generation: 1,
                 credit_id: "provider-private-id".into(),
                 idempotency_key: "7e6dff14-928a-4593-846a-5cae9cf0f9c9".into(),
                 created_at_unix_ms: 123,
@@ -301,16 +313,20 @@ mod tests {
         };
 
         save_atomic(&path, &store).expect("save");
+        let metadata = fs::read_to_string(&path).expect("metadata");
+        assert!(!metadata.contains("provider-private-id"));
+        assert!(!metadata.contains("7e6dff14-928a-4593-846a-5cae9cf0f9c9"));
         let pending = load(&path)
             .expect("load")
             .pending_reset_credit
             .expect("pending reset credit");
         assert_eq!(pending.account_id, "one");
-        assert_eq!(pending.credit_id, "provider-private-id");
         assert_eq!(
-            pending.idempotency_key,
-            "7e6dff14-928a-4593-846a-5cae9cf0f9c9"
+            pending.secret_ref.as_deref(),
+            Some("pending-reset-credit:test")
         );
+        assert!(pending.credit_id.is_empty());
+        assert!(pending.idempotency_key.is_empty());
 
         let _ = fs::remove_dir_all(path.parent().expect("parent"));
     }
