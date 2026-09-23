@@ -1,6 +1,5 @@
-import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { copyFile, mkdir, readFile, readdir, stat, unlink, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
 const version = JSON.parse(await readFile("src-tauri/tauri.conf.json", "utf8")).version;
@@ -26,25 +25,16 @@ const targets = {
 const packageFiles = Object.values(targets).flatMap(({ files }) => files.map(([, file]) => file));
 const signedFiles = packageFiles.filter((file) => !file.endsWith(".dmg"));
 const stagedFiles = [...packageFiles, ...signedFiles.map((file) => `${file}.sig`)];
-const checksumFiles = Object.keys(targets).map((id) => `SHA256SUMS-${id}.txt`);
 const sbomFile = `GSwitch_${version}_sbom.cdx.json`;
+const finalFiles = [...stagedFiles, sbomFile, "latest.json"];
 
 function requireCondition(value, message) {
   if (!value) throw new Error(message);
 }
 
-async function sha256(path) {
-  const content = await readFile(path);
-  return createHash("sha256").update(content).digest("hex");
-}
-
 async function requireFile(path) {
   const info = await stat(path);
   requireCondition(info.isFile() && info.size > 0, `Missing or empty release asset: ${path}`);
-}
-
-function checksumLine(digest, file) {
-  return `${digest}  ${file}`;
 }
 
 async function stage(id, destination) {
@@ -55,14 +45,11 @@ async function stage(id, destination) {
     [join(target.base, folder, sourceName), file],
     ...(!file.endsWith(".dmg") ? [[join(target.base, folder, `${sourceName}.sig`), `${file}.sig`]] : []),
   ]);
-  const hashes = [];
   for (const [source, file] of files) {
     await requireFile(source);
     const output = join(destination, file);
     await copyFile(source, output);
-    hashes.push(checksumLine(await sha256(output), file));
   }
-  await writeFile(join(destination, `SHA256SUMS-${id}.txt`), `${hashes.join("\n")}\n`);
   console.log(`Staged ${id}: ${files.map(([, file]) => file).join(", ")}`);
 }
 
@@ -86,20 +73,6 @@ async function sign(id) {
     requireCondition(signed.status === 0, `Could not sign final bytes of ${file}`);
     await signature(".", source);
   }
-}
-
-async function verifyChecksums(directory, checksum) {
-  const lines = (await readFile(join(directory, checksum), "utf8")).trim().split("\n");
-  const found = new Set();
-  for (const line of lines) {
-    const match = /^([0-9a-f]{64})  ([^/\\]+)$/.exec(line);
-    requireCondition(match, `Malformed checksum in ${checksum}`);
-    const [, expected, file] = match;
-    requireCondition(!found.has(file), `Duplicate checksum for ${file}`);
-    found.add(file);
-    requireCondition(await sha256(join(directory, file)) === expected, `Digest mismatch for ${file}`);
-  }
-  return found;
 }
 
 async function signature(directory, file) {
@@ -154,31 +127,18 @@ async function requireExactFiles(directory, expected) {
 async function assemble(directory, tag, repository) {
   requireCondition(tag === `v${version}`, `Release tag ${tag} does not match ${version}`);
   requireCondition(/^[\w.-]+\/[\w.-]+$/.test(repository), "Invalid GitHub repository");
-  await requireExactFiles(directory, [...stagedFiles, ...checksumFiles, sbomFile]);
-  for (const checksum of checksumFiles) {
-    const found = await verifyChecksums(directory, checksum);
-    const id = checksum.slice("SHA256SUMS-".length, -".txt".length);
-    const expected = targets[id].files.flatMap(([, file]) => [file, ...(!file.endsWith(".dmg") ? [`${file}.sig`] : [])]);
-    requireCondition(JSON.stringify([...found].sort()) === JSON.stringify(expected.sort()), `Incomplete ${checksum}`);
-  }
+  await requireExactFiles(directory, [...stagedFiles, sbomFile]);
   await validateSbom(directory);
   const platforms = await expectedPlatforms(directory, repository, tag);
   const latest = { version, notes: "", pub_date: new Date().toISOString(), platforms };
   await writeFile(join(directory, "latest.json"), `${JSON.stringify(latest, null, 2)}\n`);
-  for (const checksum of checksumFiles) await unlink(join(directory, checksum));
-  const files = [...stagedFiles, sbomFile, "latest.json"].sort();
-  const hashes = await Promise.all(files.map(async (file) => checksumLine(await sha256(join(directory, file)), file)));
-  await writeFile(join(directory, "SHA256SUMS.txt"), `${hashes.join("\n")}\n`);
   await verify(directory, tag, repository);
-  console.log(`Assembled ${files.length + 1} final assets for ${tag}`);
+  console.log(`Assembled ${finalFiles.length} final assets for ${tag}`);
 }
 
 async function verify(directory, tag, repository) {
   requireCondition(tag === `v${version}`, `Release tag ${tag} does not match ${version}`);
-  await requireExactFiles(directory, [...stagedFiles, sbomFile, "latest.json", "SHA256SUMS.txt"]);
-  const found = await verifyChecksums(directory, "SHA256SUMS.txt");
-  const expected = [...stagedFiles, sbomFile, "latest.json"].sort();
-  requireCondition(JSON.stringify([...found].sort()) === JSON.stringify(expected), "Incomplete release checksum set");
+  await requireExactFiles(directory, finalFiles);
   await validateSbom(directory);
   const latest = JSON.parse(await readFile(join(directory, "latest.json"), "utf8"));
   requireCondition(latest.version === version && !Number.isNaN(Date.parse(latest.pub_date)), "Invalid updater version or publication date");

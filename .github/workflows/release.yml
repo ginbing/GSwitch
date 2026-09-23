@@ -208,7 +208,7 @@ jobs:
           test "$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" = true
           mkdir downloaded-release-assets
           gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --dir downloaded-release-assets
-      - name: Verify draft set, hashes, and updater manifest
+      - name: Verify draft set and updater manifest
         run: node scripts/release-assets.mjs verify downloaded-release-assets "$GITHUB_REF_NAME" "$GITHUB_REPOSITORY"
       - name: Verify provenance of downloaded assets
         env:
