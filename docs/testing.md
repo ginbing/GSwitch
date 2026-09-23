@@ -110,6 +110,12 @@ as applicable:
   source on explicit reset, and leaving unrelated live Codex files untouched;
 - external or uninspectable Codex runtimes blocking sensitive mutation;
 - current live credentials being reconciled before replacement;
+- Add current account using a read-only ChatGPT access-token snapshot without
+  managed refresh or live-file writes, preserving unknown credential fields,
+  matching account/workspace identity, revalidating one same-identity newer
+  live document, and rejecting identity changes or another update; an external
+  Codex process must not block this read/save path, while API-key behavior stays
+  on its existing non-refreshing path;
 - switch process rejection happening before target-network validation and the
   process/fingerprint checks running again before live replacement;
 - a valid ChatGPT switch snapshot using one read-only account check without

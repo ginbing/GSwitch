@@ -80,38 +80,58 @@ pub fn live_account(state: &AppState) -> Result<LiveAccountView, String> {
 }
 
 pub fn save_current_account(state: &AppState) -> Result<AccountView, String> {
+    let codex_home = codex::codex_home()?;
+    save_current_account_at(state, &codex_home, ChatGptClient::new)
+}
+
+fn save_current_account_at<F>(
+    state: &AppState,
+    codex_home: &std::path::Path,
+    make_chatgpt_client: F,
+) -> Result<AccountView, String>
+where
+    F: FnOnce() -> Result<ChatGptClient, String>,
+{
     let operation = state.acquire_operation()?;
     ensure_ready_for_credential_operation(state, &operation)?;
 
-    let codex_home = codex::codex_home()?;
-    // Saving never writes the live profile, so an external Codex process is
-    // not a reason to reject it. Validate a copy in a GSwitch-owned profile,
-    // then make sure the live identity did not change before committing only
-    // to GSwitch's account library.
-    require_file_store(&codex_home)?;
-    let original_credential = codex::read_optional_auth_document(&codex_home)?
+    // This action never writes the live profile. In particular, a running
+    // Codex process must not turn a read/save operation into token refresh.
+    require_file_store(codex_home)?;
+    let original_credential = codex::read_optional_auth_document(codex_home)?
         .ok_or_else(|| "Codex is not signed in with a file-backed credential".to_string())?;
     let kind = document_kind(&original_credential)?;
     let identity = derive_identity(&kind, &original_credential)?;
-    let temporary = TempCodexHome::create(&state.isolated_profile_root()?)?;
-    temporary.write_auth(&original_credential)?;
-    let mut server = AppServer::start(&temporary.path)?;
-    let metadata = account_metadata(&server.account_read(2, kind == AccountKind::ChatGpt)?)?;
-    ensure_metadata_kind(&metadata, &kind)?;
-    let credential = temporary.read_auth()?;
-    ensure_credential_identity(
-        &credential,
-        &kind,
-        &identity,
-        "Codex did not confirm the current account identity",
-    )?;
-    let current_credential = codex::read_auth_document(&codex_home)?;
-    ensure_credential_identity(
-        &current_credential,
-        &kind,
-        &identity,
-        "Codex credentials changed while saving the current account",
-    )?;
+    let (metadata, credential) = match kind {
+        AccountKind::ChatGpt => save_current_chatgpt_snapshot(
+            codex_home,
+            original_credential,
+            &identity,
+            &make_chatgpt_client()?,
+        )?,
+        AccountKind::ApiKey => {
+            let temporary = TempCodexHome::create(&state.isolated_profile_root()?)?;
+            temporary.write_auth(&original_credential)?;
+            let mut server = AppServer::start(&temporary.path)?;
+            let metadata = account_metadata(&server.account_read(2, false)?)?;
+            ensure_metadata_kind(&metadata, &kind)?;
+            let credential = temporary.read_auth()?;
+            ensure_credential_identity(
+                &credential,
+                &kind,
+                &identity,
+                "Codex did not confirm the current account identity",
+            )?;
+            let current_credential = codex::read_auth_document(codex_home)?;
+            ensure_credential_identity(
+                &current_credential,
+                &kind,
+                &identity,
+                "Codex credentials changed while saving the current account",
+            )?;
+            (metadata, credential)
+        }
+    };
     let default_label = metadata
         .email
         .clone()
@@ -147,6 +167,49 @@ pub fn save_current_account(state: &AppState) -> Result<AccountView, String> {
         };
     }
     result
+}
+
+fn save_current_chatgpt_snapshot(
+    codex_home: &std::path::Path,
+    original: Value,
+    identity: &AccountIdentity,
+    client: &ChatGptClient,
+) -> Result<(AccountMetadata, Value), String> {
+    let mut snapshot = original;
+    for attempt in 0..=1 {
+        let response = client
+            .account_check(&snapshot)
+            .map_err(|_| "ChatGPT could not validate the current account snapshot".to_string())?;
+        chatgpt::validate_response_identity(&snapshot, identity, &response)?;
+        let projection = chatgpt::normalize_account_metadata(&snapshot, identity, &response)?;
+
+        // Codex may rotate its own credential while the provider request is in
+        // flight. Never save the older copy or validate a newer copy by proxy.
+        let live = codex::read_auth_document(codex_home)?;
+        ensure_credential_identity(
+            &live,
+            &AccountKind::ChatGpt,
+            identity,
+            "Codex credentials changed while saving the current account",
+        )?;
+        if live == snapshot {
+            return Ok((
+                AccountMetadata {
+                    kind: AccountKind::ChatGpt,
+                    email: projection.email,
+                    plan_type: projection.plan_type,
+                    workspace_name: projection.workspace_name,
+                    account_structure: projection.account_structure,
+                },
+                live,
+            ));
+        }
+        if attempt == 1 {
+            return Err("Codex credentials changed again while saving the current account".into());
+        }
+        snapshot = live;
+    }
+    unreachable!("the bounded snapshot check always returns")
 }
 
 /// Changes only Codex's official setting. It never extracts a keyring or
@@ -832,6 +895,51 @@ mod tests {
         (format!("http://{address}"), handle)
     }
 
+    fn current_account_state(
+        credential: &Value,
+    ) -> (AppState, std::path::PathBuf, std::path::PathBuf) {
+        let root = std::env::temp_dir().join(format!("gswitch-current-{}", uuid::Uuid::new_v4()));
+        let codex_home = root.join("codex-home");
+        fs::create_dir_all(&codex_home).expect("Codex home");
+        fs::write(
+            codex_home.join("config.toml"),
+            "cli_auth_credentials_store = \"file\"\n",
+        )
+        .expect("file-backed configuration");
+        codex::write_auth_document(&codex_home, credential).expect("live credential");
+        let state = AppState::new(root.join("accounts.json")).expect("state");
+        (state, codex_home, root)
+    }
+
+    fn current_account_check_sequence(
+        codex_home: std::path::PathBuf,
+        steps: Vec<(u16, &'static str, Option<Value>)>,
+    ) -> (String, std::thread::JoinHandle<Vec<String>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
+        let address = listener.local_addr().expect("address");
+        let handle = std::thread::spawn(move || {
+            let mut requests = Vec::new();
+            for (status, body, next_live) in steps {
+                let (mut stream, _) = listener.accept().expect("request");
+                let mut buffer = [0; 4096];
+                let size = stream.read(&mut buffer).expect("read request");
+                requests.push(String::from_utf8_lossy(&buffer[..size]).to_string());
+                if let Some(next_live) = next_live {
+                    codex::write_auth_document(&codex_home, &next_live)
+                        .expect("Codex-owned live rotation");
+                }
+                let reason = if status == 200 { "OK" } else { "Error" };
+                let response = format!(
+                    "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).expect("response");
+            }
+            requests
+        });
+        (format!("http://{address}"), handle)
+    }
+
     #[test]
     fn rejects_a_managed_credential_store_origin() {
         let config = json!({
@@ -873,6 +981,164 @@ mod tests {
                 .expect_err("different account"),
             "changed"
         );
+    }
+
+    #[test]
+    fn current_chatgpt_snapshot_saves_exact_live_document_without_managed_refresh() {
+        let mut original = credential("user", "workspace", "access-token");
+        original["tokens"]["refresh_token"] = json!("codex-owned-refresh");
+        original["future_field"] = json!({"keep": [1, "unknown"]});
+        let (state, codex_home, root) = current_account_state(&original);
+        let live_before = fs::read(codex::auth_path(&codex_home)).expect("live bytes");
+        let (base_url, server) = account_check_server(
+            200,
+            r#"{"accounts":[{"id":"workspace","name":"Personal","structure":"personal","plan_type":"plus"}]}"#,
+        );
+        let account = save_current_account_at(&state, &codex_home, || {
+            ChatGptClient::with_base_url(&base_url)
+        })
+        .expect("save current ChatGPT account");
+        let request = server.join().expect("account check");
+        assert!(request.starts_with("GET /wham/accounts/check HTTP/1.1"));
+        assert!(request.contains("authorization: Bearer access-token"));
+        assert_eq!(
+            fs::read(codex::auth_path(&codex_home)).expect("live bytes"),
+            live_before
+        );
+        assert_eq!(
+            state.account_by_id(&account.id).expect("saved").credential,
+            original
+        );
+        assert_eq!(account.workspace_name.as_deref(), Some("Personal"));
+        assert_eq!(account.plan_type.as_deref(), Some("plus"));
+        assert!(!state
+            .isolated_profile_root()
+            .expect("profile root")
+            .exists());
+        drop(state);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn current_chatgpt_snapshot_revalidates_one_newer_same_identity_document() {
+        let original = credential("user", "workspace", "old-access");
+        let mut newer = credential("user", "workspace", "new-access");
+        newer["tokens"]["refresh_token"] = json!("new-codex-owned-refresh");
+        newer["future_field"] = json!({"survives": true});
+        let (state, codex_home, root) = current_account_state(&original);
+        let (base_url, server) = current_account_check_sequence(
+            codex_home.clone(),
+            vec![
+                (
+                    200,
+                    r#"{"accounts":[{"id":"workspace","name":"Old"}]}"#,
+                    Some(newer.clone()),
+                ),
+                (
+                    200,
+                    r#"{"accounts":[{"id":"workspace","name":"New"}]}"#,
+                    None,
+                ),
+            ],
+        );
+        let account = save_current_account_at(&state, &codex_home, || {
+            ChatGptClient::with_base_url(&base_url)
+        })
+        .expect("save newest live credential");
+        let requests = server.join().expect("account checks");
+        assert_eq!(requests.len(), 2);
+        assert!(requests[0].contains("authorization: Bearer old-access"));
+        assert!(requests[1].contains("authorization: Bearer new-access"));
+        assert_eq!(
+            state.account_by_id(&account.id).expect("saved").credential,
+            newer
+        );
+        assert_eq!(account.workspace_name.as_deref(), Some("New"));
+        drop(state);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn current_chatgpt_snapshot_rejects_a_live_identity_change() {
+        let original = credential("user", "workspace", "old-access");
+        let changed = credential("other-user", "workspace", "different-access");
+        let (state, codex_home, root) = current_account_state(&original);
+        let (base_url, server) = current_account_check_sequence(
+            codex_home.clone(),
+            vec![(
+                200,
+                r#"{"accounts":[{"id":"workspace"}]}"#,
+                Some(changed.clone()),
+            )],
+        );
+        let error = save_current_account_at(&state, &codex_home, || {
+            ChatGptClient::with_base_url(&base_url)
+        })
+        .expect_err("identity changed");
+        assert_eq!(
+            error,
+            "Codex credentials changed while saving the current account"
+        );
+        assert_eq!(server.join().expect("account check").len(), 1);
+        assert!(state.list().expect("accounts").is_empty());
+        assert_eq!(
+            codex::read_auth_document(&codex_home).expect("live"),
+            changed
+        );
+        drop(state);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn current_chatgpt_snapshot_rejects_a_workspace_mismatch_without_saving() {
+        let original = credential("user", "workspace", "access-token");
+        let (state, codex_home, root) = current_account_state(&original);
+        let (base_url, server) = account_check_server(
+            200,
+            r#"{"accounts":[{"id":"different-workspace","name":"Wrong"}]}"#,
+        );
+        let error = save_current_account_at(&state, &codex_home, || {
+            ChatGptClient::with_base_url(&base_url)
+        })
+        .expect_err("workspace mismatch");
+        assert_eq!(
+            error,
+            "ChatGPT did not return the expected account workspace"
+        );
+        server.join().expect("account check");
+        assert!(state.list().expect("accounts").is_empty());
+        drop(state);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn current_chatgpt_auth_failure_never_starts_managed_refresh() {
+        let original = credential("user", "workspace", "access-token");
+        let (state, codex_home, root) = current_account_state(&original);
+        let (base_url, server) = account_check_server(401, r#"{}"#);
+        let error = save_current_account_at(&state, &codex_home, || {
+            ChatGptClient::with_base_url(&base_url)
+        })
+        .expect_err("read-only failure");
+        assert_eq!(
+            error,
+            "ChatGPT could not validate the current account snapshot"
+        );
+        assert_eq!(
+            server
+                .join()
+                .expect("account check")
+                .matches("GET ")
+                .count(),
+            1
+        );
+        assert!(state.list().expect("accounts").is_empty());
+        assert!(!state
+            .isolated_profile_root()
+            .expect("profile root")
+            .exists());
+        drop(state);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
