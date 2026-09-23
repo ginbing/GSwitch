@@ -59,6 +59,11 @@ The CI workflow has read-only repository permissions. A passing CI run proves
 that the checked-in revision passed those commands on those runners; it does
 not publish or release anything.
 
+The `main` ruleset requires the current pull request revision's Frontend,
+Windows build, macOS build, Linux build, Dependency review, RustSec, and CodeQL
+Actions/JavaScript-TypeScript/Rust checks. Review conversations must be resolved.
+GitHub enforces this gate before merge; local checks remain fast feedback.
+
 CI also runs GitHub dependency review on pull requests (moderate-or-higher
 advisories in runtime, development, or unknown scopes) and RustSec's
 `cargo-audit` against `src-tauri/Cargo.lock`. The dependency check deliberately
