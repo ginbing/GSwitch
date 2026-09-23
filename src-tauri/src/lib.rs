@@ -11,6 +11,7 @@ mod runtime;
 mod storage;
 mod switching;
 mod types;
+mod vault;
 mod wake;
 
 use tauri::Manager;
@@ -33,6 +34,7 @@ pub fn run() {
             commands::get_app_snapshot,
             commands::list_accounts,
             commands::reset_damaged_account_store,
+            commands::recover_pending_credentials,
             commands::start_oauth_login,
             commands::get_oauth_login_status,
             commands::cancel_oauth_login,

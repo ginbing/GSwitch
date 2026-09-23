@@ -209,7 +209,7 @@ pub(crate) fn refresh_via_managed_profile_for_wake(
     account: &StoredAccount,
     identity: &AccountIdentity,
 ) -> Result<ManagedQuotaRefresh, String> {
-    let mut temporary = TempCodexHome::create(&state.isolated_profile_root()?)?;
+    let temporary = TempCodexHome::create(&state.isolated_profile_root()?)?;
     temporary.write_auth(&account.credential)?;
     let mut server = AppServer::start(&temporary.path)?;
     let result = server.rate_limits_read(1)?;
@@ -230,7 +230,6 @@ pub(crate) fn refresh_via_managed_profile_for_wake(
         &refreshed_credential,
         snapshot.clone(),
         normalized.reset_credits,
-        &mut temporary,
     )?;
     Ok(ManagedQuotaRefresh {
         credential: refreshed_credential,
@@ -253,7 +252,7 @@ pub fn redeem_earliest_reset_credit(
     }
     let identity = verified_chatgpt_identity(&account)?;
 
-    let mut temporary = TempCodexHome::create(&state.isolated_profile_root()?)?;
+    let temporary = TempCodexHome::create(&state.isolated_profile_root()?)?;
     temporary.write_auth(&account.credential)?;
     let mut server = AppServer::start(&temporary.path)?;
 
@@ -271,7 +270,6 @@ pub fn redeem_earliest_reset_credit(
         &preflight_credential,
         normalized.snapshot.clone(),
         normalized.reset_credits.clone(),
-        &mut temporary,
     )?;
 
     let pending = match state.pending_reset_credit_under_operation(&operation)? {
@@ -288,6 +286,8 @@ pub fn redeem_earliest_reset_credit(
                     .clone();
             let pending = PendingResetCredit {
                 account_id: account.id.clone(),
+                secret_ref: None,
+                secret_generation: 0,
                 credit_id,
                 idempotency_key: Uuid::new_v4().to_string(),
                 created_at_unix_ms: now_unix_ms(),
@@ -320,10 +320,20 @@ pub fn redeem_earliest_reset_credit(
         }
     };
     if ensure_reset_credential_identity(&refreshed_credential, &identity).is_err() {
-        temporary.retain_for_recovery();
+        let recovery_retained = state
+            .record_pending_credential_for_identity(
+                &operation,
+                &refreshed_credential,
+                Some(&identity),
+            )
+            .is_ok();
         result.refresh_warning = Some(
-            "The reset result was confirmed, but GSwitch could not confirm refreshed credentials. A protected recovery copy was retained."
-                .to_string(),
+            if recovery_retained {
+                "The reset result was confirmed, but GSwitch could not confirm refreshed credentials. A protected recovery copy was retained."
+            } else {
+                "The reset result was confirmed, but GSwitch could not confirm refreshed credentials or write protected recovery. The temporary profile was removed."
+            }
+            .to_string(),
         );
         return Ok(result);
     }
@@ -344,7 +354,6 @@ pub fn redeem_earliest_reset_credit(
         &refreshed_credential,
         snapshot_after_result,
         normalized.reset_credits,
-        &mut temporary,
     ) {
         result.refresh_warning = Some(format!(
             "The reset result was confirmed, but {error} Retry recovery before another reset."
@@ -368,7 +377,7 @@ pub fn redeem_earliest_reset_credit(
         &account,
         &identity,
         &mut server,
-        &mut temporary,
+        &temporary,
     );
     result.quota = quota;
     result.refresh_warning = warning;
@@ -394,7 +403,7 @@ fn refresh_after_confirmed_reset(
     account: &StoredAccount,
     identity: &AccountIdentity,
     server: &mut AppServer,
-    temporary: &mut TempCodexHome,
+    temporary: &TempCodexHome,
 ) -> (Option<QuotaView>, Option<String>) {
     let provider_state = match server.rate_limits_read(4) {
         Ok(value) => value,
@@ -421,12 +430,18 @@ fn refresh_after_confirmed_reset(
         }
     };
     if ensure_reset_credential_identity(&credential, identity).is_err() {
-        temporary.retain_for_recovery();
+        let recovery_retained = state
+            .record_pending_credential_for_identity(operation, &credential, Some(identity))
+            .is_ok();
         return (
             None,
             Some(
-                "The reset result was confirmed, but GSwitch could not confirm refreshed credentials. A protected recovery copy was retained."
-                    .to_string(),
+                if recovery_retained {
+                    "The reset result was confirmed, but GSwitch could not confirm refreshed credentials. A protected recovery copy was retained."
+                } else {
+                    "The reset result was confirmed, but GSwitch could not confirm refreshed credentials or write protected recovery. The temporary profile was removed."
+                }
+                .to_string(),
             ),
         );
     }
@@ -440,7 +455,6 @@ fn refresh_after_confirmed_reset(
         &credential,
         snapshot.clone(),
         normalized.reset_credits,
-        temporary,
     ) {
         Ok(()) => (
             Some(view_from_snapshot(&account.id, snapshot, now_unix_ms())),
@@ -472,7 +486,6 @@ pub(crate) fn persist_refreshed_credential_and_quota(
     credential: &Value,
     snapshot: QuotaSnapshot,
     reset_credits: Option<StoredResetCredits>,
-    temporary: &mut TempCodexHome,
 ) -> Result<(), String> {
     if state
         .update_credential_and_quota_under_operation(
@@ -489,16 +502,14 @@ pub(crate) fn persist_refreshed_credential_and_quota(
 
     if state
         .record_pending_credential(operation, credential)
-        .is_err()
+        .is_ok()
     {
-        // Keep the isolated profile only as a last-resort protected recovery
-        // copy. It remains outside the WebView and is not a backup system.
-        temporary.retain_for_recovery();
+        return Err(
+            "GSwitch could not save refreshed credentials. A protected recovery copy was retained."
+                .to_string(),
+        );
     }
-    Err(
-        "GSwitch could not save refreshed credentials. A protected recovery copy was retained."
-            .to_string(),
-    )
+    Err("GSwitch could not save refreshed credentials or write protected recovery. The temporary profile was removed.".to_string())
 }
 
 pub(crate) fn verified_chatgpt_identity(

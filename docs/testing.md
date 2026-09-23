@@ -65,6 +65,28 @@ Credential and state work should cover the exact affected boundary, including
 as applicable:
 
 - complete credential-document preservation, including unknown fields;
+- encrypted-vault round-trip of unknown credential fields, metadata JSON with
+  no token, reset ID, idempotency key, rollback auth, or recovery credential;
+- native credential storage unavailable, missing secret references, and
+  incomplete legacy migration failing closed without an empty library or
+  plaintext fallback;
+- version-3 inline-store migration, restart-safe vault hydration, stable
+  identity preservation, unversioned legacy migration, pending-recovery import,
+  and same-identity token rotation advancing generation without duplicate
+  profiles or retaining the retired secret generation;
+- simulated interrupted migration, vault-write failure preserving the only
+  legacy source, metadata-commit failure preserving the old readable secret,
+  concurrent startup migration waiting on the operation lock, missing vault
+  references, and inline switch recovery failing closed;
+- protected switch rollback and reset-credit material round-tripping through
+  the vault without appearing in `accounts.json`, plus saved-account removal
+  leaving the live Codex file untouched;
+- isolated App Server profile cleanup through unconditional scope cleanup;
+- OAuth App Server-before-profile teardown and explicit cleanup errors,
+  including a Windows-exclusive `auth.json` handle fixture;
+- encrypted pending-credential replay after restart, generation mismatch
+  refusal, intended-identity mismatch refusal, failed-commit retry, missing
+  queue material fail-closed, and count-only IPC;
 - stable identity matching and workspace separation;
 - reauthentication replacing the correct saved profile;
 - single-operation and cross-process serialization;
