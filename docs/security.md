@@ -63,12 +63,17 @@ GSwitch-owned isolated App Server children are scoped to their operation and
 excluded only from that operation's external-process check. They are terminated
 when the operation ends.
 
-Saving the current file-backed account does not replace or rewrite live
-credentials. It copies the document into an isolated GSwitch profile for
-validation, checks that the live identity is still the same, and then writes
-only GSwitch-owned account storage. It remains available while Codex is
-running. Switching and every other live credential mutation retain the external
-process guard.
+Saving the current file-backed ChatGPT account uses the live access-token
+snapshot for a Rust-only read-only account check. It matches the returned
+workspace to the locally derived stable identity, rereads the live credential
+before saving, and revalidates once if Codex has written a newer document for
+the same identity. A changed identity or another change aborts. The action
+never rewrites live `auth.json` or starts an isolated managed refresh, so it
+remains available while Codex is running. Copying a live credential into an
+isolated profile would not preserve refresh-token ownership if that profile
+requested a managed refresh. API-key intake retains its existing isolated
+non-refreshing check; switching and other live credential mutations retain the
+external-process guard.
 
 ## Storage and concurrency
 

@@ -114,6 +114,20 @@ GSwitch inspects the effective Codex credential-store policy and current live
 identity. If the current identity is unknown to GSwitch, it is user data: show
 it as an unsaved current account and offer to save it before any replacement.
 
+**Add current account** reads a file-backed ChatGPT credential and derives its
+stable user/workspace identity locally. A read-only account check uses that
+access-token snapshot; the returned workspace must match. Before saving the
+complete live document and non-secret account metadata, GSwitch rereads the
+live credential. If Codex has written a newer document for the same identity,
+it retries the read-only check once with that snapshot; an identity change or
+another update aborts. It never requests a managed refresh, even when the
+read-only check returns an authentication error. Copying the live document to
+an isolated profile would not make such a refresh safe: it could rotate the
+provider's refresh-token chain while Codex still owns the live credential.
+This read/save action remains available while Codex is running and never writes
+live `auth.json`. API-key current-account intake keeps its existing isolated
+non-refreshing account read.
+
 Switching requires an effective file-backed credential store. Any supported
 change to that policy is explicit, preserves other Codex configuration, checks
 the effective configuration through Codex, and refuses managed, keyring-only,
