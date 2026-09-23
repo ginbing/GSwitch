@@ -68,6 +68,12 @@ Actions use full commit SHAs with version comments. Rust and Node versions are
 owned by `rust-toolchain.toml` and `.node-version`; pnpm is owned by
 `package.json`'s `packageManager`.
 
+Renovate's [Dependency Dashboard](https://github.com/ginbing/GSwitch/issues/110)
+is the intake queue for routine npm, Cargo, and GitHub Actions updates. A
+routine update creates a branch only after dashboard approval. Renovate opens
+security remediation PRs immediately, without automerge; GitHub Dependabot
+Alerts remain a signal but Dependabot Security Updates PRs are disabled.
+
 GitHub CodeQL default setup, rather than a repository workflow, scans Actions,
 JavaScript/TypeScript, and Rust. Its effective language list and the
 repository's SHA-pinning policy must be read from GitHub when making a claim
