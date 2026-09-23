@@ -2,8 +2,7 @@ name: Release
 
 on:
   push:
-    tags:
-      - "v*"
+    tags: ["v*"]
 
 permissions:
   contents: read
@@ -13,65 +12,51 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
       - uses: pnpm/action-setup@f520eceda224fe1a4aed5a2a27a194379a409996 # v6
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version-file: .node-version
           cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - name: Require the tag to match the application version
+      - name: Require the exact merged main commit and matching version
         run: |
+          git fetch origin main --depth=1
+          test "$GITHUB_SHA" = "$(git rev-parse FETCH_HEAD)"
           version="$(node -p "require('./src-tauri/tauri.conf.json').version")"
           test "$GITHUB_REF_NAME" = "v$version"
-      - name: Require signed updater configuration
+      - name: Require updater signing configuration
         env:
           TAURI_UPDATER_PUBLIC_KEY: ${{ vars.TAURI_UPDATER_PUBLIC_KEY }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         run: |
-          test -n "$TAURI_UPDATER_PUBLIC_KEY" || { echo "Missing required release variable: TAURI_UPDATER_PUBLIC_KEY" >&2; exit 1; }
-          test -n "$TAURI_SIGNING_PRIVATE_KEY" || { echo "Missing required release secret: TAURI_SIGNING_PRIVATE_KEY" >&2; exit 1; }
+          test -n "$TAURI_UPDATER_PUBLIC_KEY" || { echo 'Missing TAURI_UPDATER_PUBLIC_KEY' >&2; exit 1; }
+          test -n "$TAURI_SIGNING_PRIVATE_KEY" || { echo 'Missing TAURI_SIGNING_PRIVATE_KEY' >&2; exit 1; }
+      - run: pnpm install --frozen-lockfile
       - run: pnpm run version:check
       - run: pnpm test
       - run: pnpm build
+      - run: node --test scripts/release-assets.nodecheck.mjs
 
   build:
     needs: prepare
-    permissions:
-      contents: write
     strategy:
       fail-fast: false
       matrix:
         include:
-          - id: windows
-            os: windows-latest
-            args: --bundles nsis
-            rust_targets: ""
-          - id: macos-silicon
-            os: macos-latest
-            args: --target aarch64-apple-darwin --bundles app,dmg
-            rust_targets: aarch64-apple-darwin
-          - id: macos-intel
-            os: macos-latest
-            args: --target x86_64-apple-darwin --bundles app,dmg
-            rust_targets: x86_64-apple-darwin
-          - id: linux
-            os: ubuntu-22.04
-            args: --bundles appimage,deb
-            rust_targets: ""
+          - { id: windows, os: windows-latest, args: "--bundles nsis", rust_targets: "" }
+          - { id: macos-silicon, os: macos-latest, args: "--target aarch64-apple-darwin --bundles app,dmg", rust_targets: aarch64-apple-darwin }
+          - { id: macos-intel, os: macos-latest, args: "--target x86_64-apple-darwin --bundles app,dmg", rust_targets: x86_64-apple-darwin }
+          - { id: linux, os: ubuntu-22.04, args: "--bundles appimage,deb", rust_targets: "" }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Install Linux bundle prerequisites
         if: matrix.id == 'linux'
         run: >-
-          sudo apt-get update &&
-          sudo apt-get install -y
-          libwebkit2gtk-4.1-dev
-          libgtk-3-dev
-          libappindicator3-dev
-          librsvg2-dev
-          patchelf
-          xdg-utils
+          sudo apt-get update && sudo apt-get install -y
+          libwebkit2gtk-4.1-dev libgtk-3-dev libappindicator3-dev
+          librsvg2-dev patchelf xdg-utils
       - uses: pnpm/action-setup@f520eceda224fe1a4aed5a2a27a194379a409996 # v6
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
@@ -83,7 +68,7 @@ jobs:
         if: matrix.rust_targets != ''
         run: rustup target add ${{ matrix.rust_targets }}
       - run: pnpm install --frozen-lockfile
-      - name: Prepare the signed updater configuration
+      - name: Prepare signed updater configuration
         env:
           TAURI_UPDATER_PUBLIC_KEY: ${{ vars.TAURI_UPDATER_PUBLIC_KEY }}
         run: node scripts/write-updater-config.mjs
@@ -93,38 +78,151 @@ jobs:
       - run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
       - run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
       - run: cargo test --manifest-path src-tauri/Cargo.toml --locked
-      - uses: tauri-apps/tauri-action@944946e3e4cac6603d1fe8f514171e9ecd3c78aa # v1
+      - name: Build local release bundles
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: pnpm tauri build --config src-tauri/tauri.updater.conf.json ${{ matrix.args }}
+      - name: Smoke test Windows installer
+        if: matrix.id == 'windows'
+        shell: pwsh
+        run: ./scripts/smoke-release-windows.ps1
+      - name: Smoke test macOS bundles
+        if: startsWith(matrix.id, 'macos-')
+        shell: bash
+        run: bash scripts/smoke-release-macos.sh '${{ matrix.id }}'
+      - name: Smoke test Linux packages
+        if: matrix.id == 'linux'
+        shell: bash
+        run: bash scripts/smoke-release-linux.sh
+      - name: Sign final updater bytes
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: node scripts/release-assets.mjs sign ${{ matrix.id }}
+      - name: Stage verified platform assets
+        run: node scripts/release-assets.mjs stage ${{ matrix.id }} release-stage
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: GSwitch v__VERSION__
-          releaseDraft: true
-          prerelease: false
-          generateReleaseNotes: true
-          uploadUpdaterJson: true
-          updaterJsonPreferNsis: true
-          args: --config src-tauri/tauri.updater.conf.json ${{ matrix.args }}
+          name: release-${{ matrix.id }}
+          path: release-stage/*
+          if-no-files-found: error
 
-  verify-draft:
+  attest:
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     steps:
-      - name: Verify the complete draft asset set
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: release-assets
+      - uses: pnpm/action-setup@f520eceda224fe1a4aed5a2a27a194379a409996 # v6
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Install Minisign verifier
+        run: sudo apt-get update && sudo apt-get install -y minisign
+      - name: Install pinned Syft
+        id: syft
+        uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          syft-version: v1.52.0
+      - name: Generate CycloneDX SBOM from frozen pnpm and locked Cargo graphs
+        id: sbom
+        run: |
+          version="$(node -p "require('./src-tauri/tauri.conf.json').version")"
+          sbom="release-assets/GSwitch_${version}_sbom.cdx.json"
+          "${{ steps.syft.outputs.cmd }}" scan dir:. \
+            --exclude './node_modules/**' --exclude './.git/**' \
+            --exclude './dist/**' --exclude './src-tauri/target/**' \
+            --exclude './release-assets/**' \
+            --source-name GSwitch --source-version "$version" \
+            -o "cyclonedx-json=$sbom"
+          echo "path=$sbom" >> "$GITHUB_OUTPUT"
+      - name: Verify updater signatures against configured public key
+        env:
+          TAURI_UPDATER_PUBLIC_KEY: ${{ vars.TAURI_UPDATER_PUBLIC_KEY }}
+        run: bash scripts/verify-updater-signatures.sh release-assets
+      - name: Assemble and verify exact final asset set
+        run: |
+          node scripts/release-assets.mjs assemble release-assets "$GITHUB_REF_NAME" "$GITHUB_REPOSITORY"
+          node scripts/release-assets.mjs verify release-assets "$GITHUB_REF_NAME" "$GITHUB_REPOSITORY"
+      - name: Attest exact release assets
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-path: release-assets/*
+      - name: Attest package SBOM
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-path: |
+            release-assets/*.exe
+            release-assets/*.dmg
+            release-assets/*.AppImage
+            release-assets/*.deb
+            release-assets/*.app.tar.gz
+          sbom-path: ${{ steps.sbom.outputs.path }}
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-candidate
+          path: release-assets/*
+          if-no-files-found: error
+
+  upload-draft:
+    needs: attest
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: release-candidate
+          path: release-assets
+      - name: Verify candidate before draft mutation
+        run: node scripts/release-assets.mjs verify release-assets "$GITHUB_REF_NAME" "$GITHUB_REPOSITORY"
+      - name: Create or update draft with exact verified assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          assets="$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')"
-          printf '%s\n' "$assets"
-          test "$(printf '%s\n' "$assets" | grep -Eic 'setup\.exe$')" -eq 1
-          test "$(printf '%s\n' "$assets" | grep -Eic '\.dmg$')" -eq 2
-          test "$(printf '%s\n' "$assets" | grep -Eic '\.AppImage$')" -eq 1
-          test "$(printf '%s\n' "$assets" | grep -Eic '\.deb$')" -eq 1
-          test "$(printf '%s\n' "$assets" | grep -Eic '^latest\.json$')" -eq 1
-          test "$(printf '%s\n' "$assets" | grep -Eic 'setup\.exe\.sig$')" -eq 1
-          test "$(printf '%s\n' "$assets" | grep -Eic 'aarch64\.app\.tar\.gz\.sig$')" -eq 1
-          test "$(printf '%s\n' "$assets" | grep -Eic 'x64\.app\.tar\.gz\.sig$')" -eq 1
-          test "$(printf '%s\n' "$assets" | grep -Eic 'amd64\.AppImage\.sig$')" -eq 1
-          test "$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json isDraft --jq '.isDraft')" = true
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            test "$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" = true
+          else
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+              --draft --generate-notes --title "GSwitch $GITHUB_REF_NAME" --target "$GITHUB_SHA"
+          fi
+          gh release upload "$GITHUB_REF_NAME" release-assets/* --repo "$GITHUB_REPOSITORY" --clobber
+
+  verify-draft:
+    needs: upload-draft
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      attestations: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Download exact draft assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          test "$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" = true
+          mkdir release-assets
+          gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --dir release-assets
+      - name: Verify draft set, hashes, and updater manifest
+        run: node scripts/release-assets.mjs verify release-assets "$GITHUB_REF_NAME" "$GITHUB_REPOSITORY"
+      - name: Verify provenance of downloaded assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          for asset in release-assets/*; do
+            gh attestation verify "$asset" --repo "$GITHUB_REPOSITORY" \
+              --source-digest "$GITHUB_SHA" --source-ref "$GITHUB_REF" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml"
+          done
