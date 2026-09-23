@@ -550,8 +550,10 @@ fn persist_switch_validation(
     let Some(credential) = credential else {
         return Err(switch_failure(SwitchFailureCode::VerificationFailed));
     };
-    let _ = state.record_pending_credential(operation, &credential);
-    Err(switch_failure(SwitchFailureCode::RecoveryRequired))
+    match state.record_pending_credential(operation, &credential) {
+        Ok(()) => Err(switch_failure(SwitchFailureCode::RecoveryRequired)),
+        Err(_) => Err(switch_failure(SwitchFailureCode::AccountNeedsSignIn)),
+    }
 }
 
 fn confirm_already_active(
@@ -948,6 +950,39 @@ mod tests {
             .expect("saved");
         assert_eq!(saved.credential, refreshed_credential);
         server.join().expect("server");
+        drop(operation);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn failed_protected_recovery_reports_sign_in_instead_of_claiming_recovery_exists() {
+        let (state, target, root) = state_with_chatgpt_target();
+        let operation = state.acquire_operation().expect("operation");
+        let store_path = root.join("accounts.json");
+        let vault_path = root.join("credentials.hold");
+
+        fs::remove_file(&store_path).expect("remove metadata file");
+        fs::create_dir(&store_path).expect("block metadata commit");
+        fs::remove_file(&vault_path).expect("remove vault snapshot");
+        fs::create_dir(&vault_path).expect("block protected recovery");
+
+        let metadata = AccountMetadata {
+            kind: AccountKind::ChatGpt,
+            email: Some("person@example.com".into()),
+            plan_type: Some("plus".into()),
+            workspace_name: Some("Updated workspace".into()),
+            account_structure: Some("workspace".into()),
+        };
+        let error = persist_switch_validation(
+            &state,
+            &operation,
+            &target,
+            &metadata,
+            Some(credential("user", "workspace", "rotated-token")),
+        )
+        .expect_err("metadata and protected recovery writes both fail");
+
+        assert_eq!(error.code, SwitchFailureCode::AccountNeedsSignIn);
         drop(operation);
         let _ = fs::remove_dir_all(root);
     }
