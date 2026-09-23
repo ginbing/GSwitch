@@ -25,6 +25,7 @@ import {
 } from "lucide-react";
 import {
   type FormEvent,
+  type KeyboardEvent,
   type ReactNode,
   useCallback,
   useEffect,
@@ -269,19 +270,63 @@ function Modal({
   onClose,
   t,
   wide = false,
+  dismissible = true,
 }: {
   title: string;
   children: ReactNode;
   onClose: () => void;
   t: Translator;
   wide?: boolean;
+  dismissible?: boolean;
 }) {
+  const dialogRef = useRef<HTMLElement>(null);
+
+  useEffect(() => {
+    const previousFocus = document.activeElement;
+    dialogRef.current?.focus();
+    return () => {
+      if (previousFocus instanceof HTMLElement && previousFocus.isConnected) {
+        previousFocus.focus();
+      }
+    };
+  }, []);
+
+  const handleKeyDown = (event: KeyboardEvent<HTMLElement>) => {
+    if (event.key === "Escape") {
+      event.stopPropagation();
+      if (dismissible) onClose();
+      return;
+    }
+    if (event.key !== "Tab") return;
+
+    const controls = Array.from(dialogRef.current?.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), a[href], summary, [tabindex]:not([tabindex="-1"])',
+    ) ?? []).filter((control) => (control.tagName === "SUMMARY" || !control.closest("details:not([open])")) && getComputedStyle(control).visibility !== "hidden");
+    if (controls.length === 0) {
+      event.preventDefault();
+      dialogRef.current?.focus();
+      return;
+    }
+    const first = controls[0];
+    const last = controls[controls.length - 1];
+    if (document.activeElement === dialogRef.current) {
+      event.preventDefault();
+      (event.shiftKey ? last : first).focus();
+    } else if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  };
+
   return (
     <div
       className="modal-backdrop"
       role="presentation"
       onMouseDown={(event) => {
-        if (event.currentTarget === event.target) {
+        if (dismissible && event.currentTarget === event.target) {
           onClose();
         }
       }}
@@ -292,12 +337,17 @@ function Modal({
         className={"modal-card" + (wide ? " modal-wide" : "")}
         role="dialog"
         tabIndex={-1}
+        ref={dialogRef}
+        onKeyDown={handleKeyDown}
       >
         <div className="modal-header">
           <h2 id="modal-title">{title}</h2>
-          <button aria-label={t("common.closeDialog", { title })} className="icon-button" onClick={onClose} type="button">
-            <X size={18} strokeWidth={2} />
-          </button>
+          <div className="modal-header-actions">
+            {!dismissible ? <span className="modal-progress" role="status">{t("common.working")}</span> : null}
+            <button aria-label={t("common.closeDialog", { title })} className="icon-button" disabled={!dismissible} onClick={onClose} type="button">
+              <X size={18} strokeWidth={2} />
+            </button>
+          </div>
         </div>
         {children}
       </section>
@@ -998,16 +1048,6 @@ export default function App() {
     };
   }, [loadSnapshot, t, wake]);
 
-  useEffect(() => {
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && dialog) {
-        setDialog(null);
-      }
-    };
-    window.addEventListener("keydown", closeOnEscape);
-    return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [dialog]);
-
   const startOAuth = async () => {
     const result = await runTask("oauth", api.startOAuth, false);
     if (!result) {
@@ -1346,6 +1386,13 @@ export default function App() {
 
   const currentActiveId = live?.account?.id;
   const liveAccountLabel = live?.account?.label || t("toolbar.currentAccount");
+  const liveStatusLabel = !live ? t("toolbar.statusChecking") : t(({
+    ready: "toolbar.statusReady",
+    not_signed_in: "toolbar.statusSignedOut",
+    unknown_account: "toolbar.statusUnknown",
+    file_store_required: "toolbar.statusFileStore",
+    recovery_required: "toolbar.statusRecovery",
+  } as const)[live.status]);
   const chatGptAccounts = accounts.filter((account) => account.kind === "chat_gpt");
   const selectedChatGptCount = accounts.filter(
     (account) => account.kind === "chat_gpt" && selectedAccountIds.includes(account.id),
@@ -1422,8 +1469,10 @@ export default function App() {
           <div className="brand-copy">
             <h1>GSwitch</h1>
             <p className="brand-status">
-              <span className={live?.status === "ready" ? "status-dot status-ready" : "status-dot"} />
+              <span aria-hidden="true" className={live?.status === "ready" ? "status-dot status-ready" : "status-dot"} />
               <span className="brand-status-label">{liveAccountLabel}</span>
+              <span aria-hidden="true">·</span>
+              <span className="brand-status-state">{liveStatusLabel}</span>
             </p>
           </div>
         </div>
@@ -1637,7 +1686,7 @@ export default function App() {
       </div>
 
       {dialog === "add" ? (
-        <Modal onClose={closeAddDialog} t={t} title={t("add.title")} wide>
+        <Modal dismissible={busy === null} onClose={closeAddDialog} t={t} title={t("add.title")} wide>
           {addMethod === "start" ? (
             <div className="add-methods">
               <section className="add-method-group" aria-labelledby="import-existing-heading">
@@ -1692,7 +1741,7 @@ export default function App() {
 
           {addMethod === "migration" ? (
             <div className="migration-flow">
-              <button className="back-link" onClick={() => setAddMethod("start")} type="button">{t("migration.back")}</button>
+              <button className="back-link" disabled={busy !== null} onClick={() => setAddMethod("start")} type="button">{t("migration.back")}</button>
               <h3>{t("migration.title")}</h3>
               <p>{t("migration.body")}</p>
               {!migrationScanned ? (
@@ -1804,7 +1853,7 @@ export default function App() {
 
           {addMethod === "json" ? (
             <form className="credential-form" onSubmit={submitJson}>
-              <button className="back-link" onClick={() => setAddMethod("start")} type="button">{t("form.allMethods")}</button>
+              <button className="back-link" disabled={busy !== null} onClick={() => setAddMethod("start")} type="button">{t("form.allMethods")}</button>
               <h3>{t("form.pasteTitle")}</h3>
               <p>{t("form.pasteBody")}</p>
               <label className="field-label" htmlFor="account-label">{t("form.displayName")} <span>{t("common.optional")}</span></label>
@@ -1812,7 +1861,7 @@ export default function App() {
               <label className="field-label" htmlFor="auth-json">auth.json</label>
               <textarea id="auth-json" ref={jsonRef} required spellCheck={false} />
               <div className="modal-actions">
-                <button className="button button-secondary" onClick={() => setAddMethod("start")} type="button">{t("common.cancel")}</button>
+                <button className="button button-secondary" disabled={busy !== null} onClick={() => setAddMethod("start")} type="button">{t("common.cancel")}</button>
                 <button className="button button-primary" disabled={busy !== null} type="submit">
                   {busy === "import-json" ? <LoaderCircle className="spin" size={16} /> : <FileJson size={16} />}
                   {t("common.addAccount")}
@@ -1823,7 +1872,7 @@ export default function App() {
 
           {addMethod === "api-key" ? (
             <form className="credential-form" onSubmit={submitApiKey}>
-              <button className="back-link" onClick={() => setAddMethod("start")} type="button">{t("form.allMethods")}</button>
+              <button className="back-link" disabled={busy !== null} onClick={() => setAddMethod("start")} type="button">{t("form.allMethods")}</button>
               <h3>{t("form.apiKeyTitle")}</h3>
               <p>{t("form.apiKeyBody")}</p>
               <label className="field-label" htmlFor="api-label">{t("form.displayName")} <span>{t("common.optional")}</span></label>
@@ -1831,7 +1880,7 @@ export default function App() {
               <label className="field-label" htmlFor="api-key">{t("account.apiKey")}</label>
               <input autoComplete="off" id="api-key" ref={apiKeyRef} required spellCheck={false} type="password" />
               <div className="modal-actions">
-                <button className="button button-secondary" onClick={() => setAddMethod("start")} type="button">{t("common.cancel")}</button>
+                <button className="button button-secondary" disabled={busy !== null} onClick={() => setAddMethod("start")} type="button">{t("common.cancel")}</button>
                 <button className="button button-primary" disabled={busy !== null} type="submit">
                   {busy === "import-key" ? <LoaderCircle className="spin" size={16} /> : <KeyRound size={16} />}
                   {t("common.addAccount")}
@@ -1844,6 +1893,7 @@ export default function App() {
 
       {dialog === "export" ? (
         <Modal
+          dismissible={busy === null}
           onClose={() => {
             setExportConfirmation(false);
             setDialog(null);
@@ -1864,6 +1914,7 @@ export default function App() {
             <div className="modal-actions">
               <button
                 className="button button-secondary"
+                disabled={busy !== null}
                 onClick={() => {
                   setExportConfirmation(false);
                   setDialog(null);
@@ -1887,7 +1938,7 @@ export default function App() {
       ) : null}
 
       {dialog === "settings" ? (
-        <Modal onClose={() => setDialog(null)} t={t} title={t("settings.title")}>
+        <Modal dismissible={busy === null} onClose={() => setDialog(null)} t={t} title={t("settings.title")}>
           <div className="settings-list">
             <div className="settings-language">
               <label htmlFor="language-preference">{t("settings.language")}</label>
@@ -1910,6 +1961,7 @@ export default function App() {
 
       {dialog === "storage-recovery" ? (
         <Modal
+          dismissible={busy === null}
           onClose={() => {
             setStorageResetConfirmation(false);
             setDialog(null);
@@ -1931,6 +1983,7 @@ export default function App() {
             <div className="modal-actions">
               <button
                 className="button button-secondary"
+                disabled={busy !== null}
                 onClick={() => {
                   setStorageResetConfirmation(false);
                   setDialog(null);
@@ -1949,13 +2002,13 @@ export default function App() {
       ) : null}
 
       {dialog === "enable-switching" ? (
-        <Modal onClose={() => setDialog(null)} t={t} title={t("switching.title")}>
+        <Modal dismissible={busy === null} onClose={() => setDialog(null)} t={t} title={t("switching.title")}>
           <div className="confirm-panel">
             <ShieldAlert size={26} />
             <h3>{t("switching.prepare")}</h3>
             <p>{t("switching.body")}</p>
             <div className="modal-actions">
-              <button className="button button-secondary" onClick={() => setDialog(null)} type="button">{t("common.cancel")}</button>
+              <button className="button button-secondary" disabled={busy !== null} onClick={() => setDialog(null)} type="button">{t("common.cancel")}</button>
               <button
                 className="button button-primary"
                 disabled={busy !== null}
@@ -1977,13 +2030,13 @@ export default function App() {
       ) : null}
 
       {dialog === "recover-switch" ? (
-        <Modal onClose={() => setDialog(null)} t={t} title={t("recovery.switchTitle")}>
+        <Modal dismissible={busy === null} onClose={() => setDialog(null)} t={t} title={t("recovery.switchTitle")}>
           <div className="confirm-panel">
             <CircleAlert size={26} />
             <h3>{t("recovery.switchHeading")}</h3>
             <p>{t("recovery.switchBody")}</p>
             <div className="modal-actions">
-              <button className="button button-secondary" onClick={() => setDialog(null)} type="button">{t("common.cancel")}</button>
+              <button className="button button-secondary" disabled={busy !== null} onClick={() => setDialog(null)} type="button">{t("common.cancel")}</button>
               <button
                 className="button button-primary"
                 disabled={busy !== null}
@@ -2005,14 +2058,14 @@ export default function App() {
       ) : null}
 
       {dialog === "recover-reset-credit" ? (
-        <Modal onClose={() => setDialog(null)} t={t} title={t("recovery.resetTitle")}>
+        <Modal dismissible={busy === null} onClose={() => setDialog(null)} t={t} title={t("recovery.resetTitle")}>
           <div className="confirm-panel">
             <CircleAlert size={26} />
             <h3>{t("recovery.resetHeading")}</h3>
             <p>{t("recovery.resetBody")}</p>
             <p>{t("recovery.pendingResetExplanation")}</p>
             <div className="modal-actions">
-              <button className="button button-secondary" onClick={() => setDialog(null)} type="button">{t("common.cancel")}</button>
+              <button className="button button-secondary" disabled={busy !== null} onClick={() => setDialog(null)} type="button">{t("common.cancel")}</button>
               <button
                 className="button button-primary"
                 disabled={busy !== null}
@@ -2029,6 +2082,7 @@ export default function App() {
 
       {dialog === "reset" && resetAccount ? (
         <Modal
+          dismissible={busy === null}
           onClose={() => {
             setResetConfirmation(false);
             setDialog(null);
@@ -2056,7 +2110,7 @@ export default function App() {
               <div className="confirm-copy"><strong>{t("reset.question")}</strong><p>{t("reset.warning")}</p></div>
             ) : null}
             <div className="modal-actions">
-              <button className="button button-secondary" onClick={() => setDialog(null)} type="button">{t("common.cancel")}</button>
+              <button className="button button-secondary" disabled={busy !== null} onClick={() => setDialog(null)} type="button">{t("common.cancel")}</button>
               <button className="button button-danger" disabled={!resetCredits?.can_redeem || busy !== null} onClick={() => void redeemReset()} type="button">
                 {busy?.startsWith("reset:") ? <LoaderCircle className="spin" size={16} /> : <Zap size={16} />}
                 {resetConfirmation ? t("reset.useEarliest") : t("reset.use")}
@@ -2067,13 +2121,13 @@ export default function App() {
       ) : null}
 
       {dialog === "remove" && removeAccount ? (
-        <Modal onClose={() => setDialog(null)} t={t} title={t("remove.title", { name: removeAccount.label })}>
+        <Modal dismissible={busy === null} onClose={() => setDialog(null)} t={t} title={t("remove.title", { name: removeAccount.label })}>
           <div className="confirm-panel">
             <Trash2 size={26} />
             <h3>{t("remove.heading")}</h3>
             <p>{t("remove.body")}</p>
             <div className="modal-actions">
-              <button className="button button-secondary" onClick={() => setDialog(null)} type="button">{t("common.cancel")}</button>
+              <button className="button button-secondary" disabled={busy !== null} onClick={() => setDialog(null)} type="button">{t("common.cancel")}</button>
               <button className="button button-danger" disabled={busy !== null} onClick={() => void removeSavedAccount()} type="button"><Trash2 size={16} />{t("common.removeAccount")}</button>
             </div>
           </div>
@@ -2081,7 +2135,7 @@ export default function App() {
       ) : null}
 
       {dialog === "wake" && wake ? (
-        <Modal onClose={() => setDialog(null)} t={t} title={t("wake.title")}>
+        <Modal dismissible={busy === null} onClose={() => setDialog(null)} t={t} title={t("wake.title")}>
           <div className="wake-panel">
             <div className="wake-status">
               {wake.status === "running" ? <LoaderCircle className="spin" size={21} /> : <CircleCheck size={21} />}
@@ -2105,9 +2159,9 @@ export default function App() {
             </ul>
             <div className="modal-actions">
               {wake.status === "running" ? (
-                <button className="button button-secondary" onClick={() => void runVoidTask("cancel-wake", () => api.cancelWake(wake.id), false)} type="button">{t("wake.cancelRemaining")}</button>
+                <button className="button button-secondary" disabled={busy !== null} onClick={() => void runVoidTask("cancel-wake", () => api.cancelWake(wake.id), false)} type="button">{t("wake.cancelRemaining")}</button>
               ) : null}
-              <button className="button button-primary" onClick={() => setDialog(null)} type="button">{t("common.done")}</button>
+              <button className="button button-primary" disabled={busy !== null} onClick={() => setDialog(null)} type="button">{t("common.done")}</button>
             </div>
           </div>
         </Modal>
