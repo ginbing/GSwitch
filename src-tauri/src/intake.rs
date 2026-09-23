@@ -172,7 +172,10 @@ pub fn start_oauth(state: AppState) -> Result<OAuthLoginStart, String> {
 
     let monitor_id = login_id.clone();
     thread::spawn(move || {
-        let status = match monitor_oauth(&mut server, profile, &state, &monitor_id, &cancelled) {
+        let result = with_oauth_profile(server, profile, |server, profile| {
+            monitor_oauth(server, profile, &state, &monitor_id, &cancelled)
+        });
+        let status = match result {
             Ok(Some(account)) => OAuthLoginStatus::Complete { account },
             Ok(None) => OAuthLoginStatus::Cancelled,
             Err(message) => OAuthLoginStatus::Failed { message },
@@ -183,13 +186,26 @@ pub fn start_oauth(state: AppState) -> Result<OAuthLoginStart, String> {
     Ok(OAuthLoginStart { login_id, auth_url })
 }
 
+fn with_oauth_profile<S, T>(
+    mut server: S,
+    profile: TempCodexHome,
+    monitor: impl FnOnce(&mut S, &TempCodexHome) -> Result<T, String>,
+) -> Result<T, String> {
+    let result = monitor(&mut server, &profile);
+    // On Windows, the App Server can still hold auth.json open. Its child
+    // process must exit before removing the GSwitch-owned plaintext profile.
+    drop(server);
+    profile.cleanup()?;
+    result
+}
+
 pub fn cancel_oauth(state: &AppState, login_id: &str) -> Result<(), String> {
     state.cancel_oauth(login_id)
 }
 
 fn monitor_oauth(
     server: &mut AppServer,
-    mut profile: TempCodexHome,
+    profile: &TempCodexHome,
     state: &AppState,
     login_id: &str,
     cancelled: &AtomicBool,
@@ -232,7 +248,7 @@ fn monitor_oauth(
     persist_validated(
         state,
         &operation,
-        &mut profile,
+        profile,
         metadata,
         None,
         None,
@@ -455,7 +471,7 @@ fn import_credential_under_operation(
         );
     }
 
-    let mut profile = TempCodexHome::create(&state.isolated_profile_root()?)?;
+    let profile = TempCodexHome::create(&state.isolated_profile_root()?)?;
     profile.write_auth(&credential)?;
     let mut server = AppServer::start(&profile.path)?;
     let result = server.account_read(1, expected_kind == AccountKind::ChatGpt)?;
@@ -467,7 +483,7 @@ fn import_credential_under_operation(
     persist_validated(
         state,
         operation,
-        &mut profile,
+        &profile,
         metadata,
         Some(expected_identity),
         clean_label(label),
@@ -501,7 +517,7 @@ fn import_chatgpt_snapshot_with_client(
     label: Option<String>,
     client: &ChatGptClient,
 ) -> Result<AccountView, String> {
-    let mut profile = TempCodexHome::create(&state.isolated_profile_root()?)?;
+    let profile = TempCodexHome::create(&state.isolated_profile_root()?)?;
     profile.write_auth(&credential)?;
     let live = crate::quota::live_credential_for_identity(&expected_identity)?;
     let snapshot = live.clone().unwrap_or_else(|| credential.clone());
@@ -516,7 +532,7 @@ fn import_chatgpt_snapshot_with_client(
         Ok(metadata) => persist_validated(
             state,
             operation,
-            &mut profile,
+            &profile,
             metadata,
             Some(expected_identity),
             label,
@@ -538,7 +554,7 @@ fn import_chatgpt_snapshot_with_client(
                 Ok(metadata) => persist_validated(
                     state,
                     operation,
-                    &mut profile,
+                    &profile,
                     metadata,
                     Some(expected_identity),
                     label,
@@ -561,7 +577,7 @@ fn import_chatgpt_snapshot_with_client(
             persist_validated(
                 state,
                 operation,
-                &mut profile,
+                &profile,
                 metadata,
                 Some(expected_identity),
                 label,
@@ -638,7 +654,7 @@ pub fn import_api_key(
     }
 
     let operation = state.acquire_operation()?;
-    let mut profile = TempCodexHome::create(&state.isolated_profile_root()?)?;
+    let profile = TempCodexHome::create(&state.isolated_profile_root()?)?;
     let mut server = AppServer::start(&profile.path)?;
     server.call(
         1,
@@ -656,7 +672,7 @@ pub fn import_api_key(
     persist_validated(
         state,
         &operation,
-        &mut profile,
+        &profile,
         metadata,
         None,
         clean_label(label),
@@ -1038,7 +1054,7 @@ fn string_value(value: Option<&Value>) -> Option<String> {
 fn persist_validated(
     state: &AppState,
     operation: &OperationGuard<'_>,
-    profile: &mut TempCodexHome,
+    profile: &TempCodexHome,
     metadata: AccountMetadata,
     expected_identity: Option<AccountIdentity>,
     label: Option<String>,
@@ -1074,16 +1090,14 @@ fn persist_validated(
     );
 
     if result.is_err() {
-        if state
+        return if state
             .record_pending_credential(operation, &credential)
-            .is_err()
+            .is_ok()
         {
-            profile.retain_for_recovery();
-        }
-        return Err(
-            "GSwitch could not save validated credentials. A protected recovery copy was retained."
-                .to_string(),
-        );
+            Err("GSwitch could not save validated credentials. A protected recovery copy was retained.".to_string())
+        } else {
+            Err("GSwitch could not save validated credentials or write protected recovery. No plaintext recovery copy was retained.".to_string())
+        };
     }
 
     result
@@ -1104,6 +1118,32 @@ mod tests {
         io::{Read, Write},
         net::TcpListener,
     };
+
+    #[test]
+    fn oauth_profile_is_removed_only_after_its_user_exits_even_on_failure() {
+        struct ProfileUser(std::path::PathBuf);
+        impl Drop for ProfileUser {
+            fn drop(&mut self) {
+                assert!(self.0.exists(), "profile was removed while still in use");
+            }
+        }
+
+        let root =
+            std::env::temp_dir().join(format!("gswitch-oauth-cleanup-{}", uuid::Uuid::new_v4()));
+        let profile = TempCodexHome::create(&root).expect("isolated profile");
+        let path = profile.path.clone();
+        profile
+            .write_auth(&json!({"auth_mode":"chatgpt","tokens":{"access_token":"fixture"}}))
+            .expect("write fixture auth");
+        let result: Result<(), String> =
+            with_oauth_profile(ProfileUser(path.clone()), profile, |_, profile| {
+                assert!(profile.path.join("auth.json").exists());
+                Err("login failed".to_string())
+            });
+        assert_eq!(result.expect_err("failure must propagate"), "login failed");
+        assert!(!path.exists(), "plaintext profile must be removed");
+        let _ = fs::remove_dir_all(root);
+    }
 
     fn id_token(user: &str, workspace: &str) -> String {
         let payload = json!({

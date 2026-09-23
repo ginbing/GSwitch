@@ -18,6 +18,9 @@ atomic-write-file = "0.3.1"
 base64 = "0.23"
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 fs2 = "0.4"
+getrandom = { version = "0.4", features = ["std"] }
+iota_stronghold = "=2.1.0"
+keyring = { version = "=4.2.0", default-features = false, features = ["v1"] }
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "json"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 serde = { version = "1", features = ["derive"] }
@@ -31,3 +34,4 @@ tauri-plugin-process = "2.3.1"
 tauri-plugin-updater = "2.10.1"
 toml_edit = "0.25"
 uuid = { version = "1", features = ["v4"] }
+zeroize = "1.9"

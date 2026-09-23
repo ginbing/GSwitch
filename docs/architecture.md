@@ -26,7 +26,8 @@ not a Rust display string or raw provider error.
 | Effective live Codex identity | Codex runtime | Inspect, match, and verify before reporting it |
 | Live file-backed credential | `CODEX_HOME/auth.json` | Preserve the complete document and replace it only through the switch transaction |
 | Credential-store policy | Effective Codex configuration or managed policy | Read and verify it; never silently override it |
-| Saved account profiles | Rust-owned GSwitch account store | Persist credentials plus minimum identity and cached provider projections |
+| Saved account metadata | Rust-owned `accounts.json` | Persist identity, display fields, quota summaries, active state, and opaque credential references only |
+| Saved credential and recovery secrets | Rust-owned Stronghold vault | Preserve complete credential documents, reset IDs, idempotency keys, and rollback material behind a native-credential-manager-protected root key |
 | Account-store health | Rust-owned recovery state | Open a recovery-only workspace when the store cannot be read; never infer an empty library |
 | OAuth and managed token refresh | Codex | Use official flows and preserve refreshed complete documents |
 | Read-only account metadata | ChatGPT backend response | Match the returned workspace entry and cache only normalized fields |
@@ -42,6 +43,12 @@ The initial workspace snapshot may reveal only a boolean that reset-credit
 recovery needs attention. Its account, provider credit, and idempotency key
 remain in Rust-owned storage.
 
+Interrupted credential saves use a separate encrypted pending index. The
+explicit recovery command returns only a recovered count; Rust verifies each
+document's stable identity and the recorded account generation before a
+metadata commit, then retires the protected entry. Neither the index nor its
+contents is an IPC value.
+
 ## Rust module boundaries
 
 Keep the backend flat and organized by concrete responsibility:
@@ -50,7 +57,8 @@ Keep the backend flat and organized by concrete responsibility:
 - `commands.rs`: thin IPC adapters, sanitized application snapshots, and the
   `spawn_blocking` scheduling boundary for filesystem, provider, process, and
   App Server work;
-- `accounts.rs`: saved profiles, operation serialization, store coordination,
+- `accounts.rs`: saved-profile metadata, secret-generation transactions,
+  operation serialization, store coordination,
   damaged-store recovery, pending credential recovery, and in-memory operation
   state;
 - `app_server.rs`: lifecycle and protocol boundary for the official Codex App
@@ -71,6 +79,8 @@ Keep the backend flat and organized by concrete responsibility:
   cancellation, and per-account outcomes;
 - `runtime.rs`: external Codex process detection;
 - `storage.rs`: versioned JSON persistence and atomic/private writes;
+- `vault.rs`: Rust-only Stronghold snapshot and native root-key boundary for
+  credential and recovery secrets;
 - `types.rs`: backend state and sanitized serializable view models.
 
 Split a module only after it has acquired two real responsibilities. Do not add
@@ -107,6 +117,17 @@ the Rust operation mutex or cross-process lock. React keeps point-operation
 state local: a single-account quota refresh replaces only that account's quota
 projection, while a full workspace reload is reserved for initial state or a
 real topology change.
+
+`accounts.json` is metadata, not a vault. Its version-4 account records carry
+an opaque credential reference and generation; complete documents and
+credential-adjacent recovery values are loaded only inside Rust from the
+Stronghold snapshot. The snapshot is encrypted with a random root key held by
+the platform credential manager. Vault writes commit before metadata advances
+to a new generation; a failed metadata commit can leave only unreachable
+encrypted material, never a metadata reference to an unwritten secret. Legacy
+inline stores migrate atomically after every saved secret is readable and still
+derives its recorded identity. The live Codex `auth.json` remains a distinct
+file-backed projection, never proof of vault state.
 
 ## Isolated Codex profiles
 

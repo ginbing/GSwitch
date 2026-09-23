@@ -522,7 +522,6 @@ fn response_result_protocol(message: Value) -> Result<Value, CallError> {
 
 pub struct TempCodexHome {
     pub path: PathBuf,
-    cleanup: bool,
 }
 
 impl TempCodexHome {
@@ -542,10 +541,7 @@ impl TempCodexHome {
             return Err(error);
         }
 
-        Ok(Self {
-            path,
-            cleanup: true,
-        })
+        Ok(Self { path })
     }
 
     pub fn write_auth(&self, credential: &Value) -> Result<(), String> {
@@ -560,16 +556,17 @@ impl TempCodexHome {
         storage::read_json(&self.path.join("auth.json"), "temporary Codex credentials")
     }
 
-    pub fn retain_for_recovery(&mut self) {
-        self.cleanup = false;
+    /// Call only after every process using this profile has exited. An
+    /// explicit result keeps a Windows file lock from masquerading as cleanup.
+    pub fn cleanup(self) -> Result<(), String> {
+        fs::remove_dir_all(&self.path)
+            .map_err(|_| "Unable to remove isolated Codex credentials".to_string())
     }
 }
 
 impl Drop for TempCodexHome {
     fn drop(&mut self) {
-        if self.cleanup {
-            let _ = fs::remove_dir_all(&self.path);
-        }
+        let _ = fs::remove_dir_all(&self.path);
     }
 }
 
@@ -723,8 +720,39 @@ mod tests {
         });
 
         profile.write_auth(&credential).expect("write auth");
+        let profile_path = profile.path.clone();
         assert_eq!(profile.read_auth().expect("read auth"), credential);
         drop(profile);
+        assert!(!profile_path.exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn locked_windows_auth_file_makes_explicit_profile_cleanup_fail() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let root = test_profile_root();
+        let profile = TempCodexHome::create(&root).expect("profile");
+        profile
+            .write_auth(&json!({"auth_mode": "chatgpt", "tokens": {"access_token": "fixture"}}))
+            .expect("fixture auth");
+        let path = profile.path.clone();
+        let locked = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(path.join("auth.json"))
+            .expect("exclusive Windows handle");
+
+        assert_eq!(
+            profile
+                .cleanup()
+                .expect_err("locked profile must report failure"),
+            "Unable to remove isolated Codex credentials"
+        );
+        assert!(path.exists());
+        drop(locked);
+        fs::remove_dir_all(&path).expect("fixture cleanup after lock closes");
         let _ = fs::remove_dir_all(root);
     }
 
