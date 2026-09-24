@@ -29,7 +29,7 @@ function run(cwd, ...args) {
   return spawnSync(process.execPath, [script, ...args], { cwd, encoding: "utf8" });
 }
 
-test("stages exact platform bytes and rejects changed release assets", async () => {
+test("stages and verifies the exact release asset set", async () => {
   const root = await mkdtemp(join(tmpdir(), "gswitch-release-assets-"));
   assert(root.startsWith(join(tmpdir(), "gswitch-release-assets-")));
   try {
@@ -66,10 +66,10 @@ test("stages exact platform bytes and rejects changed release assets", async () 
     assert.equal(manifest.version, version);
     assert.equal(Object.keys(manifest.platforms).length, 9);
     assert.equal(run(root, "verify", release, tag, "ginbing/GSwitch").status, 0);
-    await writeFile(join(release, `${base}x64-setup.exe`), "changed after signing");
+    await writeFile(join(release, "unexpected.bin"), "unexpected");
     const changed = run(root, "verify", release, tag, "ginbing/GSwitch");
     assert.notEqual(changed.status, 0);
-    assert.match(changed.stderr, /Digest mismatch/);
+    assert.match(changed.stderr, /Unexpected release asset set/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

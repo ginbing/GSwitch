@@ -1,13 +1,14 @@
 {
   "name": "gswitch",
   "private": true,
-  "version": "1.0.5",
+  "version": "1.0.6",
   "type": "module",
   "packageManager": "pnpm@10.17.1",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "test": "vitest run",
+    "ci:source": "node scripts/source-proof.mjs",
     "tauri": "tauri",
     "bundle:linux": "tauri build --bundles appimage,deb",
     "version:sync": "node scripts/sync-version.mjs",

@@ -643,6 +643,52 @@ describe("GSwitch account workspace", () => {
     expect(await screen.findByText("30%")).toBeInTheDocument();
   });
 
+  it("serializes a six-account refresh and continues after one quota failure", async () => {
+    const accounts = Array.from({ length: 6 }, (_, index) => ({
+      ...chatAccount,
+      id: `account-${index + 1}`,
+      email: `person${index + 1}@example.com`,
+      label: `Personal ${index + 1}`,
+      workspace_name: `Personal ${index + 1}`,
+    }));
+    mocks.listAccounts.mockResolvedValue(accounts);
+    mocks.accountQuota.mockImplementation(async (accountId: string) => ({
+      ...staleQuota,
+      account_id: accountId,
+      status: "fresh",
+    }));
+    let activeRequests = 0;
+    let maximumConcurrentRequests = 0;
+    mocks.refreshAccountQuota.mockImplementation(async (accountId: string) => {
+      activeRequests += 1;
+      maximumConcurrentRequests = Math.max(maximumConcurrentRequests, activeRequests);
+      try {
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 2));
+        if (accountId === "account-3") {
+          throw new Error("provider unavailable");
+        }
+        return { ...staleQuota, account_id: accountId, status: "fresh" };
+      } finally {
+        activeRequests -= 1;
+      }
+    });
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "person1@example.com" });
+    await userEvent.click(screen.getByRole("button", { name: "Refresh" }));
+
+    await waitFor(() => expect(mocks.refreshAccountQuota).toHaveBeenCalledTimes(6));
+    expect(maximumConcurrentRequests).toBe(1);
+    expect(mocks.refreshAccountQuota.mock.calls.map(([id]) => id)).toEqual(
+      accounts.map((account) => account.id),
+    );
+    expect(await screen.findByText("Could not refresh quota for 1 account(s). See the affected cards for their latest result.")).toBeInTheDocument();
+    const failedCard = screen.getByRole("heading", { name: "person3@example.com" }).closest(".account-card");
+    expect(failedCard).toHaveTextContent(/Last result is stale|Not available/);
+    expect(failedCard).toHaveTextContent("Quota could not be refreshed. The last result is shown when available.");
+    expect(mocks.appSnapshot).toHaveBeenCalledOnce();
+  });
+
   it("updates one account quota without reloading the account workspace", async () => {
     const secondAccount = { ...chatAccount, id: "account-2", email: "other@example.com" };
     mocks.listAccounts.mockResolvedValue([chatAccount, secondAccount]);
@@ -700,16 +746,21 @@ describe("GSwitch account workspace", () => {
     );
     render(<App />);
 
-    expect(await screen.findByText(/could not identify Codex's live account/)).toBeInTheDocument();
+    expect(await screen.findByText(/Codex is running and its active account could not be identified/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Switch to person@example.com" })).toBeEnabled();
   });
 
   it.each([
+    ["operation_busy", /Another GSwitch operation is in progress/],
     ["codex_open", /Quit the other Codex session/],
     ["account_needs_sign_in", /needs sign-in again/],
     ["file_store_required", /Enable file-backed Codex credentials/],
     ["credentials_changed", /Codex credentials changed during the switch/],
     ["recovery_required", /Complete the protected switch recovery/],
+    ["local_verification_failed", /could not confirm local Codex state/],
+    ["target_check_unavailable", /could not check .* with ChatGPT/],
+    ["target_workspace_mismatch", /do not match the selected workspace/],
+    ["post_write_verification_failed", /restored the previous Codex account/],
     ["verification_failed", /could not verify/],
   ] satisfies Array<[SwitchFailureCode, RegExp]>)(
     "shows an actionable %s switch failure for the selected account",
@@ -796,6 +847,94 @@ describe("GSwitch account workspace", () => {
     await userEvent.click(screen.getByRole("button", { name: "Cancel sign-in" }));
     await waitFor(() => expect(mocks.cancelOAuth).toHaveBeenCalledWith("login-1"));
     expect(await screen.findByText("Sign-in cancelled")).toBeInTheDocument();
+  });
+
+  it("removes a non-current saved account while keeping the identity and inline retry error clear", async () => {
+    mocks.listAccounts.mockResolvedValue([chatAccount]);
+    mocks.accountQuota.mockResolvedValue({ ...staleQuota, status: "fresh" });
+    mocks.removeSavedAccount.mockRejectedValueOnce(
+      new Error("Another GSwitch operation is already in progress"),
+    );
+    render(<App />);
+    await screen.findByRole("heading", { name: "person@example.com" });
+
+    await userEvent.click(screen.getByLabelText("More actions for person@example.com"));
+    await userEvent.click(screen.getByRole("button", { name: "Remove person@example.com" }));
+    const dialog = await screen.findByRole("dialog", { name: "Remove person@example.com?" });
+    expect(within(dialog).getByText("person@example.com")).toBeInTheDocument();
+    expect(within(dialog).getByText("Personal")).toBeInTheDocument();
+    expect(within(dialog).getByText(/remove a non-current account while Codex is running/i)).toBeInTheDocument();
+
+    await userEvent.click(within(dialog).getByRole("button", { name: "Remove account" }));
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent(
+      "Another GSwitch operation is in progress. Wait for it to finish, then try again.",
+    );
+    expect(within(dialog).getByRole("button", { name: "Remove account" })).toBeEnabled();
+    expect(mocks.removeSavedAccount).toHaveBeenCalledWith("account-1");
+  });
+
+  it("keeps the current account protected from removal", async () => {
+    const activeAccount = { ...chatAccount, active: true };
+    mocks.listAccounts.mockResolvedValue([activeAccount]);
+    mocks.liveAccount.mockResolvedValue({
+      status: "ready",
+      credential_store: "file",
+      account: activeAccount,
+    });
+    mocks.accountQuota.mockResolvedValue({ ...staleQuota, status: "fresh" });
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "person@example.com" });
+    await userEvent.click(screen.getByLabelText("More actions for person@example.com"));
+    expect(screen.getByRole("button", { name: "Remove person@example.com" })).toBeDisabled();
+    expect(mocks.removeSavedAccount).not.toHaveBeenCalled();
+  });
+
+  it("localizes the remove-operation retry prompt in Simplified Chinese", async () => {
+    window.localStorage.setItem("gswitch.language", "zh-CN");
+    mocks.listAccounts.mockResolvedValue([chatAccount]);
+    mocks.accountQuota.mockResolvedValue({ ...staleQuota, status: "fresh" });
+    mocks.removeSavedAccount.mockRejectedValueOnce(
+      new Error("Another GSwitch operation is already in progress"),
+    );
+    render(<App />);
+    await screen.findByRole("heading", { name: "person@example.com" });
+
+    await userEvent.click(screen.getByLabelText("person@example.com 的更多操作"));
+    await userEvent.click(screen.getByRole("button", { name: "移除 person@example.com" }));
+    const dialog = await screen.findByRole("dialog", { name: "移除 person@example.com？" });
+    await userEvent.click(within(dialog).getByRole("button", { name: "移除账户" }));
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent(
+      "GSwitch 正在执行其他操作。请等待完成后重试。",
+    );
+  });
+
+  it("shows localized Wake identity and outcome and can reopen a background operation", async () => {
+    mocks.listAccounts.mockResolvedValue([chatAccount]);
+    mocks.accountQuota.mockResolvedValue({ ...staleQuota, status: "fresh" });
+    let resolveWake: ((result: { id: string; status: "completed"; results: Array<{ account_id: string; label: string; result: "failed"; message: string }> }) => void) | undefined;
+    mocks.wakeOperation.mockImplementation(() => new Promise((resolve) => { resolveWake = resolve; }));
+    render(<App />);
+    await screen.findByRole("heading", { name: "person@example.com" });
+
+    await userEvent.click(screen.getByRole("button", { name: "Wake all" }));
+    const dialog = await screen.findByRole("dialog", { name: "Wake" });
+    expect(within(dialog).getByRole("button", { name: "Continue in background" })).toBeInTheDocument();
+    await userEvent.click(within(dialog).getByRole("button", { name: "Continue in background" }));
+    await waitFor(() => expect(resolveWake).toBeDefined());
+    resolveWake?.({
+      id: "wake-all",
+      status: "completed",
+      results: [{ account_id: "account-1", label: "Legacy label", result: "failed", message: "raw provider error text" }],
+    });
+    await userEvent.click(await screen.findByRole("button", { name: "View Wake results" }));
+    const resultDialog = await screen.findByRole("dialog", { name: "Wake" });
+    expect(await within(resultDialog).findByText("person@example.com")).toBeInTheDocument();
+    expect(within(resultDialog).getByText("Personal")).toBeInTheDocument();
+    expect(within(resultDialog).getByText("Wake did not complete for this account.")).toBeInTheDocument();
+    expect(within(resultDialog).queryByText("raw provider error text")).not.toBeInTheDocument();
+    await userEvent.click(within(resultDialog).getByRole("button", { name: "Done" }));
+    expect(await screen.findByRole("button", { name: "Wake all" })).toBeInTheDocument();
   });
 
   it("shows a per-operation Wake surface instead of silently running in the background", async () => {

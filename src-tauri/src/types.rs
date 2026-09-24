@@ -228,11 +228,16 @@ pub struct SwitchOutcome {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SwitchFailureCode {
+    OperationBusy,
     CodexOpen,
     AccountNeedsSignIn,
     FileStoreRequired,
     CredentialsChanged,
     RecoveryRequired,
+    LocalVerificationFailed,
+    TargetCheckUnavailable,
+    TargetWorkspaceMismatch,
+    PostWriteVerificationFailed,
     VerificationFailed,
 }
 
@@ -367,6 +372,8 @@ pub enum WakeResultKind {
     NoOrdinaryCapacity,
     NeedsSignIn,
     SentNotConfirmed,
+    QuotaUnavailable,
+    RequestRejected,
     Failed,
     Cancelled,
 }
@@ -376,6 +383,7 @@ pub struct WakeAccountResult {
     pub account_id: String,
     pub label: String,
     pub result: WakeResultKind,
+    #[serde(default, skip_serializing)]
     pub message: String,
 }
 

@@ -148,8 +148,9 @@ The visible interaction is one **Switch** action. Rust owns the full transaction
    configuration surface, then stop that helper process;
 4. read the live credential and preserve it into the matching saved profile;
 5. validate the target snapshot: ChatGPT uses the saved access token for one
-   read-only account check, while API-key identity is checked locally without a
-   network request;
+   read-only account check, routing it to the selected workspace from the
+   credential or its stable identity claim; API-key identity is checked locally
+   without a network request;
 6. only when that ChatGPT check returns 401 or 403, check the external process
    state again and allow one isolated managed refresh; identity-check the
    refreshed complete document before saving it;
@@ -169,17 +170,23 @@ If verification fails, restore the previous credential only when the live file
 still matches what GSwitch wrote. An external change makes the result ambiguous,
 so recovery fails closed instead of overwriting it.
 
-Switch failures cross the Tauri boundary only as one sanitized code:
-`codex_open`, `account_needs_sign_in`, `file_store_required`,
-`credentials_changed`, `recovery_required`, or `verification_failed`. The
-frontend combines that code with already-present account display data; provider
+Switch failures cross the Tauri boundary only as a sanitized code. Target
+provider unavailability, workspace mismatch, local verification failure, and
+post-write verification with a successful rollback are distinguished from
+sign-in, open-Codex, credential-change, file-store, and recovery failures. The
+frontend combines the code with already-present account display data; provider
 errors, credential contents, and filesystem paths remain in Rust.
 
 The UI never marks a target active optimistically. If Codex is running, ask the
 user to quit it and retry; v1 does not kill or restart Codex.
 
-Removing a saved profile never logs out the live identity. The active saved
-profile cannot be removed until another identity is active.
+Removing a saved profile is serialized by GSwitch's single-operation lock and
+is refused while switch recovery is pending. GSwitch protects the live identity:
+it cannot remove a profile that matches the current file-backed Codex credential
+or the account marked active in its store. Removing another saved profile only
+updates GSwitch's account library; it never edits live `auth.json` and is allowed
+while Codex runs. If another GSwitch operation owns the lock, the confirmation
+stays open and asks the user to retry after that operation finishes.
 
 ## Quota
 
@@ -206,9 +213,12 @@ minutes and then visibly stale. API-key accounts show quota as not applicable.
 Quota is operational account state, not usage analytics.
 
 The workspace renders its cached quota immediately and refreshes unknown or
-stale ChatGPT accounts in the background. A manual refresh joins that account's
-existing request rather than starting another one. Adding, importing, or saving
-an account follows the same refresh path. When a running Codex instance is
+stale ChatGPT accounts in the background. Startup and manual refreshes share one
+serial request queue, and requests for the same account join the in-flight
+request. One failed account does not stop the remaining queue. Its card keeps
+the last result marked stale, or shows quota as unavailable when no snapshot
+exists; the batch notice reports only failed quota refreshes. Adding, importing,
+or saving an account follows the same refresh path. When a running Codex instance is
 identified as using the account, GSwitch rereads the live file-backed
 credential immediately before the request and retries once only when the same
 identity has a newer credential. If the active identity cannot be safely
@@ -281,7 +291,10 @@ confirmed.
 Wake All and selected-account Wake are sequential, cancellable, and return one
 result per eligible ChatGPT account:
 Started, Already active, No ordinary capacity, Needs sign-in, Sent not
-confirmed, Failed, or Cancelled. A single account failure does not corrupt or
+confirmed, Failed, or Cancelled. The result view resolves each result to the
+saved account's email and workspace and shows a localized outcome instead of
+provider error text. A running operation can continue in the background and be
+reopened from the toolbar; completed results stay available there until dismissed. A single account failure does not corrupt or
 silently relabel another account. Wake is user-triggered; there is no cron,
 background schedule, automatic rotation, history dashboard, or job-management
 surface.

@@ -113,6 +113,8 @@ from shared tracking. Before changing a selected Issue, read its current body,
 comments, metadata, and relationships. When the maintainer names a task,
 execute it without scanning the Issue queue.
 
+Write GitHub Issue titles, bodies, and comments in English.
+
 After implementation, reconcile the affected Issue against current behavior.
 Close it only when its acceptance evidence is satisfied; otherwise retain only
 the remaining gap and point durable facts to their canonical owner.
@@ -125,12 +127,10 @@ recovery, and capacity mutations require regression coverage. Validate real
 boundaries—provider protocol, filesystem behavior, process safety, and rendered
 user flows—where relevant. Do not claim a check ran unless it did.
 
-The maintainer has selected a final-round CI strategy for the current v1 work:
-each intermediate PR must pass its relevant local checks and be reviewed, then
-may merge directly without waiting for remote Actions. The final release
-candidate must run the remote CI path against its exact merged `main` commit,
-plus the release-specific platform checks in `docs/release.md`. CI green alone
-does not prove the product, provider, installer, signing, or recovery claim.
+Use `docs/testing.md` for the current local and CI procedures. Read the active
+GitHub ruleset for merge requirements; do not infer live required checks from
+this file. CI green alone does not prove the product, provider, installer,
+signing, or recovery claim.
 
 After implementation, report changed behavior, actual validation, limitations,
 commits, and any required user handoff. Once the accepted claim has the
