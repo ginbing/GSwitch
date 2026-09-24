@@ -416,10 +416,18 @@ summary:focus-visible {
 
 .section-heading {
   display: flex;
-  align-items: end;
+  align-items: center;
   justify-content: space-between;
   gap: 20px;
   margin-bottom: 18px;
+}
+
+.section-heading-main {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
 }
 
 .eyebrow {
@@ -439,6 +447,21 @@ summary:focus-visible {
   font-weight: 720;
   letter-spacing: -0.035em;
   line-height: 1.15;
+}
+
+.section-heading h2 {
+  margin: 0;
+}
+
+.section-select-button {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.section-select-button[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--accent) 38%, var(--border));
+  color: var(--accent);
+  background: var(--accent-soft);
 }
 
 .section-heading > p {
