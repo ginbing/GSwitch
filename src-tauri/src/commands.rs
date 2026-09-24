@@ -7,9 +7,9 @@ use crate::{
     codex, intake, migration, quota, switching,
     types::{
         AccountView, AppSnapshot, ExportResult, ImportResult, LiveAccountView, MigrationPreview,
-        OAuthLoginStart, OAuthLoginStatus, QuotaView, ResetCreditOutcome, RuntimeInfo,
-        StorageStatus, SwitchFailure, SwitchFailureCode, SwitchOutcome, UpdateDelivery,
-        WakeOperationView, WakeStart,
+        OAuthLoginStart, OAuthLoginStatus, QuotaRefreshFailure, QuotaRefreshFailureCode, QuotaView,
+        ResetCreditOutcome, RuntimeInfo, StorageStatus, SwitchFailure, SwitchFailureCode,
+        SwitchOutcome, UpdateDelivery, WakeOperationView, WakeStart,
     },
     wake,
 };
@@ -85,9 +85,12 @@ pub async fn recover_pending_credentials(state: State<'_, AppState>) -> Result<u
 }
 
 #[tauri::command]
-pub async fn start_oauth_login(state: State<'_, AppState>) -> Result<OAuthLoginStart, String> {
+pub async fn start_oauth_login(
+    state: State<'_, AppState>,
+    target_id: Option<String>,
+) -> Result<OAuthLoginStart, String> {
     let state = state.inner().clone();
-    run_blocking(move || intake::start_oauth(state)).await
+    run_blocking(move || intake::start_oauth(state, target_id)).await
 }
 
 #[tauri::command]
@@ -278,9 +281,14 @@ pub async fn get_account_quota(
 pub async fn refresh_account_quota(
     state: State<'_, AppState>,
     id: String,
-) -> Result<QuotaView, String> {
+) -> Result<QuotaView, QuotaRefreshFailure> {
     let state = state.inner().clone();
-    run_blocking(move || quota::refresh_quota(&state, &id)).await
+    tauri::async_runtime::spawn_blocking(move || quota::refresh_quota(&state, &id))
+        .await
+        .map_err(|_| QuotaRefreshFailure {
+            code: QuotaRefreshFailureCode::Unavailable,
+        })?
+        .map_err(|error| quota::refresh_failure(&error))
 }
 
 #[tauri::command]

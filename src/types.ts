@@ -64,6 +64,9 @@ export type SwitchFailureCode =
   | "credentials_changed"
   | "recovery_required"
   | "local_verification_failed"
+  | "codex_config_unavailable"
+  | "current_credential_unreadable"
+  | "current_account_not_saved"
   | "target_check_unavailable"
   | "target_workspace_mismatch"
   | "post_write_verification_failed"
@@ -82,7 +85,11 @@ export type OAuthLoginStatus =
   | { status: "pending" }
   | { status: "complete"; account: AccountView }
   | { status: "cancelled" }
-  | { status: "failed"; message: string };
+  | { status: "failed"; code: OAuthFailureCode };
+
+export type OAuthFailureCode =
+  | "not_completed" | "timed_out" | "identity_mismatch"
+  | "verification_failed" | "save_failed" | "unavailable";
 
 export interface ImportResult {
   imported: AccountView[];
@@ -113,6 +120,15 @@ export interface MigrationPreview {
 }
 
 export type QuotaStatus = "fresh" | "stale" | "unknown" | "not_applicable";
+
+export type QuotaRefreshFailureCode =
+  | "operation_busy" | "codex_account_unknown" | "authentication"
+  | "rate_limited" | "network" | "service" | "invalid_response"
+  | "identity_mismatch" | "unavailable";
+
+export interface QuotaRefreshFailure {
+  code: QuotaRefreshFailureCode;
+}
 
 export interface QuotaWindow {
   kind: "five_hour" | "weekly" | "other";
@@ -173,6 +189,8 @@ export interface ResetCreditOutcome {
 export type WakeResultKind =
   | "started"
   | "already_active"
+  | "five_hour_exhausted"
+  | "weekly_exhausted"
   | "no_ordinary_capacity"
   | "needs_sign_in"
   | "sent_not_confirmed"

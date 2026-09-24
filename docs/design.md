@@ -20,7 +20,7 @@ Focused dialogs may handle add-account, explicit confirmation, progress/results,
 or recovery; they do not create a second navigation system.
 
 The toolbar contains the current Codex account, Refresh, Wake all, Add account,
-and a lightweight Settings button. It is a command bar, not a dashboard header
+and a compact language menu. It is a command bar, not a dashboard header
 or a custom window chrome. Its status dot always remains visible; only a long
 account label may truncate. The status is also written in text so ready, unknown,
 signed-out, setup, and recovery states do not rely on color.
@@ -29,7 +29,7 @@ An account card should show only the state needed for a decision:
 
 - label and useful identity;
 - active, ready, needs-login, unsupported, or busy state;
-- five-hour and weekly quota with reset timing when available;
+- the Codex quota windows actually supplied for that plan, with reset timing when available;
 - reset-credit count and nearest expiry when available;
 - direct actions such as Switch, Wake, refresh, reset, or remove when eligible.
 
@@ -88,8 +88,14 @@ explicit reset preserves GSwitch's damaged file without touching Codex.
   current identity stays protected. Operation-lock failures remain visible in
   the confirmation with a retry instruction.
 - Quota refreshes share a serialized request path across startup and manual
-  refresh; failed cards identify stale data or show quota as unavailable.
-  Batch feedback describes quota results only.
+  refresh. A failed card keeps a visible, compact warning icon beside quota;
+  its hover/focus explanation gives the safe reason and last successful update.
+  Old percentages say "Last" and use muted meters; an unavailable result stays
+  unknown. Actions stay in the account menu, not in the warning tooltip. Batch
+  feedback describes quota results only.
+- A saved email can be copied from its card menu. Offer sign-in again only after
+  an authentication failure. The focused login dialog explains which saved
+  account will be updated; a mismatched login changes no account.
 - Keep card content compact. Truncated account and workspace names expose their
   full value on hover; do not reserve empty vertical space for the old heading
   reminder.
@@ -108,8 +114,8 @@ filesystem, protocol, or token details do not belong in the primary UI.
 
 The application ships English and Simplified Chinese in one frontend resource.
 On first launch it maps a compatible system/WebView locale to one of those
-languages and otherwise falls back to English. Settings offers only System /
-Automatic, English, and Simplified Chinese; a manual choice applies immediately
+languages and otherwise falls back to English. The toolbar language menu offers
+System / Automatic, English, and Simplified Chinese; a manual choice applies immediately
 and wins over automatic detection. The only persisted WebView preference is that
 language choice. Dates, reset/expiry timing, numbers, and percentages use the
 selected locale's platform formatters.

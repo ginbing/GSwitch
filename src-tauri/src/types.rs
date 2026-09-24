@@ -235,6 +235,9 @@ pub enum SwitchFailureCode {
     CredentialsChanged,
     RecoveryRequired,
     LocalVerificationFailed,
+    CodexConfigUnavailable,
+    CurrentCredentialUnreadable,
+    CurrentAccountNotSaved,
     TargetCheckUnavailable,
     TargetWorkspaceMismatch,
     PostWriteVerificationFailed,
@@ -369,6 +372,8 @@ pub struct ResetCreditOutcome {
 pub enum WakeResultKind {
     Started,
     AlreadyActive,
+    FiveHourExhausted,
+    WeeklyExhausted,
     NoOrdinaryCapacity,
     NeedsSignIn,
     SentNotConfirmed,
@@ -483,6 +488,25 @@ pub struct QuotaView {
     pub message: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum QuotaRefreshFailureCode {
+    OperationBusy,
+    CodexAccountUnknown,
+    Authentication,
+    RateLimited,
+    Network,
+    Service,
+    InvalidResponse,
+    IdentityMismatch,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct QuotaRefreshFailure {
+    pub code: QuotaRefreshFailureCode,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OAuthLoginStart {
     pub login_id: String,
@@ -495,7 +519,18 @@ pub enum OAuthLoginStatus {
     Pending,
     Complete { account: AccountView },
     Cancelled,
-    Failed { message: String },
+    Failed { code: OAuthFailureCode },
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OAuthFailureCode {
+    NotCompleted,
+    TimedOut,
+    IdentityMismatch,
+    VerificationFailed,
+    SaveFailed,
+    Unavailable,
 }
 
 #[cfg(test)]

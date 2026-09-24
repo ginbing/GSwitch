@@ -13,7 +13,9 @@ the user's live Codex identity.
 
 1. Create an isolated GSwitch-owned `CODEX_HOME`.
 2. Ask the official Codex App Server to start ChatGPT login.
-3. Open or copy the returned HTTPS authorization URL.
+3. Show the returned HTTPS authorization URL for copying or an explicit
+   **Open browser** action. Do not open it automatically. Use Codex's local
+   success page so completing login does not launch the ChatGPT desktop app.
 4. Wait for the matching completion event, read the complete resulting
    credential document, and use its fresh access-token snapshot for the
    read-only account metadata check. Do not request a proactive refresh.
@@ -23,6 +25,11 @@ the user's live Codex identity.
 
 Cancellation and timeout end the isolated login. OAuth is the default login
 experience; GSwitch does not implement a parallel OAuth protocol.
+For **Sign in again** on a saved account, retain the selected account ID and
+compare the newly verified user and workspace identity, plus an available
+email, before replacing that account's saved credential. A different login,
+removed account, or changed identity leaves the saved account and live Codex
+credential unchanged. The WebView receives only a safe failure category.
 The App Server is stopped before the isolated profile is removed, including
 after cancellation or validation failure; cleanup failure is reported.
 
@@ -196,7 +203,9 @@ when it is not. GSwitch sends no App Server request and writes no credential
 for a successful ordinary read. It normalizes the provider's primary,
 secondary, and additional buckets into five-hour, weekly, and other windows by
 the durations supplied by the provider; missing or malformed values remain
-unknown.
+unknown. The card renders whichever Codex windows the provider actually supplies,
+including a five-week Free-plan window, with its reset time. It does not
+invent a five-hour or weekly window for a plan that lacks one.
 
 The supported minimum is Codex 0.144.5. GSwitch sends its rate-limit request
 with a null parameter payload for that version and retries once with an empty
@@ -217,7 +226,9 @@ stale ChatGPT accounts in the background. Startup and manual refreshes share one
 serial request queue, and requests for the same account join the in-flight
 request. One failed account does not stop the remaining queue. Its card keeps
 the last result marked stale, or shows quota as unavailable when no snapshot
-exists; the batch notice reports only failed quota refreshes. Adding, importing,
+exists. A compact warning on that card explains the safe failure category and
+last successful update; old percentages are explicitly labelled as the last
+result. The batch notice reports only failed quota refreshes. Adding, importing,
 or saving an account follows the same refresh path. When a running Codex instance is
 identified as using the account, GSwitch rereads the live file-backed
 credential immediately before the request and retries once only when the same
@@ -298,6 +309,10 @@ reopened from the toolbar; completed results stay available there until dismisse
 silently relabel another account. Wake is user-triggered; there is no cron,
 background schedule, automatic rotation, history dashboard, or job-management
 surface.
+
+When the freshly read quota specifically shows a zero five-hour or weekly
+balance in an active window, name that window in the result. Otherwise say only
+that Wake has no available quota; do not infer which limit was exhausted.
 
 ## Recovery
 

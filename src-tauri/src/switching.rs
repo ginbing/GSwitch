@@ -292,7 +292,7 @@ pub fn switch_account(state: &AppState, target_id: &str) -> Result<SwitchOutcome
         .map_err(|_| switch_failure(SwitchFailureCode::CodexOpen))?;
     let codex_home = codex::codex_home()
         .map_err(|_| switch_failure(SwitchFailureCode::LocalVerificationFailed))?;
-    confirm_effective_file_store_for_switch(&codex_home)?;
+    check_effective_file_store(state, &codex_home).map_err(switch_failure)?;
     let target = state
         .account_by_id_under_operation(&operation, target_id)
         .map_err(|_| switch_failure(SwitchFailureCode::LocalVerificationFailed))?;
@@ -300,19 +300,19 @@ pub fn switch_account(state: &AppState, target_id: &str) -> Result<SwitchOutcome
         .map_err(|_| switch_failure(SwitchFailureCode::AccountNeedsSignIn))?;
 
     let previous_auth = codex::read_optional_auth_document(&codex_home)
-        .map_err(|_| switch_failure(SwitchFailureCode::LocalVerificationFailed))?;
+        .map_err(|_| switch_failure(SwitchFailureCode::CurrentCredentialUnreadable))?;
     let previous_fingerprint = previous_auth
         .as_ref()
         .map(document_fingerprint)
         .transpose()
-        .map_err(|_| switch_failure(SwitchFailureCode::LocalVerificationFailed))?;
+        .map_err(|_| switch_failure(SwitchFailureCode::CurrentCredentialUnreadable))?;
     if let Some(current) = previous_auth.as_ref() {
         let (_, current_identity) = credential_identity(current)
-            .map_err(|_| switch_failure(SwitchFailureCode::LocalVerificationFailed))?;
+            .map_err(|_| switch_failure(SwitchFailureCode::CurrentCredentialUnreadable))?;
         let current_saved = state
             .account_by_identity_under_operation(&operation, &current_identity)
             .map_err(|_| switch_failure(SwitchFailureCode::LocalVerificationFailed))?
-            .ok_or_else(|| switch_failure(SwitchFailureCode::LocalVerificationFailed))?;
+            .ok_or_else(|| switch_failure(SwitchFailureCode::CurrentAccountNotSaved))?;
         if current_identity == target_identity {
             validate_target_snapshot(state, &operation, &target, &target_kind, &target_identity)?;
             return confirm_already_active(state, &operation, &target);
@@ -381,7 +381,9 @@ pub fn recover_pending_switch(state: &AppState) -> Result<(), String> {
     };
     runtime::ensure_no_external_codex(&[])?;
     let codex_home = codex::codex_home()?;
-    drop(start_effective_file_store(&codex_home)?);
+    check_effective_file_store(state, &codex_home).map_err(|_| {
+        "Unable to confirm file-backed Codex configuration for recovery".to_string()
+    })?;
     let current = codex::read_optional_auth_document(&codex_home)?;
 
     if let Some(current) = current {
@@ -461,37 +463,35 @@ fn require_file_store(codex_home: &std::path::Path) -> Result<(), String> {
 /// A user config file alone cannot prove that enterprise or MDM policy did
 /// not override the credential backend. Consult the supported App Server view
 /// before any operation reads, saves, or replaces live credentials.
-fn start_effective_file_store(codex_home: &std::path::Path) -> Result<AppServer, String> {
-    require_file_store(codex_home)?;
-    let mut server = AppServer::start(codex_home)?;
-    runtime::ensure_no_external_codex(&[server.pid()])?;
-    let config = server.config_read(1)?;
-    reject_managed_store_origin(&config)?;
-    if config_store_value(&config) != Some("file") {
-        return Err(
-            "Codex did not confirm file-backed credential storage for switching".to_string(),
-        );
-    }
-    Ok(server)
-}
-
-fn confirm_effective_file_store_for_switch(
+/// Inspect effective policy in a clean, GSwitch-owned Codex profile. The
+/// user profile is checked locally for an explicit file store, while the
+/// isolated App Server reveals machine policy without initializing against
+/// the live auth/config directory that may be held by another application.
+fn check_effective_file_store(
+    state: &AppState,
     codex_home: &std::path::Path,
-) -> Result<(), SwitchFailure> {
-    require_file_store(codex_home)
-        .map_err(|_| switch_failure(SwitchFailureCode::FileStoreRequired))?;
-    let mut server = AppServer::start(codex_home)
-        .map_err(|_| switch_failure(SwitchFailureCode::LocalVerificationFailed))?;
-    runtime::ensure_no_external_codex(&[server.pid()])
-        .map_err(|_| switch_failure(SwitchFailureCode::CodexOpen))?;
+) -> Result<(), SwitchFailureCode> {
+    require_file_store(codex_home).map_err(|_| SwitchFailureCode::FileStoreRequired)?;
+    let profile = TempCodexHome::create(
+        &state
+            .isolated_profile_root()
+            .map_err(|_| SwitchFailureCode::CodexConfigUnavailable)?,
+    )
+    .map_err(|_| SwitchFailureCode::CodexConfigUnavailable)?;
+    let mut server =
+        AppServer::start(&profile.path).map_err(|_| SwitchFailureCode::CodexConfigUnavailable)?;
+    runtime::ensure_no_external_codex(&[server.pid()]).map_err(|_| SwitchFailureCode::CodexOpen)?;
     let config = server
         .config_read(1)
-        .map_err(|_| switch_failure(SwitchFailureCode::LocalVerificationFailed))?;
-    reject_managed_store_origin(&config)
-        .map_err(|_| switch_failure(SwitchFailureCode::FileStoreRequired))?;
+        .map_err(|_| SwitchFailureCode::CodexConfigUnavailable)?;
+    reject_managed_store_origin(&config).map_err(|_| SwitchFailureCode::FileStoreRequired)?;
     if config_store_value(&config) != Some("file") {
-        return Err(switch_failure(SwitchFailureCode::FileStoreRequired));
+        return Err(SwitchFailureCode::FileStoreRequired);
     }
+    drop(server);
+    profile
+        .cleanup()
+        .map_err(|_| SwitchFailureCode::CodexConfigUnavailable)?;
     Ok(())
 }
 
