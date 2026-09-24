@@ -211,9 +211,9 @@ fn install_crypto_provider() {
 }
 
 pub(crate) fn credential_snapshot(credential: &Value) -> Result<CredentialSnapshot, String> {
-    if derive_identity(&AccountKind::ChatGpt, credential).is_err() {
-        return Err("The saved account credentials do not identify a ChatGPT account".to_string());
-    }
+    let identity = derive_identity(&AccountKind::ChatGpt, credential).map_err(|_| {
+        "The saved account credentials do not identify a ChatGPT account".to_string()
+    })?;
     let tokens = credential.get("tokens").and_then(Value::as_object);
     let access_token = tokens
         .and_then(|tokens| tokens.get("access_token"))
@@ -227,7 +227,11 @@ pub(crate) fn credential_snapshot(credential: &Value) -> Result<CredentialSnapsh
         .or_else(|| credential.get("account_id"))
         .and_then(Value::as_str)
         .filter(|value| !value.trim().is_empty())
-        .map(ToString::to_string);
+        .map(ToString::to_string)
+        .or_else(|| match identity {
+            AccountIdentity::ChatGpt { workspace_id, .. } => workspace_id,
+            AccountIdentity::ApiKey { .. } => None,
+        });
     Ok(CredentialSnapshot {
         access_token: access_token.to_string(),
         account_id,
@@ -399,6 +403,7 @@ fn string_at(value: &Value, names: &[&str]) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
     use std::{
         io::{Read, Write},
         net::TcpListener,
@@ -464,6 +469,31 @@ mod tests {
         assert_eq!(response["accounts"][0]["id"], "workspace");
         let request = handle.join().expect("server");
         assert!(request.starts_with("GET /wham/accounts/check HTTP/1.1"));
+    }
+
+    #[test]
+    fn routes_an_account_check_to_the_workspace_claim_when_account_id_is_absent() {
+        let claims = json!({
+            "https://api.openai.com/auth": {
+                "chatgpt_user_id": "user",
+                "chatgpt_account_id": "selected-workspace"
+            }
+        });
+        let id_token = format!(
+            "header.{}.signature",
+            URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims).expect("claims"))
+        );
+        let credential = json!({"tokens": {
+            "id_token": id_token,
+            "access_token": "live-access-token"
+        }});
+        let (base_url, handle) = fixture(200, r#"{"accounts":[]}"#);
+        ChatGptClient::with_base_url(&base_url)
+            .expect("client")
+            .account_check(&credential)
+            .expect("account check");
+        let request = handle.join().expect("server");
+        assert!(request.contains("chatgpt-account-id: selected-workspace"));
     }
 
     #[test]

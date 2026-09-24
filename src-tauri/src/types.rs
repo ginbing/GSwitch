@@ -233,6 +233,10 @@ pub enum SwitchFailureCode {
     FileStoreRequired,
     CredentialsChanged,
     RecoveryRequired,
+    LocalVerificationFailed,
+    TargetCheckUnavailable,
+    TargetWorkspaceMismatch,
+    PostWriteVerificationFailed,
     VerificationFailed,
 }
 
@@ -367,6 +371,8 @@ pub enum WakeResultKind {
     NoOrdinaryCapacity,
     NeedsSignIn,
     SentNotConfirmed,
+    QuotaUnavailable,
+    RequestRejected,
     Failed,
     Cancelled,
 }
@@ -376,6 +382,7 @@ pub struct WakeAccountResult {
     pub account_id: String,
     pub label: String,
     pub result: WakeResultKind,
+    #[serde(default, skip_serializing)]
     pub message: String,
 }
 

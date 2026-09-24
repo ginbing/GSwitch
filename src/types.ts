@@ -62,6 +62,10 @@ export type SwitchFailureCode =
   | "file_store_required"
   | "credentials_changed"
   | "recovery_required"
+  | "local_verification_failed"
+  | "target_check_unavailable"
+  | "target_workspace_mismatch"
+  | "post_write_verification_failed"
   | "verification_failed";
 
 export interface SwitchFailure {
@@ -171,6 +175,8 @@ export type WakeResultKind =
   | "no_ordinary_capacity"
   | "needs_sign_in"
   | "sent_not_confirmed"
+  | "quota_unavailable"
+  | "request_rejected"
   | "failed"
   | "cancelled";
 
@@ -178,7 +184,6 @@ export interface WakeAccountResult {
   account_id: string;
   label: string;
   result: WakeResultKind;
-  message: string;
 }
 
 export interface WakeOperationView {

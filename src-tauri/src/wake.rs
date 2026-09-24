@@ -338,7 +338,7 @@ fn wake_account(
                     "ChatGPT reported no ordinary Codex capacity; Wake did not use Reserve or reset credits",
                 ),
                 RequestFailureKind::Http => WakeAccountOutcome::new(
-                    WakeResultKind::Failed,
+                    WakeResultKind::RequestRejected,
                     "ChatGPT rejected the Wake request before it could start",
                 ),
             };
@@ -449,7 +449,7 @@ fn preflight_failure(error: ReadOnlyRefreshFailure) -> WakeAccountOutcome {
             "ChatGPT rejected the Wake credential; sign in again before trying another Wake",
         )
     } else {
-        WakeAccountOutcome::new(WakeResultKind::Failed, error.message())
+        WakeAccountOutcome::new(WakeResultKind::QuotaUnavailable, error.message())
     }
 }
 

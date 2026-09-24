@@ -274,7 +274,7 @@ pub fn enable_file_store(state: &AppState) -> Result<bool, String> {
 pub fn switch_account(state: &AppState, target_id: &str) -> Result<SwitchOutcome, SwitchFailure> {
     let operation = state
         .acquire_operation()
-        .map_err(|_| switch_failure(SwitchFailureCode::VerificationFailed))?;
+        .map_err(|_| switch_failure(SwitchFailureCode::LocalVerificationFailed))?;
     if state
         .pending_switch_under_operation(&operation)
         .map_err(|_| switch_failure(SwitchFailureCode::RecoveryRequired))?
@@ -286,29 +286,29 @@ pub fn switch_account(state: &AppState, target_id: &str) -> Result<SwitchOutcome
     // This cheap guard intentionally precedes configuration and provider work.
     runtime::ensure_no_external_codex(&[])
         .map_err(|_| switch_failure(SwitchFailureCode::CodexOpen))?;
-    let codex_home =
-        codex::codex_home().map_err(|_| switch_failure(SwitchFailureCode::VerificationFailed))?;
+    let codex_home = codex::codex_home()
+        .map_err(|_| switch_failure(SwitchFailureCode::LocalVerificationFailed))?;
     confirm_effective_file_store_for_switch(&codex_home)?;
     let target = state
         .account_by_id_under_operation(&operation, target_id)
-        .map_err(|_| switch_failure(SwitchFailureCode::VerificationFailed))?;
+        .map_err(|_| switch_failure(SwitchFailureCode::LocalVerificationFailed))?;
     let (target_kind, target_identity) = stored_identity(&target)
         .map_err(|_| switch_failure(SwitchFailureCode::AccountNeedsSignIn))?;
 
     let previous_auth = codex::read_optional_auth_document(&codex_home)
-        .map_err(|_| switch_failure(SwitchFailureCode::VerificationFailed))?;
+        .map_err(|_| switch_failure(SwitchFailureCode::LocalVerificationFailed))?;
     let previous_fingerprint = previous_auth
         .as_ref()
         .map(document_fingerprint)
         .transpose()
-        .map_err(|_| switch_failure(SwitchFailureCode::VerificationFailed))?;
+        .map_err(|_| switch_failure(SwitchFailureCode::LocalVerificationFailed))?;
     if let Some(current) = previous_auth.as_ref() {
         let (_, current_identity) = credential_identity(current)
-            .map_err(|_| switch_failure(SwitchFailureCode::VerificationFailed))?;
+            .map_err(|_| switch_failure(SwitchFailureCode::LocalVerificationFailed))?;
         let current_saved = state
             .account_by_identity_under_operation(&operation, &current_identity)
-            .map_err(|_| switch_failure(SwitchFailureCode::VerificationFailed))?
-            .ok_or_else(|| switch_failure(SwitchFailureCode::VerificationFailed))?;
+            .map_err(|_| switch_failure(SwitchFailureCode::LocalVerificationFailed))?
+            .ok_or_else(|| switch_failure(SwitchFailureCode::LocalVerificationFailed))?;
         if current_identity == target_identity {
             validate_target_snapshot(state, &operation, &target, &target_kind, &target_identity)?;
             return confirm_already_active(state, &operation, &target);
@@ -325,7 +325,7 @@ pub fn switch_account(state: &AppState, target_id: &str) -> Result<SwitchOutcome
         target_identity: target_identity.clone(),
         previous_active_id: state
             .active_account_id_under_operation(&operation)
-            .map_err(|_| switch_failure(SwitchFailureCode::VerificationFailed))?,
+            .map_err(|_| switch_failure(SwitchFailureCode::LocalVerificationFailed))?,
         secret_ref: None,
         secret_generation: 0,
         previous_auth: previous_auth.clone(),
@@ -333,19 +333,19 @@ pub fn switch_account(state: &AppState, target_id: &str) -> Result<SwitchOutcome
     };
     state
         .prepare_switch_under_operation(&operation, pending)
-        .map_err(|_| switch_failure(SwitchFailureCode::VerificationFailed))?;
+        .map_err(|_| switch_failure(SwitchFailureCode::LocalVerificationFailed))?;
 
     // A process could start or a user could edit auth.json after validation.
     // Both checks must pass before this is allowed to replace the live file.
     runtime::ensure_no_external_codex(&[])
         .map_err(|_| switch_failure(SwitchFailureCode::CodexOpen))?;
     let observed = codex::read_optional_auth_document(&codex_home)
-        .map_err(|_| switch_failure(SwitchFailureCode::VerificationFailed))?;
+        .map_err(|_| switch_failure(SwitchFailureCode::LocalVerificationFailed))?;
     if observed
         .as_ref()
         .map(document_fingerprint)
         .transpose()
-        .map_err(|_| switch_failure(SwitchFailureCode::VerificationFailed))?
+        .map_err(|_| switch_failure(SwitchFailureCode::LocalVerificationFailed))?
         != previous_fingerprint
     {
         return Err(switch_failure(SwitchFailureCode::CredentialsChanged));
@@ -362,7 +362,9 @@ pub fn switch_account(state: &AppState, target_id: &str) -> Result<SwitchOutcome
             &validated_credential,
             previous_auth,
         ) {
-            Ok(()) => Err(switch_failure(SwitchFailureCode::VerificationFailed)),
+            Ok(()) => Err(switch_failure(
+                SwitchFailureCode::PostWriteVerificationFailed,
+            )),
             Err(_) => Err(switch_failure(SwitchFailureCode::RecoveryRequired)),
         },
     }
@@ -418,7 +420,6 @@ pub fn recover_pending_switch(state: &AppState) -> Result<(), String> {
 pub fn remove_saved_account(state: &AppState, id: &str) -> Result<(), String> {
     let operation = state.acquire_operation()?;
     ensure_ready_for_credential_operation(state, &operation)?;
-    runtime::ensure_no_external_codex(&[])?;
     let target = state.account_by_id_under_operation(&operation, id)?;
     let (_, target_identity) = stored_identity(&target)?;
     let codex_home = codex::codex_home()?;
@@ -476,12 +477,12 @@ fn confirm_effective_file_store_for_switch(
     require_file_store(codex_home)
         .map_err(|_| switch_failure(SwitchFailureCode::FileStoreRequired))?;
     let mut server = AppServer::start(codex_home)
-        .map_err(|_| switch_failure(SwitchFailureCode::VerificationFailed))?;
+        .map_err(|_| switch_failure(SwitchFailureCode::LocalVerificationFailed))?;
     runtime::ensure_no_external_codex(&[server.pid()])
         .map_err(|_| switch_failure(SwitchFailureCode::CodexOpen))?;
     let config = server
         .config_read(1)
-        .map_err(|_| switch_failure(SwitchFailureCode::VerificationFailed))?;
+        .map_err(|_| switch_failure(SwitchFailureCode::LocalVerificationFailed))?;
     reject_managed_store_origin(&config)
         .map_err(|_| switch_failure(SwitchFailureCode::FileStoreRequired))?;
     if config_store_value(&config) != Some("file") {
@@ -501,8 +502,8 @@ fn validate_target_snapshot(
         return Ok(target.credential.clone());
     }
 
-    let client =
-        ChatGptClient::new().map_err(|_| switch_failure(SwitchFailureCode::VerificationFailed))?;
+    let client = ChatGptClient::new()
+        .map_err(|_| switch_failure(SwitchFailureCode::TargetCheckUnavailable))?;
     validate_chatgpt_snapshot_with(
         state,
         operation,
@@ -537,9 +538,11 @@ where
 {
     match client.account_check(&target.credential) {
         Ok(response) => {
+            chatgpt::validate_response_identity(&target.credential, target_identity, &response)
+                .map_err(|_| switch_failure(SwitchFailureCode::TargetWorkspaceMismatch))?;
             let projection =
                 chatgpt::normalize_account_metadata(&target.credential, target_identity, &response)
-                    .map_err(|_| switch_failure(SwitchFailureCode::VerificationFailed))?;
+                    .map_err(|_| switch_failure(SwitchFailureCode::TargetWorkspaceMismatch))?;
             let metadata = AccountMetadata {
                 kind: AccountKind::ChatGpt,
                 email: projection.email,
@@ -572,7 +575,7 @@ where
             )?;
             Ok(refreshed.credential)
         }
-        Err(_) => Err(switch_failure(SwitchFailureCode::VerificationFailed)),
+        Err(_) => Err(switch_failure(SwitchFailureCode::TargetCheckUnavailable)),
     }
 }
 
@@ -611,7 +614,7 @@ fn persist_switch_validation(
     }
 
     let Some(credential) = credential else {
-        return Err(switch_failure(SwitchFailureCode::VerificationFailed));
+        return Err(switch_failure(SwitchFailureCode::LocalVerificationFailed));
     };
     match state.record_pending_credential(operation, &credential) {
         Ok(()) => Err(switch_failure(SwitchFailureCode::RecoveryRequired)),
@@ -626,7 +629,7 @@ fn confirm_already_active(
 ) -> Result<SwitchOutcome, SwitchFailure> {
     let account = state
         .complete_switch_under_operation(operation, &target.id)
-        .map_err(|_| switch_failure(SwitchFailureCode::VerificationFailed))?;
+        .map_err(|_| switch_failure(SwitchFailureCode::LocalVerificationFailed))?;
     Ok(SwitchOutcome { account })
 }
 
@@ -1273,11 +1276,45 @@ mod tests {
             )
             .expect_err("provider failure");
 
-            assert_eq!(error.code, SwitchFailureCode::VerificationFailed);
+            assert_eq!(error.code, SwitchFailureCode::TargetCheckUnavailable);
             server.join().expect("server");
             drop(operation);
             let _ = fs::remove_dir_all(root);
         }
+    }
+
+    #[test]
+    fn target_workspace_mismatch_is_reported_before_any_live_write() {
+        let (state, target, root) = state_with_chatgpt_target();
+        let (base_url, server) = account_check_server(
+            200,
+            r#"{"accounts":[{"id":"different-workspace","name":"Other"}]}"#,
+        );
+        let client = ChatGptClient::with_base_url(&base_url).expect("client");
+        let identity = target.identity.clone().expect("identity");
+        let operation = state.acquire_operation().expect("operation");
+
+        let error = validate_chatgpt_snapshot_with(
+            &state,
+            &operation,
+            &target,
+            &identity,
+            &client,
+            || Ok(()),
+            || panic!("a workspace mismatch must not refresh"),
+        )
+        .expect_err("workspace mismatch");
+        assert_eq!(error.code, SwitchFailureCode::TargetWorkspaceMismatch);
+        assert_eq!(
+            state
+                .account_by_id_under_operation(&operation, &target.id)
+                .expect("saved")
+                .credential,
+            target.credential
+        );
+        server.join().expect("server");
+        drop(operation);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

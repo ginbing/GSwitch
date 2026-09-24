@@ -134,6 +134,10 @@ const switchFailureCodes = new Set<SwitchFailureCode>([
   "file_store_required",
   "credentials_changed",
   "recovery_required",
+  "local_verification_failed",
+  "target_check_unavailable",
+  "target_workspace_mismatch",
+  "post_write_verification_failed",
   "verification_failed",
 ]);
 
@@ -155,6 +159,10 @@ function switchFailureMessage(t: Translator, error: unknown, account: AccountVie
     file_store_required: "switch.error.fileStoreRequired",
     credentials_changed: "switch.error.credentialsChanged",
     recovery_required: "switch.error.recoveryRequired",
+    local_verification_failed: "switch.error.localVerificationFailed",
+    target_check_unavailable: "switch.error.targetCheckUnavailable",
+    target_workspace_mismatch: "switch.error.targetWorkspaceMismatch",
+    post_write_verification_failed: "switch.error.postWriteVerificationFailed",
     verification_failed: "switch.error.verificationFailed",
   } as const;
   const key = failure ? messages[failure.code] : messages.verification_failed;
@@ -162,10 +170,28 @@ function switchFailureMessage(t: Translator, error: unknown, account: AccountVie
 }
 
 function quotaRefreshMessage(t: Translator, error: unknown) {
-  if (/currently using this account|cannot safely identify its active account/i.test(String(error))) {
+  const message = String(error);
+  if (/currently using this account|cannot safely identify its active account/i.test(message)) {
     return t("quota.runningCodex");
   }
-  return undefined;
+  if (/another gswitch operation is already in progress/i.test(message)) {
+    return t("quota.operationBusy");
+  }
+  return t("quota.refreshFailed");
+}
+
+function removeFailureMessage(t: Translator, error: unknown) {
+  const message = String(error);
+  if (/another gswitch operation is already in progress/i.test(message)) {
+    return t("remove.operationBusy");
+  }
+  if (/active codex account cannot be removed/i.test(message)) {
+    return t("remove.activeAccount");
+  }
+  if (/recover a previous switch before starting another/i.test(message)) {
+    return t("remove.recoveryRequired");
+  }
+  return t("remove.failed");
 }
 
 function accountGridHasGlobalMutation(busy: string | null) {
@@ -258,6 +284,8 @@ function wakeResultLabel(result: WakeOperationView["results"][number]["result"],
     no_ordinary_capacity: "wake.noOrdinaryCapacity",
     needs_sign_in: "wake.needsSignIn",
     sent_not_confirmed: "wake.sentNotConfirmed",
+    quota_unavailable: "wake.quotaUnavailable",
+    request_rejected: "wake.requestRejected",
     failed: "wake.failed",
     cancelled: "wake.cancelled",
   } as const;
@@ -463,8 +491,8 @@ function AccountCard({
             {primaryName.slice(0, 1).toUpperCase()}
           </div>
           <div className="account-copy">
-            <h3>{primaryName}</h3>
-            {secondaryName ? <p>{secondaryName}</p> : null}
+            <h3 title={primaryName}>{primaryName}</h3>
+            {secondaryName ? <p title={secondaryName}>{secondaryName}</p> : null}
           </div>
         </div>
         {!selectionMode ? (
@@ -680,6 +708,7 @@ export default function App() {
   const [wake, setWake] = useState<WakeOperationView | null>(null);
   const [resetAccount, setResetAccount] = useState<AccountView | null>(null);
   const [removeAccount, setRemoveAccount] = useState<AccountView | null>(null);
+  const [removeError, setRemoveError] = useState<string | null>(null);
   const [resetConfirmation, setResetConfirmation] = useState(false);
   const [storageResetConfirmation, setStorageResetConfirmation] = useState(false);
   const [pendingUpdate, setPendingUpdate] = useState<PendingUpdate | null>(null);
@@ -690,6 +719,7 @@ export default function App() {
   const dismissedUpdateVersions = useRef(new Set<string>());
   const updateCheckInFlight = useRef(false);
   const quotaRefreshes = useRef(new Map<string, Promise<QuotaView>>());
+  const quotaRefreshQueue = useRef<Promise<void>>(Promise.resolve());
   const accountOperations = useRef(new Set<string>());
   const [label, setLabel] = useState("");
   const locale = useMemo(() => resolveLocale(languagePreference), [languagePreference]);
@@ -706,30 +736,29 @@ export default function App() {
       return inFlight;
     }
 
-    const request = api.refreshAccountQuota(accountId).then(
+    const request = quotaRefreshQueue.current.then(() => api.refreshAccountQuota(accountId)).then(
       (quota) => {
         setQuotas((current) => ({ ...current, [accountId]: quota }));
         return quota;
       },
       (error) => {
         const message = quotaRefreshMessage(t, error);
-        if (message) {
-          setQuotas((current) => {
-            const previous = current[accountId];
-            return {
-              ...current,
-              [accountId]: {
-                account_id: accountId,
-                status: previous?.snapshot ? "stale" : "unknown",
-                snapshot: previous?.snapshot,
-                message,
-              },
-            };
-          });
-        }
+        setQuotas((current) => {
+          const previous = current[accountId];
+          return {
+            ...current,
+            [accountId]: {
+              account_id: accountId,
+              status: previous?.snapshot ? "stale" : "unknown",
+              snapshot: previous?.snapshot,
+              message,
+            },
+          };
+        });
         throw error;
       },
     );
+    quotaRefreshQueue.current = request.then(() => undefined, () => undefined);
     quotaRefreshes.current.set(accountId, request);
     void request.then(
       () => quotaRefreshes.current.get(accountId) === request && quotaRefreshes.current.delete(accountId),
@@ -766,7 +795,7 @@ export default function App() {
           const cached = Object.fromEntries(
             quotaPairs.flatMap((result) => result.status === "fulfilled" ? [result.value] : []),
           ) as Record<string, QuotaView>;
-          setQuotas(cached);
+          setQuotas((current) => ({ ...cached, ...current }));
           for (const quota of Object.values(cached)) {
             if (quota.status === "unknown" || quota.status === "stale") {
               void requestQuotaRefresh(quota.account_id).catch(() => undefined);
@@ -1229,12 +1258,11 @@ export default function App() {
             kind: "info",
             text: t("notice.quotaUnavailable", {
               count: formatNumber(failures, locale.formatLocale),
-              suffix: failures === 1 ? " was" : "s were",
             }),
           });
         }
       },
-      true,
+      false,
     );
   };
 
@@ -1354,14 +1382,18 @@ export default function App() {
     if (!removeAccount) {
       return;
     }
-    const completed = await runVoidTask(
-      "remove:" + removeAccount.id,
-      () => api.removeSavedAccount(removeAccount.id),
-    );
-    if (completed) {
-      setNotice({ kind: "success", text: t("notice.removed", { name: removeAccount.label }) });
+    setRemoveError(null);
+    setBusy("remove:" + removeAccount.id);
+    try {
+      await api.removeSavedAccount(removeAccount.id);
+      await loadSnapshot();
+      setNotice({ kind: "success", text: t("notice.removed", { name: accountPrimaryName(removeAccount) }) });
       setRemoveAccount(null);
       setDialog(null);
+    } catch (error) {
+      setRemoveError(removeFailureMessage(t, error));
+    } finally {
+      setBusy(null);
     }
   };
 
@@ -1483,12 +1515,12 @@ export default function App() {
           </button>
           <button
             className="button button-secondary"
-            disabled={loading || busy !== null || storageRecovery || chatGptAccounts.length === 0}
-            onClick={() => void startWake()}
+            disabled={busy !== null || (!wake && (loading || storageRecovery || chatGptAccounts.length === 0))}
+            onClick={() => wake ? setDialog("wake") : void startWake()}
             type="button"
           >
             <Zap size={16} />
-            {t("toolbar.wakeAll")}
+            {t(wake?.status === "running" ? "wake.viewProgress" : wake ? "wake.viewResults" : "toolbar.wakeAll")}
           </button>
           <button
             className="button button-primary"
@@ -1552,7 +1584,7 @@ export default function App() {
               </h2>
             </div>
             <div className="section-heading-actions">
-              <p>{storageRecovery ? t("accounts.recoveryDescription") : t("accounts.readyDescription")}</p>
+              {storageRecovery ? <p>{t("accounts.recoveryDescription")}</p> : null}
               {accounts.length && !storageRecovery ? (
                 <button
                   className="button button-quiet"
@@ -1647,6 +1679,7 @@ export default function App() {
                   onRefresh={() => void refreshAccount(account)}
                   onRemove={() => {
                     setRemoveAccount(account);
+                    setRemoveError(null);
                     setDialog("remove");
                   }}
                   onReset={() => {
@@ -2121,13 +2154,28 @@ export default function App() {
       ) : null}
 
       {dialog === "remove" && removeAccount ? (
-        <Modal dismissible={busy === null} onClose={() => setDialog(null)} t={t} title={t("remove.title", { name: removeAccount.label })}>
+        <Modal
+          dismissible={busy === null}
+          onClose={() => {
+            setDialog(null);
+            setRemoveError(null);
+          }}
+          t={t}
+          title={t("remove.title", { name: accountPrimaryName(removeAccount) })}
+        >
           <div className="confirm-panel">
             <Trash2 size={26} />
             <h3>{t("remove.heading")}</h3>
             <p>{t("remove.body")}</p>
+            <div className="remove-account-identity">
+              <strong>{accountPrimaryName(removeAccount)}</strong>
+              {accountSecondaryName(removeAccount, accountPrimaryName(removeAccount), t) ? (
+                <span>{accountSecondaryName(removeAccount, accountPrimaryName(removeAccount), t)}</span>
+              ) : null}
+            </div>
+            {removeError ? <p className="remove-error" role="alert">{removeError}</p> : null}
             <div className="modal-actions">
-              <button className="button button-secondary" disabled={busy !== null} onClick={() => setDialog(null)} type="button">{t("common.cancel")}</button>
+              <button className="button button-secondary" disabled={busy !== null} onClick={() => { setDialog(null); setRemoveError(null); }} type="button">{t("common.cancel")}</button>
               <button className="button button-danger" disabled={busy !== null} onClick={() => void removeSavedAccount()} type="button"><Trash2 size={16} />{t("common.removeAccount")}</button>
             </div>
           </div>
@@ -2145,23 +2193,31 @@ export default function App() {
               </div>
             </div>
             <ul className="wake-results">
-              {wake.results.map((result, index) => (
-                <li key={result.account_id + "-" + result.result + "-" + index}>
-                  <span className={"wake-result-dot wake-" + result.result} />
-                  <div>
-                    <strong>{result.label}</strong>
-                    <p>{wakeResultLabel(result.result, t)}</p>
-                    <p className="wake-result-detail">{result.message}</p>
-                  </div>
-                </li>
-              ))}
+              {wake.results.map((result, index) => {
+                const account = accounts.find((saved) => saved.id === result.account_id);
+                const primary = account ? accountPrimaryName(account) : result.label;
+                const secondary = account ? accountSecondaryName(account, primary, t) : undefined;
+                return (
+                  <li key={result.account_id + "-" + result.result + "-" + index}>
+                    <span className={"wake-result-dot wake-" + result.result} />
+                    <div>
+                      <strong>{primary}</strong>
+                      {secondary ? <p className="wake-result-workspace">{secondary}</p> : null}
+                      <p>{wakeResultLabel(result.result, t)}</p>
+                    </div>
+                  </li>
+                );
+              })}
               {wake.status === "running" && wake.results.length === 0 ? <li className="wake-empty">{t("wake.preparing")}</li> : null}
             </ul>
             <div className="modal-actions">
               {wake.status === "running" ? (
                 <button className="button button-secondary" disabled={busy !== null} onClick={() => void runVoidTask("cancel-wake", () => api.cancelWake(wake.id), false)} type="button">{t("wake.cancelRemaining")}</button>
               ) : null}
-              <button className="button button-primary" disabled={busy !== null} onClick={() => setDialog(null)} type="button">{t("common.done")}</button>
+              <button className="button button-primary" disabled={busy !== null} onClick={() => {
+                setDialog(null);
+                if (wake.status !== "running") setWake(null);
+              }} type="button">{t(wake.status === "running" ? "wake.continueInBackground" : "common.done")}</button>
             </div>
           </div>
         </Modal>

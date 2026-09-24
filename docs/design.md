@@ -78,7 +78,20 @@ explicit reset preserves GSwitch's damaged file without touching Codex.
   its non-cancellable action is in progress.
 - Disable conflicting credential actions while one is in progress.
 - Show progress on the affected row or in the focused operation dialog.
-- Keep Wake results per account; cancellation and partial failure are explicit.
+- Keep Wake results per account; identify each result by email and workspace,
+  localize its status, and make partial failure explicit without exposing raw
+  provider errors. A running Wake can continue in the background and reopen
+  from the toolbar, including completed results until the user dismisses them.
+- Account removal confirms the email and workspace. It explains that removing a
+  non-current saved copy does not change a running Codex identity, while the
+  current identity stays protected. Operation-lock failures remain visible in
+  the confirmation with a retry instruction.
+- Quota refreshes share a serialized request path across startup and manual
+  refresh; failed cards identify stale data or show quota as unavailable.
+  Batch feedback describes quota results only.
+- Keep card content compact. Truncated account and workspace names expose their
+  full value on hover; do not reserve empty vertical space for the old heading
+  reminder.
 - Keep pasted credentials and API keys in transient, non-persistent inputs and
   clear them immediately after submission.
 - File import reads the selected path in Rust rather than copying file contents
