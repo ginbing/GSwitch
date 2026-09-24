@@ -49,6 +49,37 @@ package, or Linux repository is provided.
 Microsoft Store/MSIX is intentionally deferred. It is a separate distribution
 and update decision and is not part of the current GitHub Releases path.
 
+## Maintainer Windows preview
+
+When a desktop change needs maintainer interaction before merge, build a local
+NSIS preview from a committed source revision and provide the installer before
+the final PR checks. This is an opt-in feedback path; ordinary PR CI does not
+build installers. Record the source commit, preview version, and installer
+location in the PR or its tracking Issue. If feedback leads to another change,
+commit it and increase the preview suffix before rebuilding.
+
+From the repository root in PowerShell 7, set `$previewVersion` to a unique
+pre-release value for the current product version, then build:
+
+```powershell
+$dirty = git status --porcelain
+if ($dirty) { throw 'Build the preview from a clean, committed source revision.' }
+$previewVersion = '1.0.6-rc.1'
+New-Item -ItemType Directory -Force -Path 'src-tauri/target' | Out-Null
+$previewConfig = Join-Path (Resolve-Path 'src-tauri/target').Path "tauri-$previewVersion.json"
+Set-Content -LiteralPath $previewConfig -Value "{`"version`":`"$previewVersion`"}" -NoNewline -Encoding utf8
+pnpm tauri build --config $previewConfig --bundles nsis
+$previewInstaller = "src-tauri/target/release/bundle/nsis/GSwitch_${previewVersion}_x64-setup.exe"
+Get-Item -LiteralPath $previewInstaller
+git rev-parse HEAD
+```
+
+The configuration overlay and installer stay under the ignored `src-tauri/target`
+directory. The preview is unsigned and is not a tag, GitHub release, or update
+candidate. It uses the same per-user GSwitch account storage as the installed
+product, so the maintainer can exercise their own saved accounts. Do not include
+production updater-signing keys in a local preview build.
+
 CI artifacts are build evidence, not a public release, signing result, or proof
 of interactive installation behavior. Linux builds use Ubuntu 22.04 with
 Tauri's WebKitGTK 4.1 prerequisites to produce the AppImage and Debian package.
