@@ -321,16 +321,8 @@ impl Drop for AppServer {
 }
 
 fn app_server_command(codex_home: &Path) -> Command {
-    #[cfg(windows)]
-    let mut command = windows_app_server_command();
-
-    #[cfg(not(windows))]
-    let mut command = {
-        let mut command =
-            Command::new(configured_codex_binary().unwrap_or_else(|| PathBuf::from("codex")));
-        command.arg("app-server");
-        command
-    };
+    let mut command = codex_command();
+    command.arg("app-server");
 
     command
         .current_dir(codex_home)
@@ -360,26 +352,57 @@ fn app_server_command(codex_home: &Path) -> Command {
     command
 }
 
-#[cfg(windows)]
-fn windows_app_server_command() -> Command {
-    if let Some(path) = configured_codex_binary() {
-        return windows_app_server_command_for(&path);
+/// Resolve the same installed Codex CLI for App Server and explicit CLI
+/// maintenance. A desktop process does not necessarily inherit a shell PATH.
+pub(crate) fn codex_command() -> Command {
+    #[cfg(windows)]
+    {
+        if let Some(path) = configured_codex_binary() {
+            return windows_codex_command_for(&path);
+        }
     }
 
-    let mut command = Command::new("codex");
-    command.arg("app-server");
-    command
+    #[cfg(not(windows))]
+    if let Some(path) = configured_codex_binary() {
+        return Command::new(path);
+    }
+
+    Command::new("codex")
 }
 
 #[cfg(windows)]
-fn windows_app_server_command_for(path: &Path) -> Command {
+fn windows_codex_command_for(path: &Path) -> Command {
     if path
         .extension()
         .is_some_and(|extension| extension.eq_ignore_ascii_case("cmd"))
     {
         if let Some(native) = windows_npm_codex_executable(path) {
             let mut command = Command::new(native);
-            command.arg("app-server");
+            // The official codex.js launcher supplies this install context to
+            // the native process. Preserve it when launching directly so
+            // `codex update` chooses npm rather than an unknown install method.
+            for key in [
+                "CODEX_MANAGED_BY_BUN",
+                "CODEX_MANAGED_BY_PNPM",
+                "CODEX_MANAGED_BY_VITE_PLUS",
+            ] {
+                command.env_remove(key);
+            }
+            command.env("CODEX_MANAGED_BY_NPM", "1");
+            if let Some(npm_dir) = path.parent() {
+                command.env(
+                    "CODEX_MANAGED_PACKAGE_ROOT",
+                    npm_dir.join("node_modules").join("@openai").join("codex"),
+                );
+                // A desktop process may not have the npm shim directory on PATH.
+                // The CLI's own updater starts npm from this installation.
+                let mut search_path = std::ffi::OsString::from(npm_dir.as_os_str());
+                if let Some(existing) = env::var_os("PATH") {
+                    search_path.push(";");
+                    search_path.push(existing);
+                }
+                command.env("PATH", search_path);
+            }
             return command;
         }
         if let Some(npm_dir) = path.parent() {
@@ -399,15 +422,13 @@ fn windows_app_server_command_for(path: &Path) -> Command {
                 } else {
                     Command::new("node.exe")
                 };
-                command.args([script, PathBuf::from("app-server")]);
+                command.arg(script);
                 return command;
             }
         }
     }
 
-    let mut command = Command::new(path);
-    command.arg("app-server");
-    command
+    Command::new(path)
 }
 
 #[cfg(windows)]
@@ -719,9 +740,17 @@ mod tests {
         fs::write(&shim, b"npm shim fixture").expect("shim");
         fs::write(&native, b"native binary fixture").expect("native executable");
 
-        let command = windows_app_server_command_for(&shim);
+        let mut command = windows_codex_command_for(&shim);
+        command.arg("app-server");
         assert_eq!(command.get_program(), native.as_os_str());
         assert_eq!(command.get_args().next(), Some(OsStr::new("app-server")));
+        assert_eq!(
+            command
+                .get_envs()
+                .find(|(key, _)| *key == OsStr::new("CODEX_MANAGED_BY_NPM"))
+                .and_then(|(_, value)| value),
+            Some(OsStr::new("1"))
+        );
         fs::remove_dir_all(root).expect("remove fixture");
     }
 

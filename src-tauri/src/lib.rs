@@ -1,6 +1,7 @@
 mod accounts;
 mod app_server;
 mod chatgpt;
+mod cli_update;
 mod codex;
 mod commands;
 mod identity;
@@ -31,6 +32,9 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_runtime_info,
+            commands::get_codex_cli_info,
+            commands::update_codex_cli,
+            commands::open_codex_cli_guide,
             commands::get_app_snapshot,
             commands::list_accounts,
             commands::reset_damaged_account_store,

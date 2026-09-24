@@ -70,6 +70,14 @@ GSwitch-owned isolated App Server children are scoped to their operation and
 excluded only from that operation's external-process check. They are terminated
 when the operation ends.
 
+GSwitch reads the installed CLI version from the same executable it uses for
+App Server. It updates the CLI only after a user selects **Update CLI**, with
+the GSwitch operation lock held and no external Codex runtime active. The CLI
+itself chooses its supported installation method; GSwitch does not download or
+replace CLI files or change account credentials. A completed update is followed
+by a fresh version read. Missing or unsupported update commands use official
+manual guidance. Tests use a fake CLI and never update the user's installation.
+
 Saving the current file-backed ChatGPT account uses the live access-token
 snapshot for a Rust-only read-only account check. It matches the returned
 workspace to the locally derived stable identity, rereads the live credential

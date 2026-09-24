@@ -26,6 +26,8 @@ GSwitch may:
 - consume an eligible reset credit only after an explicit user action;
 - Wake one or more eligible accounts only after an explicit user action;
 - expose the minimum settings and recovery actions required by those jobs.
+- show the Codex CLI that GSwitch uses and request its official update when a
+  local CLI problem prevents those jobs.
 
 Multiple intake paths still end in one local saved-account model. They do not
 create a general provider platform.

@@ -8,6 +8,9 @@ import type { AccountView, QuotaView, SwitchFailureCode } from "./types";
 
 const mocks = vi.hoisted(() => ({
   runtimeInfo: vi.fn(),
+  codexCliInfo: vi.fn(),
+  updateCodexCli: vi.fn(),
+  openCodexCliGuide: vi.fn(),
   appSnapshot: vi.fn(),
   listAccounts: vi.fn(),
   resetDamagedAccountStore: vi.fn(),
@@ -109,6 +112,9 @@ const staleQuota: QuotaView = {
 };
 
 function prepareDefaults() {
+  mocks.codexCliInfo.mockResolvedValue({ version: "0.156.1", supports_update: true });
+  mocks.updateCodexCli.mockResolvedValue({ version: "0.157.0", supports_update: true });
+  mocks.openCodexCliGuide.mockResolvedValue(undefined);
   mocks.runtimeInfo.mockResolvedValue({
     codex_home: "C:\\Codex",
     auth_file_exists: false,
@@ -199,6 +205,39 @@ describe("GSwitch account workspace", () => {
 
   afterEach(() => {
     delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+  });
+
+  it("shows and updates the same Codex CLI without touching accounts", async () => {
+    render(<App />);
+    await userEvent.click(screen.getByRole("button", { name: "Codex CLI" }));
+    const dialog = await screen.findByRole("dialog", { name: "Codex CLI" });
+    expect(await within(dialog).findByText("Installed version: 0.156.1")).toBeInTheDocument();
+    await userEvent.click(within(dialog).getByRole("button", { name: "Update CLI" }));
+    expect(await within(dialog).findByText("Update finished. Installed version: 0.157.0.")).toBeInTheDocument();
+    expect(mocks.updateCodexCli).toHaveBeenCalledOnce();
+    expect(mocks.switchAccount).not.toHaveBeenCalled();
+  });
+
+  it("keeps CLI update failures in the Chinese dialog with a next step", async () => {
+    Object.defineProperty(window.navigator, "language", { configurable: true, value: "zh-CN" });
+    mocks.updateCodexCli.mockRejectedValue("codex_open");
+    render(<App />);
+    await userEvent.click(screen.getByRole("button", { name: "Codex CLI" }));
+    const dialog = await screen.findByRole("dialog", { name: "Codex CLI" });
+    expect(await within(dialog).findByText("已安装版本：0.156.1")).toBeInTheDocument();
+    await userEvent.click(within(dialog).getByRole("button", { name: "更新 CLI" }));
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("请退出 Codex 后再更新");
+    expect(within(dialog).getByText("已安装版本：0.156.1")).toBeInTheDocument();
+  });
+
+  it("does not offer an update to a CLI without the official command", async () => {
+    mocks.codexCliInfo.mockResolvedValue({ version: "0.100.0", supports_update: false });
+    render(<App />);
+    await userEvent.click(screen.getByRole("button", { name: "Codex CLI" }));
+    const dialog = await screen.findByRole("dialog", { name: "Codex CLI" });
+    expect(await within(dialog).findByText("Installed version: 0.100.0")).toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: "Update CLI" })).not.toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Official install guide" })).toBeInTheDocument();
   });
 
   it("uses the Simplified Chinese system locale and keeps the main account flow localized", async () => {

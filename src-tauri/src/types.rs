@@ -2,6 +2,23 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CodexCliInfo {
+    pub version: Option<String>,
+    pub supports_update: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CodexCliUpdateFailure {
+    NotInstalled,
+    Unsupported,
+    Busy,
+    CodexOpen,
+    UpdateFailed,
+    VerificationFailed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AccountKind {
     ChatGpt,

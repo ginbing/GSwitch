@@ -73,6 +73,13 @@ explicit reset preserves GSwitch's damaged file without touching Codex.
 
 ## Interaction states
 
+The toolbar offers a small **Codex CLI** entry. Its focused dialog shows the
+version of the CLI GSwitch actually launches and an explicit update action only
+when that CLI exposes the official `update` command. Do not claim a version is
+the latest without checking a source for that claim. A missing or unsupported
+CLI points to the official install guide. Update progress and failures stay in
+the dialog; the account grid remains the primary workspace.
+
 - Do not optimistically display a switch or redemption as complete.
 - Opening a dialog moves keyboard focus inside it. Tab stays inside, and closing
   restores focus to the launching control. A dialog cannot be dismissed while
