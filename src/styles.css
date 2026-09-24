@@ -1144,8 +1144,44 @@ summary:focus-visible {
 .migration-flow,
 .confirm-panel,
 .reset-details,
-.wake-panel {
+.wake-panel,
+.cli-panel {
   padding: 20px;
+}
+
+.cli-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.cli-panel p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.cli-panel .cli-status {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.cli-panel .cli-result,
+.cli-panel .cli-error {
+  padding: 10px 12px;
+  border-radius: 8px;
+}
+
+.cli-panel .cli-result { color: var(--success); background: var(--success-soft); }
+.cli-panel .cli-error { color: var(--danger); background: var(--danger-soft); }
+
+.cli-panel .modal-actions {
+  flex-wrap: wrap;
+  margin-top: 4px;
 }
 
 .add-methods {

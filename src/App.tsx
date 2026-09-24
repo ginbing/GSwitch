@@ -18,6 +18,7 @@ import {
   Plus,
   RefreshCw,
   ShieldAlert,
+  Terminal,
   Trash2,
   Upload,
   X,
@@ -48,6 +49,8 @@ import {
 } from "./i18n";
 import type {
   AccountView,
+  CodexCliInfo,
+  CodexCliUpdateFailure,
   LiveAccountView,
   MigrationCandidate,
   MigrationPreview,
@@ -74,6 +77,7 @@ type Dialog =
   | "remove"
   | "export"
   | "wake"
+  | "codex-cli"
   | null;
 
 type AddMethod = "start" | "oauth" | "json" | "api-key" | "migration";
@@ -249,7 +253,16 @@ function accountGridHasGlobalMutation(busy: string | null) {
     "recover-switch",
     "recover-reset-credit",
     "reset-damaged-store",
+    "codex-cli-update",
   ].includes(busy) || busy.startsWith("switch:") || busy.startsWith("reset:") || busy.startsWith("remove:");
+}
+
+function cliUpdateFailureCode(error: unknown): CodexCliUpdateFailure {
+  const code = String(error);
+  if (["not_installed", "unsupported", "busy", "codex_open", "update_failed", "verification_failed"].includes(code)) {
+    return code as CodexCliUpdateFailure;
+  }
+  return "update_failed";
 }
 
 function codexQuotaWindows(quota: QuotaView | undefined): QuotaWindow[] {
@@ -804,6 +817,10 @@ export default function App() {
   const [resetConfirmation, setResetConfirmation] = useState(false);
   const [storageResetConfirmation, setStorageResetConfirmation] = useState(false);
   const [pendingUpdate, setPendingUpdate] = useState<PendingUpdate | null>(null);
+  const [cliInfo, setCliInfo] = useState<CodexCliInfo | null>(null);
+  const [cliChecking, setCliChecking] = useState(false);
+  const [cliResult, setCliResult] = useState<{ kind: "updated" | "sameVersion"; version: string } | null>(null);
+  const [cliError, setCliError] = useState<CodexCliUpdateFailure | "inspect_failed" | "open_guide" | null>(null);
   const [updatePhase, setUpdatePhase] = useState<UpdatePhase>("available");
   const [updateProgress, setUpdateProgress] = useState<number | null>(null);
   const jsonRef = useRef<HTMLTextAreaElement>(null);
@@ -820,6 +837,43 @@ export default function App() {
   const changeLanguage = (preference: LanguagePreference) => {
     setLanguagePreference(preference);
     saveLanguagePreference(preference);
+  };
+
+  const checkCodexCli = async () => {
+    setCliChecking(true);
+    setCliError(null);
+    try {
+      setCliInfo(await api.codexCliInfo());
+    } catch {
+      setCliInfo(null);
+      setCliError("inspect_failed");
+    } finally {
+      setCliChecking(false);
+    }
+  };
+
+  const openCodexCli = () => {
+    setCliInfo(null);
+    setCliResult(null);
+    setCliError(null);
+    setDialog("codex-cli");
+    void checkCodexCli();
+  };
+
+  const updateCodexCli = async () => {
+    const previousVersion = cliInfo?.version;
+    setCliResult(null);
+    setCliError(null);
+    setBusy("codex-cli-update");
+    try {
+      const updated = await api.updateCodexCli();
+      setCliInfo(updated);
+      setCliResult({ kind: previousVersion === updated.version ? "sameVersion" : "updated", version: updated.version || "—" });
+    } catch (error) {
+      setCliError(cliUpdateFailureCode(error));
+    } finally {
+      setBusy(null);
+    }
   };
 
   const requestQuotaRefresh = useCallback((accountId: string): Promise<QuotaView> => {
@@ -1643,6 +1697,10 @@ export default function App() {
             <Plus size={16} />
             {t("common.addAccount")}
           </button>
+          <button className="button button-secondary cli-toolbar-button" disabled={busy !== null} onClick={openCodexCli} type="button">
+            <Terminal size={16} />
+            {t("toolbar.codexCli")}
+          </button>
           <details className="language-menu">
             <summary aria-label={t("toolbar.language")} title={t("toolbar.language")}><Globe2 size={18} /></summary>
             <div className="language-menu-popover" aria-label={t("settings.language")}>
@@ -1852,6 +1910,41 @@ export default function App() {
           )}
         </section>
       </div>
+
+      {dialog === "codex-cli" ? (
+        <Modal dismissible={busy !== "codex-cli-update"} onClose={() => setDialog(null)} t={t} title={t("toolbar.codexCli")}>
+          <div className="cli-panel">
+            {cliChecking ? <p className="cli-status" role="status"><LoaderCircle className="spin" size={18} />{t("cli.checking")}</p> : (
+              <p className="cli-status"><Terminal size={18} />{cliInfo?.version ? t("cli.installed", { version: cliInfo.version }) : t("cli.missing")}</p>
+            )}
+            {cliInfo?.version ? <p>{t("cli.context")}</p> : null}
+            {cliInfo?.version && !cliInfo.supports_update ? <p>{t("cli.unsupported")}</p> : null}
+            {cliInfo?.supports_update ? <p>{t("cli.closeCodex")}</p> : null}
+            {busy === "codex-cli-update" ? <p role="status">{t("cli.updating")}</p> : null}
+            {cliResult ? <p className="cli-result" role="status">{t(cliResult.kind === "updated" ? "cli.updated" : "cli.sameVersion", { version: cliResult.version })}</p> : null}
+            {cliError ? <p className="cli-error" role="alert">{t(({
+              not_installed: "cli.error.notInstalled",
+              unsupported: "cli.error.unsupported",
+              busy: "cli.error.busy",
+              codex_open: "cli.error.codexOpen",
+              update_failed: "cli.error.updateFailed",
+              verification_failed: "cli.error.verificationFailed",
+              inspect_failed: "cli.error.inspectFailed",
+              open_guide: "cli.error.openGuide",
+            } as const)[cliError])}</p> : null}
+            <div className="modal-actions">
+              <button className="button button-quiet" disabled={busy !== null} onClick={() => void api.openCodexCliGuide().catch(() => setCliError("open_guide"))} type="button">{t("cli.guide")}</button>
+              <button className="button button-secondary" disabled={busy !== null || cliChecking} onClick={() => void checkCodexCli()} type="button">{t("cli.checkAgain")}</button>
+              {cliInfo?.supports_update ? (
+                <button className="button button-primary" disabled={busy !== null || cliChecking} onClick={() => void updateCodexCli()} type="button">
+                  {busy === "codex-cli-update" ? <LoaderCircle className="spin" size={15} /> : <Download size={15} />}
+                  {t("cli.update")}
+                </button>
+              ) : null}
+            </div>
+          </div>
+        </Modal>
+      ) : null}
 
       {dialog === "add" ? (
         <Modal dismissible={busy === null} onClose={closeAddDialog} t={t} title={t(oauthTarget ? "oauth.reauthenticateTitle" : "add.title", oauthTarget ? { name: accountPrimaryName(oauthTarget) } : undefined)} wide>

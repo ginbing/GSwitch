@@ -738,6 +738,15 @@ impl AppState {
             .map_err(|error| error.to_string())
     }
 
+    /// Updating the installed CLI must not overlap a GSwitch operation that
+    /// may launch App Server. This remains available when account storage
+    /// needs recovery because it never reads or changes saved accounts.
+    pub(crate) fn acquire_cli_update_operation(
+        &self,
+    ) -> Result<OperationGuard<'_>, OperationAcquireFailure> {
+        self.acquire_operation_lock()
+    }
+
     pub(crate) fn acquire_operation_for_switch(
         &self,
     ) -> Result<OperationGuard<'_>, OperationAcquireFailure> {

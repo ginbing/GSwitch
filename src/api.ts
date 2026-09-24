@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   AccountView,
   AppSnapshot,
+  CodexCliInfo,
   ExportResult,
   ImportResult,
   LiveAccountView,
@@ -22,6 +23,9 @@ export type UpdateDelivery = "installer_exits" | "relaunch_required" | "release_
 // small, display-oriented capacity view.
 export const api = {
   runtimeInfo: () => invoke<RuntimeInfo>("get_runtime_info"),
+  codexCliInfo: () => invoke<CodexCliInfo>("get_codex_cli_info"),
+  updateCodexCli: () => invoke<CodexCliInfo>("update_codex_cli"),
+  openCodexCliGuide: () => invoke<void>("open_codex_cli_guide"),
   appSnapshot: () => invoke<AppSnapshot>("get_app_snapshot"),
   listAccounts: () => invoke<AccountView[]>("list_accounts"),
   resetDamagedAccountStore: () =>

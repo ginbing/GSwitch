@@ -4,12 +4,13 @@ use tauri_plugin_opener::OpenerExt;
 
 use crate::{
     accounts::AppState,
-    codex, intake, migration, quota, switching,
+    cli_update, codex, intake, migration, quota, switching,
     types::{
-        AccountView, AppSnapshot, ExportResult, ImportResult, LiveAccountView, MigrationPreview,
-        OAuthLoginStart, OAuthLoginStatus, QuotaRefreshFailure, QuotaRefreshFailureCode, QuotaView,
-        ResetCreditOutcome, RuntimeInfo, StorageStatus, SwitchFailure, SwitchFailureCode,
-        SwitchOutcome, UpdateDelivery, WakeOperationView, WakeStart,
+        AccountView, AppSnapshot, CodexCliInfo, CodexCliUpdateFailure, ExportResult, ImportResult,
+        LiveAccountView, MigrationPreview, OAuthLoginStart, OAuthLoginStatus, QuotaRefreshFailure,
+        QuotaRefreshFailureCode, QuotaView, ResetCreditOutcome, RuntimeInfo, StorageStatus,
+        SwitchFailure, SwitchFailureCode, SwitchOutcome, UpdateDelivery, WakeOperationView,
+        WakeStart,
     },
     wake,
 };
@@ -31,6 +32,33 @@ where
 #[tauri::command]
 pub async fn get_runtime_info() -> Result<RuntimeInfo, String> {
     run_blocking(codex::runtime_info).await
+}
+
+#[tauri::command]
+pub async fn get_codex_cli_info() -> CodexCliInfo {
+    tauri::async_runtime::spawn_blocking(cli_update::inspect)
+        .await
+        .unwrap_or(CodexCliInfo {
+            version: None,
+            supports_update: false,
+        })
+}
+
+#[tauri::command]
+pub async fn update_codex_cli(
+    state: State<'_, AppState>,
+) -> Result<CodexCliInfo, CodexCliUpdateFailure> {
+    let state = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || cli_update::update(&state))
+        .await
+        .map_err(|_| CodexCliUpdateFailure::UpdateFailed)?
+}
+
+#[tauri::command]
+pub fn open_codex_cli_guide(app: AppHandle) -> Result<(), String> {
+    app.opener()
+        .open_url("https://developers.openai.com/codex/cli/", None::<&str>)
+        .map_err(|_| "Unable to open the official Codex CLI guide".to_string())
 }
 
 /// Supplies one credential-free initial workspace projection. When GSwitch's
