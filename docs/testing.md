@@ -9,15 +9,13 @@ acceptance.
 Frontend feedback:
 
 ```bash
-pnpm test
-pnpm build
+pnpm run ci:source -- frontend
 ```
 
 Rust feedback:
 
 ```bash
-cargo fmt --manifest-path src-tauri/Cargo.toml --check
-cargo test --manifest-path src-tauri/Cargo.toml --locked
+pnpm run ci:source -- linux
 ```
 
 Desktop compilation without producing an installer:
@@ -42,36 +40,45 @@ Run focused tests while editing, then the full relevant path before handoff.
 
 ## CI coverage
 
-GitHub Actions runs:
+The CI workflow always starts and detects changed paths inside the run, so a
+path filter cannot leave a required workflow pending. Frontend changes call the
+repository-owned `ci:source` command for the version check, UI tests, and
+production frontend build. Rust changes call its Linux mode for version,
+frontend build, Rust formatting, Clippy, and the full Rust test suite. Changes
+to application or build inputs also compile all Rust targets on Windows and
+macOS; those jobs do not repeat tests or create installer bundles. Node and
+Cargo dependencies use runner caches, and newer runs cancel older runs for the
+same pull request or branch.
 
-- version synchronization, frontend tests, and a production frontend build on
-  Linux;
-- version synchronization, Rust formatting, Clippy, tests, and a standard
-  platform bundle on Windows and macOS;
-- frontend, Rust, no-bundle Tauri, AppImage, and Debian-package checks on an
-  Ubuntu 22.04 Linux runner.
+`CI gate` reports whether the scoped source jobs and security checks succeeded.
+It runs even when a scoped source job is skipped and fails if scope detection
+fails or a required job for the changed paths did not pass. During a required
+check migration, keep the old job names available until the new gate passes on
+the pull request, then update the GitHub ruleset and read it back before
+merging.
 
-The workflow uploads the Windows NSIS installer, macOS DMG, and Linux AppImage
-plus Debian package from its exact revision. They are CI artifacts only: they
-are not signed, notarized, tested through an interactive installer, or released.
+Ordinary CI does not create or upload installers. The release workflow builds
+and smoke-checks final platform packages before upload; CI success alone does
+not prove interactive installation, platform signing, notarization, or public
+release readiness.
 
 The CI workflow has read-only repository permissions. A passing CI run proves
 that the checked-in revision passed those commands on those runners; it does
 not publish or release anything.
 
-The `main` ruleset requires the current pull request revision's Frontend,
-Windows build, macOS build, Linux build, Dependency review, RustSec, and CodeQL
-Actions/JavaScript-TypeScript/Rust checks. Review conversations must be resolved.
-GitHub enforces this gate before merge; local checks remain fast feedback.
+The `main` ruleset is the authority for current required checks, strict update
+requirements, and resolved review conversations. Read the live ruleset when
+changing or reporting those requirements; this document describes workflow
+behavior and migration steps only.
 
-CI also runs GitHub dependency review on pull requests (moderate-or-higher
+CI runs GitHub dependency review on every pull request (moderate-or-higher
 advisories in runtime, development, or unknown scopes) and RustSec's
-`cargo-audit` against `src-tauri/Cargo.lock`. The dependency check deliberately
-does not impose a license policy. Both checks use a read-only token; the
-release workflow grants write access only to its draft-upload job. External
-Actions use full commit SHAs with version comments. Rust and Node versions are
-owned by `rust-toolchain.toml` and `.node-version`; pnpm is owned by
-`package.json`'s `packageManager`.
+`cargo-audit` on pull requests and main pushes, with a weekly scheduled audit.
+The dependency check deliberately does not impose a license policy. Both checks
+use a read-only token; the release workflow grants write access only to its
+draft-upload job. External Actions use full commit SHAs with version comments.
+Rust and Node versions are owned by `rust-toolchain.toml` and `.node-version`;
+pnpm is owned by `package.json`'s `packageManager`.
 
 Renovate's [Dependency Dashboard](https://github.com/ginbing/GSwitch/issues/110)
 is the intake queue for routine npm, Cargo, and GitHub Actions updates. A
@@ -141,12 +148,18 @@ as applicable:
 - verification failure restoring the previous credential only when the live
   file still equals GSwitch's write, otherwise preserving pending recovery;
 - interrupted-switch and protected-credential recovery;
+- saved-account removal protecting the live identity, allowing removal of a
+  non-current profile while Codex runs, leaving live `auth.json` untouched, and
+  keeping lock and persistence failures actionable in the confirmation;
 - structured switch-error codes producing account-specific frontend guidance
   without parsing Rust strings or exposing credential/provider details;
 - successful switching reloading the account view with the active account first;
 - delayed filesystem, provider, process, and App Server command paths running
   through the asynchronous blocking-work boundary rather than the Tauri main
   thread;
+- quota requests across startup and manual refresh sharing one serial queue,
+  same-account refresh coalescing, six-account continuation after partial
+  failure, and stale or unavailable state on each failed card;
 - a one-account quota refresh updating its own projection without rebuilding
   the workspace, and that account's busy state leaving unrelated cards usable;
 - quota bucket normalization, zero remaining, and stale-cache labeling;
@@ -158,11 +171,14 @@ as applicable:
   only after a new explicit user action;
 - Wake's fixed minimal Responses payload, quota guards, active-token reread,
   externally owned no-refresh path, inactive authentication-only refresh,
-  no-retry sent-but-unconfirmed outcome, and sequential queue continuation;
+  no-retry sent-but-unconfirmed outcome, sequential queue continuation, saved
+  email/workspace identity, localized outcome, and background progress actions;
 - frontend clearing secret inputs, confirming reset consumption, and disabling
   conflicting actions;
 - browser-login cancellation, selected-file import boundaries, account-space
-  empty state, quota stale state, and visible Wake progress;
+  empty state, quota stale state, and visible Wake progress in English and
+  Simplified Chinese at the minimum and default window sizes in light and dark
+  themes;
 - local migration allowlisting, no startup scan, plaintext and supported
   encrypted Cockpit records, missing/bad key and envelope fail-closed behavior,
   source immutability, sanitized previews, existing-identity suppression,
