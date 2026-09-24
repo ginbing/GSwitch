@@ -462,9 +462,35 @@ fn quota_eligibility(snapshot: &QuotaSnapshot) -> Option<WakeAccountOutcome> {
         ));
     }
     if ordinary_quota_exhausted(snapshot, now_seconds) {
+        let exhausted_window = snapshot
+            .buckets
+            .iter()
+            .find(|bucket| bucket.kind == QuotaBucketKind::Codex)
+            .and_then(|bucket| {
+                bucket
+                    .windows
+                    .iter()
+                    .find(|window| {
+                        window.kind == QuotaWindowKind::FiveHour
+                            && window.remaining_percent == Some(0)
+                            && window.resets_at.is_some_and(|reset| reset > now_seconds)
+                    })
+                    .or_else(|| {
+                        bucket.windows.iter().find(|window| {
+                            window.kind == QuotaWindowKind::Weekly
+                                && window.remaining_percent == Some(0)
+                                && window.resets_at.is_some_and(|reset| reset > now_seconds)
+                        })
+                    })
+            });
+        let result = match exhausted_window.map(|window| &window.kind) {
+            Some(QuotaWindowKind::FiveHour) => WakeResultKind::FiveHourExhausted,
+            Some(QuotaWindowKind::Weekly) => WakeResultKind::WeeklyExhausted,
+            _ => WakeResultKind::NoOrdinaryCapacity,
+        };
         return Some(WakeAccountOutcome::new(
-            WakeResultKind::NoOrdinaryCapacity,
-            "Ordinary Codex quota is exhausted; Wake will not use Reserve or reset credits",
+            result,
+            "Codex quota is exhausted; Wake will not use Reserve or reset credits",
         ));
     }
     None
@@ -626,7 +652,7 @@ mod tests {
         let active = quota_eligibility(&snapshot(10, 90, i64::MAX)).expect("active result");
         assert_eq!(active.result, WakeResultKind::AlreadyActive);
         let exhausted = quota_eligibility(&snapshot(100, 0, i64::MAX)).expect("capacity result");
-        assert_eq!(exhausted.result, WakeResultKind::NoOrdinaryCapacity);
+        assert_eq!(exhausted.result, WakeResultKind::FiveHourExhausted);
     }
 
     #[test]

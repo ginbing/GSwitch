@@ -216,8 +216,8 @@ describe("GSwitch account workspace", () => {
     const first = render(<App />);
     await screen.findByRole("heading", { name: "1 saved account" });
 
-    await userEvent.click(screen.getByRole("button", { name: "Open settings" }));
-    await userEvent.selectOptions(screen.getByLabelText("Language"), "zh-CN");
+    await userEvent.click(screen.getAllByLabelText("Language")[0]);
+    await userEvent.click(screen.getByRole("button", { name: "简体中文" }));
     expect(screen.getByRole("button", { name: "添加账户" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "已保存 1 个账户" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "批量选择" })).toHaveAttribute("aria-pressed", "false");
@@ -496,7 +496,7 @@ describe("GSwitch account workspace", () => {
 
     expect(await screen.findByText("Personal")).toBeInTheDocument();
     expect(screen.getByText("Stale")).toBeInTheDocument();
-    expect(screen.getByText("30%")).toBeInTheDocument();
+    expect(screen.getByText("Last 30%")).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: "Details" }));
     expect(await screen.findByRole("dialog", { name: /Reset credits/i })).toBeInTheDocument();
@@ -510,6 +510,31 @@ describe("GSwitch account workspace", () => {
     );
   });
 
+  it("shows the provider-supplied five-week free quota and reset time", async () => {
+    const freeAccount = { ...chatAccount, plan_type: "free" };
+    const resetAt = Math.floor(Date.now() / 1000) + 21 * 24 * 60 * 60;
+    mocks.listAccounts.mockResolvedValue([freeAccount]);
+    mocks.accountQuota.mockResolvedValue({
+      account_id: freeAccount.id,
+      status: "fresh",
+      snapshot: {
+        fetched_at_unix_ms: Date.now(),
+        buckets: [{
+          limit_id: "codex",
+          kind: "codex",
+          windows: [{ kind: "other", window_duration_mins: 50_400, remaining_percent: 100, used_percent: 0, resets_at: resetAt }],
+        }],
+      },
+    });
+    render(<App />);
+
+    const card = (await screen.findByRole("heading", { name: "person@example.com" })).closest(".account-card");
+    expect(card).toHaveTextContent("5 weeks");
+    expect(card).toHaveTextContent("100%");
+    expect(card).toHaveTextContent("Resets");
+    expect(card).not.toHaveTextContent("5-hour");
+    expect(card).not.toHaveTextContent("Reset time unavailable");
+  });
   it("uses ChatGPT email as the primary identity and workspace as context", async () => {
     mocks.listAccounts.mockResolvedValue([chatAccount]);
     render(<App />);
@@ -603,7 +628,7 @@ describe("GSwitch account workspace", () => {
 
     expect(await screen.findByText("Personal")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Switch to person@example.com" })).toBeEnabled();
-    expect(screen.getAllByText("Not available")).toHaveLength(2);
+    expect(screen.getAllByText("Not available")).toHaveLength(1);
   });
 
   it("saves the current account and refreshes its unknown quota in the background", async () => {
@@ -646,7 +671,7 @@ describe("GSwitch account workspace", () => {
 
     mocks.accountQuota.mockResolvedValue(staleQuota);
     resolveRefresh?.(staleQuota);
-    expect(await screen.findByText("30%")).toBeInTheDocument();
+    expect(await screen.findByText("Last 30%")).toBeInTheDocument();
   });
 
   it("serializes a six-account refresh and continues after one quota failure", async () => {
@@ -691,8 +716,35 @@ describe("GSwitch account workspace", () => {
     expect(await screen.findByText("Could not refresh quota for 1 account(s). See the affected cards for their latest result.")).toBeInTheDocument();
     const failedCard = screen.getByRole("heading", { name: "person3@example.com" }).closest(".account-card");
     expect(failedCard).toHaveTextContent(/Last result is stale|Not available/);
-    expect(failedCard).toHaveTextContent("Quota could not be refreshed. The last result is shown when available.");
+    expect(within(failedCard as HTMLElement).getByRole("button", { name: "Quota update failed" })).toBeInTheDocument();
+    expect(failedCard).toHaveTextContent("GSwitch could not update this quota. Try again later.");
+    expect(failedCard).toHaveTextContent("Last 30%");
     expect(mocks.appSnapshot).toHaveBeenCalledOnce();
+  });
+
+  it("keeps failed quota values visibly historical and offers account recovery only for a rejected sign-in", async () => {
+    const copyEmail = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(window.navigator, "clipboard", { configurable: true, value: { writeText: copyEmail } });
+    mocks.listAccounts.mockResolvedValue([chatAccount]);
+    mocks.accountQuota.mockResolvedValue(staleQuota);
+    mocks.refreshAccountQuota.mockRejectedValue({ code: "authentication" });
+    render(<App />);
+
+    const alert = await screen.findByRole("button", { name: "Quota update failed" });
+    expect(alert).toHaveAttribute("aria-describedby", "quota-error-account-1");
+    expect(screen.getByText("Last 30%")).toBeInTheDocument();
+    expect(screen.getByText("This saved sign-in was rejected. Sign in to this account again.")).toBeInTheDocument();
+    expect(screen.getByText(/Last successful update:/)).toBeInTheDocument();
+    expect(screen.queryByText("Quota could not be refreshed. The last result is shown when available.")).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByLabelText("More actions for person@example.com"));
+    await userEvent.click(screen.getByRole("button", { name: "Copy email" }));
+    expect(copyEmail).toHaveBeenCalledWith("person@example.com");
+    await userEvent.click(screen.getByLabelText("More actions for person@example.com"));
+    await userEvent.click(screen.getByRole("button", { name: "Sign in to this account again" }));
+    await waitFor(() => expect(mocks.startOAuth).toHaveBeenCalledWith("account-1"));
+    expect(mocks.openOAuth).not.toHaveBeenCalled();
+    expect(await screen.findByRole("dialog", { name: "Sign in again · person@example.com" })).toBeInTheDocument();
   });
 
   it("updates one account quota without reloading the account workspace", async () => {
@@ -747,12 +799,10 @@ describe("GSwitch account workspace", () => {
   it("keeps account actions available when the live Codex account cannot be identified", async () => {
     mocks.listAccounts.mockResolvedValue([chatAccount]);
     mocks.accountQuota.mockResolvedValue({ account_id: "account-1", status: "unknown" });
-    mocks.refreshAccountQuota.mockRejectedValue(
-      new Error("Codex is running and GSwitch cannot safely identify its active account"),
-    );
+    mocks.refreshAccountQuota.mockRejectedValue({ code: "codex_account_unknown" });
     render(<App />);
 
-    expect(await screen.findByText(/Codex is running and its active account could not be identified/)).toBeInTheDocument();
+    expect(await screen.findByText(/Codex is running, but its account cannot be identified/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Switch to person@example.com" })).toBeEnabled();
   });
 
@@ -763,7 +813,10 @@ describe("GSwitch account workspace", () => {
     ["file_store_required", /Enable file-backed Codex credentials/],
     ["credentials_changed", /Codex credentials changed during the switch/],
     ["recovery_required", /Complete the protected switch recovery/],
-    ["local_verification_failed", /could not confirm local Codex state/],
+    ["codex_config_unavailable", /could not check Codex configuration/],
+    ["current_credential_unreadable", /could not read the current Codex sign-in/],
+    ["current_account_not_saved", /Save the current Codex account/],
+    ["local_verification_failed", /could not read its local account state/],
     ["target_check_unavailable", /could not check .* with ChatGPT/],
     ["target_workspace_mismatch", /do not match the selected workspace/],
     ["post_write_verification_failed", /restored the previous Codex account/],
@@ -847,8 +900,9 @@ describe("GSwitch account workspace", () => {
 
     await userEvent.click(screen.getByRole("button", { name: /^Add account$/ }));
     const dialog = await screen.findByRole("dialog", { name: "Add a Codex account" });
-    await userEvent.click(within(dialog).getByRole("button", { name: /Sign in with Codex/ }));
+    await userEvent.click(within(dialog).getByRole("button", { name: /Sign in to add an account/ }));
     expect(await screen.findByText("Finish sign-in in your browser")).toBeInTheDocument();
+    expect(mocks.openOAuth).not.toHaveBeenCalled();
 
     await userEvent.click(screen.getByRole("button", { name: "Cancel sign-in" }));
     await waitFor(() => expect(mocks.cancelOAuth).toHaveBeenCalledWith("login-1"));

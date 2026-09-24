@@ -13,9 +13,10 @@ use crate::{
     runtime,
     types::{
         AccountIdentity, AccountKind, PendingResetCredit, QuotaBucket, QuotaBucketKind,
-        QuotaSnapshot, QuotaStatus, QuotaView, QuotaWindow, QuotaWindowKind, ResetCreditDetailView,
-        ResetCreditOutcome, ResetCreditOutcomeKind, ResetCreditsView, StoredAccount,
-        StoredResetCredit, StoredResetCredits,
+        QuotaRefreshFailure, QuotaRefreshFailureCode, QuotaSnapshot, QuotaStatus, QuotaView,
+        QuotaWindow, QuotaWindowKind, ResetCreditDetailView, ResetCreditOutcome,
+        ResetCreditOutcomeKind, ResetCreditsView, StoredAccount, StoredResetCredit,
+        StoredResetCredits,
     },
 };
 
@@ -31,6 +32,35 @@ pub(crate) enum ExternalCredentialState {
 }
 
 const CACHE_FRESH_FOR_MS: i64 = 5 * 60 * 1000;
+
+/// Only a stable, non-secret reason crosses the Rust/WebView boundary. These
+/// messages originate in GSwitch or the sanitized App Server adapter, never
+/// in a provider response body.
+pub fn refresh_failure(error: &str) -> QuotaRefreshFailure {
+    let code = if error.contains("Another GSwitch operation") {
+        QuotaRefreshFailureCode::OperationBusy
+    } else if error.contains("cannot safely identify its active account") {
+        QuotaRefreshFailureCode::CodexAccountUnknown
+    } else if error.contains("rejected the read-only quota request") {
+        QuotaRefreshFailureCode::Authentication
+    } else if error.contains("rate-limited the quota request") {
+        QuotaRefreshFailureCode::RateLimited
+    } else if error.contains("Unable to reach ChatGPT quota service") {
+        QuotaRefreshFailureCode::Network
+    } else if error.contains("quota service returned an error") {
+        QuotaRefreshFailureCode::Service
+    } else if error.contains("invalid quota response")
+        || error.contains("response is missing a result")
+    {
+        QuotaRefreshFailureCode::InvalidResponse
+    } else if error.contains("identity") || error.contains("saved account needs to be added again")
+    {
+        QuotaRefreshFailureCode::IdentityMismatch
+    } else {
+        QuotaRefreshFailureCode::Unavailable
+    };
+    QuotaRefreshFailure { code }
+}
 
 /// Returns the last provider snapshot without initiating a provider request.
 pub fn cached_quota(state: &AppState, account_id: &str) -> Result<QuotaView, String> {
@@ -1151,6 +1181,28 @@ mod tests {
         assert_eq!(snapshot.buckets[1].limit_id, "image");
     }
 
+    #[test]
+    fn retains_the_free_five_week_window_and_its_reset_time() {
+        let snapshot = normalize_rate_limits(
+            &json!({
+                "plan_type": "free",
+                "rate_limit": {
+                    "primary_window": {
+                        "used_percent": 0,
+                        "limit_window_seconds": 3_024_000,
+                        "reset_at": 1_800_000_000
+                    }
+                }
+            }),
+            100,
+        );
+
+        let window = &snapshot.buckets[0].windows[0];
+        assert_eq!(window.kind, QuotaWindowKind::Other);
+        assert_eq!(window.window_duration_mins, Some(50_400));
+        assert_eq!(window.remaining_percent, Some(100));
+        assert_eq!(window.resets_at, Some(1_800_000_000));
+    }
     #[test]
     fn keeps_missing_or_malformed_values_unknown() {
         let snapshot = normalize_rate_limits(

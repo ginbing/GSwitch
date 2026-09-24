@@ -99,7 +99,7 @@ and expected prior state.
 
 Before replacing live credentials:
 
-1. the effective store must be confirmed as file-backed and unmanaged;
+1. the live profile must explicitly use the file store, and the official App Server in a short-lived GSwitch-owned profile must confirm that machine policy does not override it; do not initialize App Server against the live profile for this check;
 2. no external Codex runtime may be active or uninspectable, and that check must
    happen before target-network validation;
 3. the current live identity must be saved or the live profile must be empty;

@@ -17,7 +17,6 @@ import {
   MoreHorizontal,
   Plus,
   RefreshCw,
-  Settings,
   ShieldAlert,
   Trash2,
   Upload,
@@ -54,9 +53,10 @@ import type {
   MigrationPreview,
   OAuthLoginStart,
   OAuthLoginStatus,
+  OAuthFailureCode,
+  QuotaRefreshFailureCode,
   QuotaView,
   QuotaWindow,
-  RuntimeInfo,
   StorageView,
   SwitchFailure,
   SwitchFailureCode,
@@ -66,7 +66,6 @@ import { updater, type AvailableUpdate } from "./updater";
 
 type Dialog =
   | "add"
-  | "settings"
   | "enable-switching"
   | "recover-switch"
   | "recover-reset-credit"
@@ -137,6 +136,9 @@ const switchFailureCodes = new Set<SwitchFailureCode>([
   "credentials_changed",
   "recovery_required",
   "local_verification_failed",
+  "codex_config_unavailable",
+  "current_credential_unreadable",
+  "current_account_not_saved",
   "target_check_unavailable",
   "target_workspace_mismatch",
   "post_write_verification_failed",
@@ -163,6 +165,9 @@ function switchFailureMessage(t: Translator, error: unknown, account: AccountVie
     credentials_changed: "switch.error.credentialsChanged",
     recovery_required: "switch.error.recoveryRequired",
     local_verification_failed: "switch.error.localVerificationFailed",
+    codex_config_unavailable: "switch.error.codexConfigUnavailable",
+    current_credential_unreadable: "switch.error.currentCredentialUnreadable",
+    current_account_not_saved: "switch.error.currentAccountNotSaved",
     target_check_unavailable: "switch.error.targetCheckUnavailable",
     target_workspace_mismatch: "switch.error.targetWorkspaceMismatch",
     post_write_verification_failed: "switch.error.postWriteVerificationFailed",
@@ -172,15 +177,43 @@ function switchFailureMessage(t: Translator, error: unknown, account: AccountVie
   return t(key, { name: accountPrimaryName(account) });
 }
 
-function quotaRefreshMessage(t: Translator, error: unknown) {
-  const message = String(error);
-  if (/currently using this account|cannot safely identify its active account/i.test(message)) {
-    return t("quota.runningCodex");
-  }
-  if (/another gswitch operation is already in progress/i.test(message)) {
-    return t("quota.operationBusy");
-  }
-  return t("quota.refreshFailed");
+const quotaFailureCodes = new Set<QuotaRefreshFailureCode>([
+  "operation_busy", "codex_account_unknown", "authentication", "rate_limited",
+  "network", "service", "invalid_response", "identity_mismatch", "unavailable",
+]);
+
+function quotaFailureCode(error: unknown): QuotaRefreshFailureCode {
+  if (typeof error !== "object" || error === null || !("code" in error)) return "unavailable";
+  const code = (error as { code?: unknown }).code;
+  return typeof code === "string" && quotaFailureCodes.has(code as QuotaRefreshFailureCode)
+    ? code as QuotaRefreshFailureCode : "unavailable";
+}
+
+function quotaFailureMessage(t: Translator, code: QuotaRefreshFailureCode) {
+  const keys = {
+    operation_busy: "quota.failureBusy",
+    codex_account_unknown: "quota.failureCodexUnknown",
+    authentication: "quota.failureAuthentication",
+    rate_limited: "quota.failureRateLimited",
+    network: "quota.failureNetwork",
+    service: "quota.failureService",
+    invalid_response: "quota.failureInvalidResponse",
+    identity_mismatch: "quota.failureIdentity",
+    unavailable: "quota.failureUnavailable",
+  } as const;
+  return t(keys[code]);
+}
+
+function oauthFailureMessage(t: Translator, code: OAuthFailureCode) {
+  const keys = {
+    not_completed: "oauth.failureNotCompleted",
+    timed_out: "oauth.failureTimedOut",
+    identity_mismatch: "oauth.failureIdentity",
+    verification_failed: "oauth.failureVerification",
+    save_failed: "oauth.failureSave",
+    unavailable: "oauth.failureUnavailable",
+  } as const;
+  return t(keys[code]);
 }
 
 function removeFailureMessage(t: Translator, error: unknown) {
@@ -215,11 +248,21 @@ function accountGridHasGlobalMutation(busy: string | null) {
   ].includes(busy) || busy.startsWith("switch:") || busy.startsWith("reset:") || busy.startsWith("remove:");
 }
 
-function primaryWindow(quota: QuotaView | undefined, kind: "five_hour" | "weekly") {
+function codexQuotaWindows(quota: QuotaView | undefined): QuotaWindow[] {
   return quota?.snapshot?.buckets
     .filter((bucket) => bucket.kind === "codex")
-    .flatMap((bucket) => bucket.windows)
-    .find((window) => window.kind === kind);
+    .flatMap((bucket) => bucket.windows) ?? [];
+}
+
+function quotaWindowLabel(window: QuotaWindow, t: Translator): string {
+  if (window.kind === "five_hour") return t("quota.fiveHour");
+  if (window.kind === "weekly") return t("quota.weekly");
+  const minutes = window.window_duration_mins;
+  if (minutes === 50_400) return t("quota.fiveWeeks");
+  if (minutes && minutes % 10_080 === 0) return t("quota.durationWeeks", { count: minutes / 10_080 });
+  if (minutes && minutes % 1_440 === 0) return t("quota.durationDays", { count: minutes / 1_440 });
+  if (minutes && minutes % 60 === 0) return t("quota.durationHours", { count: minutes / 60 });
+  return t("quota.otherWindow");
 }
 
 function accountPlan(account: AccountView, t: Translator) {
@@ -260,17 +303,6 @@ function accountSecondaryName(account: AccountView, primary: string, t: Translat
   return undefined;
 }
 
-function credentialStoreLabel(store: RuntimeInfo["credential_store"] | undefined, t: Translator) {
-  const labels = {
-    file: "credentialStore.file",
-    keyring: "credentialStore.keyring",
-    auto: "credentialStore.auto",
-    ephemeral: "credentialStore.ephemeral",
-    unknown: "credentialStore.unknown",
-  } as const;
-  return t(labels[store || "unknown"]);
-}
-
 function wakeStatusLabel(status: WakeOperationView["status"], t: Translator) {
   const key = `wake.status${status.slice(0, 1).toUpperCase()}${status.slice(1)}` as
     | "wake.statusRunning"
@@ -284,6 +316,8 @@ function wakeResultLabel(result: WakeOperationView["results"][number]["result"],
   const labels = {
     started: "wake.started",
     already_active: "wake.alreadyActive",
+    five_hour_exhausted: "wake.fiveHourExhausted",
+    weekly_exhausted: "wake.weeklyExhausted",
     no_ordinary_capacity: "wake.noOrdinaryCapacity",
     needs_sign_in: "wake.needsSignIn",
     sent_not_confirmed: "wake.sentNotConfirmed",
@@ -390,12 +424,18 @@ function QuotaMeter({
   label,
   window,
   status,
+  failure,
+  failureId,
+  lastSuccess,
   t,
   formatLocale,
 }: {
   label: string;
   window?: QuotaWindow;
   status?: QuotaView["status"];
+  failure?: QuotaRefreshFailureCode;
+  failureId?: string;
+  lastSuccess?: number;
   t: Translator;
   formatLocale: string;
 }) {
@@ -404,18 +444,34 @@ function QuotaMeter({
   const value = typeof remaining === "number" ? Math.max(0, Math.min(100, remaining)) : undefined;
 
   return (
-    <div className="quota-meter">
+    <div className={"quota-meter" + (status === "stale" ? " quota-meter-stale" : "")}>
       <div className="quota-heading">
-        <span>{label}</span>
-        <strong>{value === undefined || !known ? "—" : formatPercent(value, formatLocale)}</strong>
+        <span className="quota-label">{label}{failure ? (
+          <span className="quota-alert">
+            <button
+              aria-describedby={failureId}
+              aria-label={t("quota.refreshErrorLabel")}
+              className="quota-alert-button"
+              type="button"
+            ><CircleAlert size={15} /></button>
+            <span className="quota-alert-tooltip" id={failureId} role="tooltip">
+              <strong>{t("quota.refreshErrorLabel")}</strong>
+              <span>{quotaFailureMessage(t, failure)}</span>
+              {lastSuccess ? <span>{t("quota.lastUpdated", { time: formatDateTimeWithRelative(lastSuccess / 1000, formatLocale) })}</span> : null}
+            </span>
+          </span>
+        ) : null}</span>
+        <strong>{value === undefined || !known ? "—" : status === "stale"
+          ? t("quota.previousValue", { value: formatPercent(value, formatLocale) })
+          : formatPercent(value, formatLocale)}</strong>
       </div>
       <div
         aria-label={t("quota.remaining", { label })}
         aria-valuemax={100}
         aria-valuemin={0}
-        aria-valuenow={value}
+        aria-valuenow={status === "fresh" ? value : undefined}
         className="quota-track"
-        role={value === undefined ? undefined : "progressbar"}
+        role={value === undefined || status !== "fresh" ? undefined : "progressbar"}
       >
         <span
           className={value !== undefined && value < 15 ? "quota-low" : ""}
@@ -447,6 +503,10 @@ function AccountCard({
   onReset,
   resetRecoveryRequired,
   onRemove,
+  onCopyEmail,
+  onReauthenticate,
+  reauthenticationAvailable,
+  quotaFailure,
   selectionMode,
   selected,
   onSelectionChange,
@@ -464,6 +524,10 @@ function AccountCard({
   onReset: () => void;
   resetRecoveryRequired: boolean;
   onRemove: () => void;
+  onCopyEmail: () => void;
+  onReauthenticate: () => void;
+  reauthenticationAvailable: boolean;
+  quotaFailure?: QuotaRefreshFailureCode;
   selectionMode: boolean;
   selected: boolean;
   onSelectionChange: () => void;
@@ -504,7 +568,16 @@ function AccountCard({
               <MoreHorizontal size={18} />
             </summary>
             <div className="card-menu-popover">
+              {account.email ? <button onClick={(event) => {
+                event.currentTarget.closest("details")?.removeAttribute("open");
+                onCopyEmail();
+              }} type="button"><Copy size={15} />{t("account.copyEmail")}</button> : null}
+              {reauthenticationAvailable ? <button disabled={controlsBusy} onClick={(event) => {
+                event.currentTarget.closest("details")?.removeAttribute("open");
+                onReauthenticate();
+              }} type="button"><Globe2 size={15} />{t("account.signInAgain")}</button> : null}
               <button
+                className="card-menu-danger"
                 aria-label={t("account.remove", { name: primaryName })}
                 disabled={active || controlsBusy}
                 onClick={onRemove}
@@ -534,11 +607,21 @@ function AccountCard({
         </div>
       ) : (
         <>
-          <div className="quota-pair">
-            <QuotaMeter formatLocale={formatLocale} label={t("quota.fiveHour")} status={quota?.status} t={t} window={primaryWindow(quota, "five_hour")} />
-            <QuotaMeter formatLocale={formatLocale} label={t("quota.weekly")} status={quota?.status} t={t} window={primaryWindow(quota, "weekly")} />
+          <div className={"quota-pair" + (codexQuotaWindows(quota).length === 1 ? " quota-pair-single" : "")}>
+            {codexQuotaWindows(quota).length ? codexQuotaWindows(quota).map((window, index) => (
+              <QuotaMeter
+                failure={index === 0 ? quotaFailure : undefined}
+                failureId={"quota-error-" + account.id}
+                lastSuccess={quota?.snapshot?.fetched_at_unix_ms}
+                formatLocale={formatLocale}
+                key={index}
+                label={quotaWindowLabel(window, t)}
+                status={quota?.status}
+                t={t}
+                window={window}
+              />
+            )) : <QuotaMeter failure={quotaFailure} failureId={"quota-error-" + account.id} lastSuccess={quota?.snapshot?.fetched_at_unix_ms} formatLocale={formatLocale} label={t("quota.otherWindow")} status={quota?.status} t={t} />}
           </div>
-          {quota?.message ? <p className="quota-status-message">{quota.message}</p> : null}
           <div className="credit-row">
             <span>
               {t("credit.resetCredits")}
@@ -690,8 +773,9 @@ export default function App() {
   const [languagePreference, setLanguagePreference] = useState<LanguagePreference>(() => readLanguagePreference());
   const [accounts, setAccounts] = useState<AccountView[]>([]);
   const [quotas, setQuotas] = useState<Record<string, QuotaView>>({});
+  const [quotaFailures, setQuotaFailures] = useState<Record<string, QuotaRefreshFailureCode>>({});
+  const [accountSignInNeeded, setAccountSignInNeeded] = useState<Record<string, boolean>>({});
   const [live, setLive] = useState<LiveAccountView | null>(null);
-  const [runtime, setRuntime] = useState<RuntimeInfo | null>(null);
   const [storage, setStorage] = useState<StorageView | null>(null);
   const [pendingResetCredit, setPendingResetCredit] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -708,6 +792,7 @@ export default function App() {
   const [migrationScanned, setMigrationScanned] = useState(false);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [oauth, setOauth] = useState<OAuthFlow | null>(null);
+  const [oauthTarget, setOauthTarget] = useState<AccountView | null>(null);
   const [wake, setWake] = useState<WakeOperationView | null>(null);
   const [resetAccount, setResetAccount] = useState<AccountView | null>(null);
   const [removeAccount, setRemoveAccount] = useState<AccountView | null>(null);
@@ -742,10 +827,16 @@ export default function App() {
     const request = quotaRefreshQueue.current.then(() => api.refreshAccountQuota(accountId)).then(
       (quota) => {
         setQuotas((current) => ({ ...current, [accountId]: quota }));
+        setQuotaFailures((current) => {
+          const next = { ...current };
+          delete next[accountId];
+          return next;
+        });
         return quota;
       },
       (error) => {
-        const message = quotaRefreshMessage(t, error);
+        const code = quotaFailureCode(error);
+        setQuotaFailures((current) => ({ ...current, [accountId]: code }));
         setQuotas((current) => {
           const previous = current[accountId];
           return {
@@ -754,7 +845,6 @@ export default function App() {
               account_id: accountId,
               status: previous?.snapshot ? "stale" : "unknown",
               snapshot: previous?.snapshot,
-              message,
             },
           };
         });
@@ -768,7 +858,7 @@ export default function App() {
       () => quotaRefreshes.current.get(accountId) === request && quotaRefreshes.current.delete(accountId),
     );
     return request;
-  }, [t]);
+  }, []);
 
   const loadSnapshot = useCallback(async () => {
     setLoading(true);
@@ -787,8 +877,8 @@ export default function App() {
       setStorage(initial.storage);
       setPendingResetCredit(initial.pending_reset_credit);
       setLive(initial.live || null);
-      setRuntime(initial.runtime || null);
       setQuotas({});
+      setQuotaFailures({});
       if (initial.storage.status === "ready") {
         void Promise.allSettled(
           nextAccounts
@@ -1022,7 +1112,10 @@ export default function App() {
           current?.login_id === oauth.login_id ? { ...current, status } : current,
         );
         if (status.status === "complete") {
-          setNotice({ kind: "success", text: t("notice.importedAccount", { name: status.account.label }) });
+          if (oauthTarget) {
+            setAccountSignInNeeded((current) => ({ ...current, [oauthTarget.id]: false }));
+          }
+          setNotice({ kind: "success", text: t(oauthTarget ? "notice.reauthenticatedAccount" : "notice.importedAccount", { name: status.account.label }) });
           setDialog(null);
           void loadSnapshot();
         } else if (status.status === "pending") {
@@ -1032,7 +1125,7 @@ export default function App() {
         if (!closed) {
           setOauth((current) =>
             current?.login_id === oauth.login_id
-              ? { ...current, status: { status: "failed", message: t("error.oauthStatus") } }
+              ? { ...current, status: { status: "failed", code: "unavailable" } }
               : current,
           );
         }
@@ -1045,7 +1138,7 @@ export default function App() {
         window.clearTimeout(timer);
       }
     };
-  }, [loadSnapshot, oauth, t]);
+  }, [loadSnapshot, oauth, oauthTarget, t]);
 
   useEffect(() => {
     if (!wake || wake.status !== "running") {
@@ -1080,18 +1173,15 @@ export default function App() {
     };
   }, [loadSnapshot, t, wake]);
 
-  const startOAuth = async () => {
-    const result = await runTask("oauth", api.startOAuth, false);
+  const startOAuth = async (target?: AccountView) => {
+    const result = await runTask("oauth", () => api.startOAuth(target?.id), false);
     if (!result) {
       return;
     }
     setOauth({ ...result, status: { status: "pending" } });
+    setOauthTarget(target ?? null);
+    setDialog("add");
     setAddMethod("oauth");
-    try {
-      await api.openOAuth(result.login_id);
-    } catch {
-      setNotice({ kind: "info", text: t("notice.oauthReady") });
-    }
   };
 
   const dismissUpdate = () => {
@@ -1164,6 +1254,7 @@ export default function App() {
 
   const openAddDialog = () => {
     setOauth(null);
+    setOauthTarget(null);
     setAddMethod("start");
     setMigrationPreview(null);
     setMigrationRoot(undefined);
@@ -1207,6 +1298,16 @@ export default function App() {
       setNotice({ kind: "success", text: t("notice.oauthCopied") });
     } catch {
       setNotice({ kind: "info", text: t("notice.copyManually") });
+    }
+  };
+
+  const copyAccountEmail = async (account: AccountView) => {
+    if (!account.email) return;
+    try {
+      await navigator.clipboard.writeText(account.email);
+      setNotice({ kind: "success", text: t("notice.emailCopied") });
+    } catch {
+      setNotice({ kind: "error", text: t("notice.emailCopyFailed") });
     }
   };
 
@@ -1273,12 +1374,16 @@ export default function App() {
     setBusy("switch:" + account.id);
     try {
       await api.switchAccount(account.id);
+      setAccountSignInNeeded((current) => ({ ...current, [account.id]: false }));
       await loadSnapshot();
       setNotice({
         kind: "success",
         text: t("notice.switched", { name: accountPrimaryName(account) }),
       });
     } catch (error) {
+      if (asSwitchFailure(error)?.code === "account_needs_sign_in") {
+        setAccountSignInNeeded((current) => ({ ...current, [account.id]: true }));
+      }
       setNotice({ kind: "error", text: switchFailureMessage(t, error, account) });
     } finally {
       setBusy(null);
@@ -1534,9 +1639,25 @@ export default function App() {
             <Plus size={16} />
             {t("common.addAccount")}
           </button>
-          <button aria-label={t("toolbar.openSettings")} className="icon-button" onClick={() => setDialog("settings")} type="button">
-            <Settings size={18} />
-          </button>
+          <details className="language-menu">
+            <summary aria-label={t("toolbar.language")} title={t("toolbar.language")}><Globe2 size={18} /></summary>
+            <div className="language-menu-popover" aria-label={t("settings.language")}>
+              {(["system", "zh-CN", "en"] as const).map((preference) => (
+                <button
+                  aria-pressed={languagePreference === preference}
+                  key={preference}
+                  onClick={(event) => {
+                    changeLanguage(preference);
+                    event.currentTarget.closest("details")?.removeAttribute("open");
+                  }}
+                  type="button"
+                >
+                  <span>{t(preference === "system" ? "settings.system" : preference === "en" ? "settings.english" : "settings.chinese")}</span>
+                  {languagePreference === preference ? <Check size={15} /> : null}
+                </button>
+              ))}
+            </div>
+          </details>
         </div>
       </header>
 
@@ -1682,6 +1803,8 @@ export default function App() {
                   formatLocale={locale.formatLocale}
                   globalBusy={accountGridBusy}
                   key={account.id}
+                  onCopyEmail={() => void copyAccountEmail(account)}
+                  onReauthenticate={() => void startOAuth(account)}
                   onRefresh={() => void refreshAccount(account)}
                   onRemove={() => {
                     setRemoveAccount(account);
@@ -1708,6 +1831,8 @@ export default function App() {
                     );
                   }}
                   quota={quotas[account.id]}
+                  quotaFailure={quotaFailures[account.id]}
+                  reauthenticationAvailable={account.kind === "chat_gpt" && (quotaFailures[account.id] === "authentication" || accountSignInNeeded[account.id] === true)}
                   selected={selectedAccountIds.includes(account.id)}
                   selectionMode={selectionMode}
                   t={t}
@@ -1725,7 +1850,7 @@ export default function App() {
       </div>
 
       {dialog === "add" ? (
-        <Modal dismissible={busy === null} onClose={closeAddDialog} t={t} title={t("add.title")} wide>
+        <Modal dismissible={busy === null} onClose={closeAddDialog} t={t} title={t(oauthTarget ? "oauth.reauthenticateTitle" : "add.title", oauthTarget ? { name: accountPrimaryName(oauthTarget) } : undefined)} wide>
           {addMethod === "start" ? (
             <div className="add-methods">
               <section className="add-method-group" aria-labelledby="import-existing-heading">
@@ -1861,7 +1986,7 @@ export default function App() {
                 <>
                   <div className="oauth-hero">
                     <LoaderCircle className="spin" size={26} />
-                    <div><h3>{t("oauth.finishTitle")}</h3><p>{t("oauth.finishBody")}</p></div>
+                    <div><h3>{t("oauth.finishTitle")}</h3><p>{t(oauthTarget ? "oauth.reauthenticateBody" : "oauth.finishBody")}</p></div>
                   </div>
                   <label className="field-label" htmlFor="oauth-link">{t("oauth.link")}</label>
                   <div className="copy-field">
@@ -1870,21 +1995,21 @@ export default function App() {
                   </div>
                   <div className="modal-actions">
                     <button className="button button-secondary" onClick={() => void cancelOAuth()} type="button">{t("oauth.cancel")}</button>
-                    <button className="button button-primary" onClick={() => void api.openOAuth(oauth.login_id)} type="button"><Globe2 size={16} />{t("oauth.openBrowser")}</button>
+                    <button className="button button-primary" onClick={() => void api.openOAuth(oauth.login_id).catch(() => setNotice({ kind: "error", text: t("oauth.openFailed") }))} type="button"><Globe2 size={16} />{t("oauth.openBrowser")}</button>
                   </div>
                 </>
               ) : oauth.status.status === "complete" ? (
                 <div className="outcome-panel">
                   <CircleCheck size={26} />
-                  <h3>{t("oauth.added", { name: oauth.status.account.label })}</h3>
+                  <h3>{t(oauthTarget ? "oauth.reauthenticated" : "oauth.added", { name: oauth.status.account.label })}</h3>
                   <button className="button button-primary" onClick={closeAddDialog} type="button">{t("common.done")}</button>
                 </div>
               ) : (
                 <div className="outcome-panel">
                   <CircleAlert size={26} />
                   <h3>{oauth.status.status === "cancelled" ? t("oauth.cancelled") : t("oauth.incomplete")}</h3>
-                  <p>{oauth.status.status === "failed" ? t("oauth.retryBody") : t("oauth.unchanged")}</p>
-                  <button className="button button-primary" onClick={() => void startOAuth()} type="button">{t("oauth.retry")}</button>
+                  <p>{oauth.status.status === "failed" ? oauthFailureMessage(t, oauth.status.code) : t("oauth.unchanged")}</p>
+                  <button className="button button-primary" onClick={() => void startOAuth(oauthTarget ?? undefined)} type="button">{t("oauth.retry")}</button>
                 </div>
               )}
             </div>
@@ -1972,28 +2097,6 @@ export default function App() {
                 {exportConfirmation ? t("export.write") : t("common.continue")}
               </button>
             </div>
-          </div>
-        </Modal>
-      ) : null}
-
-      {dialog === "settings" ? (
-        <Modal dismissible={busy === null} onClose={() => setDialog(null)} t={t} title={t("settings.title")}>
-          <div className="settings-list">
-            <div className="settings-language">
-              <label htmlFor="language-preference">{t("settings.language")}</label>
-              <select
-                id="language-preference"
-                onChange={(event) => changeLanguage(event.target.value as LanguagePreference)}
-                value={languagePreference}
-              >
-                <option value="system">{t("settings.system")}</option>
-                <option value="en">{t("settings.english")}</option>
-                <option value="zh-CN">{t("settings.chinese")}</option>
-              </select>
-            </div>
-            <div><span>{t("settings.credentialStore")}</span><strong>{runtime ? credentialStoreLabel(runtime.credential_store, t) : t("settings.checking")}</strong></div>
-            <div><span>{t("settings.accountRecords")}</span><strong>{storage?.status === "recovery_required" ? t("settings.recoveryRequired") : t("settings.storedLocally")}</strong></div>
-            <p>{t("settings.secretBoundary")}</p>
           </div>
         </Modal>
       ) : null}
