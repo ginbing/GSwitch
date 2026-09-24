@@ -228,7 +228,7 @@ pub(crate) fn credential_snapshot(credential: &Value) -> Result<CredentialSnapsh
         .and_then(Value::as_str)
         .filter(|value| !value.trim().is_empty())
         .map(ToString::to_string)
-        .or_else(|| match identity {
+        .or(match identity {
             AccountIdentity::ChatGpt { workspace_id, .. } => workspace_id,
             AccountIdentity::ApiKey { .. } => None,
         });
