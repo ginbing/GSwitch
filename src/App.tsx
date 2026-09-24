@@ -12,6 +12,7 @@ import {
   FolderOpen,
   Globe2,
   KeyRound,
+  ListChecks,
   LoaderCircle,
   MoreHorizontal,
   Plus,
@@ -1575,8 +1576,7 @@ export default function App() {
 
         <section className="accounts-section" aria-labelledby="accounts-heading">
           <div className="section-heading">
-            <div>
-              <span className="eyebrow">{t("accounts.eyebrow")}</span>
+            <div className="section-heading-main">
               <h2 id="accounts-heading">
                 {loading
                   ? t("accounts.loading")
@@ -1584,12 +1584,10 @@ export default function App() {
                     ? t("accounts.savedOne")
                     : t("accounts.savedMany", { count: formatNumber(accounts.length, locale.formatLocale) })}
               </h2>
-            </div>
-            <div className="section-heading-actions">
-              {storageRecovery ? <p>{t("accounts.recoveryDescription")}</p> : null}
               {accounts.length && !storageRecovery ? (
                 <button
-                  className="button button-quiet"
+                  aria-pressed={selectionMode}
+                  className="button button-secondary section-select-button"
                   disabled={loading || busy !== null}
                   onClick={() => {
                     setSelectionMode((current) => !current);
@@ -1597,10 +1595,16 @@ export default function App() {
                   }}
                   type="button"
                 >
+                  <ListChecks aria-hidden="true" size={15} />
                   {selectionMode ? t("accounts.doneSelecting") : t("accounts.select")}
                 </button>
               ) : null}
             </div>
+            {storageRecovery ? (
+              <div className="section-heading-actions">
+                <p>{t("accounts.recoveryDescription")}</p>
+              </div>
+            ) : null}
           </div>
 
           {selectionMode && accounts.length ? (

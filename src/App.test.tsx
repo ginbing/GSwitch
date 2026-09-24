@@ -212,17 +212,23 @@ describe("GSwitch account workspace", () => {
   });
 
   it("applies and remembers a manual language choice immediately", async () => {
+    mocks.listAccounts.mockResolvedValue([chatAccount]);
     const first = render(<App />);
-    await screen.findByRole("heading", { name: "0 saved accounts" });
+    await screen.findByRole("heading", { name: "1 saved account" });
 
     await userEvent.click(screen.getByRole("button", { name: "Open settings" }));
     await userEvent.selectOptions(screen.getByLabelText("Language"), "zh-CN");
     expect(screen.getByRole("button", { name: "添加账户" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "已保存 1 个账户" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "批量选择" })).toHaveAttribute("aria-pressed", "false");
     expect(window.localStorage.getItem("gswitch.language")).toBe("zh-CN");
 
     first.unmount();
     render(<App />);
-    expect(await screen.findByRole("heading", { name: "已保存 0 个账户" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "已保存 1 个账户" })).toBeInTheDocument();
+    const selectButton = screen.getByRole("button", { name: "批量选择" });
+    await userEvent.click(selectButton);
+    expect(screen.getByRole("button", { name: "完成" })).toHaveAttribute("aria-pressed", "true");
   });
 
   it("guides a first-time user to an explicit import or manual add", async () => {
@@ -268,7 +274,7 @@ describe("GSwitch account workspace", () => {
     const user = userEvent.setup();
     render(<App />);
     await screen.findByText("person@example.com");
-    await user.click(screen.getByRole("button", { name: "Select" }));
+    await user.click(screen.getByRole("button", { name: "Select accounts" }));
     await user.click(screen.getByRole("button", { name: "Select all" }));
     await user.click(screen.getByRole("button", { name: "Export" }));
     const dialog = screen.getByRole("dialog", { name: "Export selected accounts" });
@@ -961,7 +967,15 @@ describe("GSwitch account workspace", () => {
     render(<App />);
     await screen.findByText("Personal");
 
-    await userEvent.click(screen.getByRole("button", { name: "Select" }));
+    const heading = screen.getByRole("heading", { name: "2 saved accounts" });
+    expect(heading.closest("section")?.querySelector(".eyebrow")).not.toBeInTheDocument();
+    const selectButton = screen.getByRole("button", { name: "Select accounts" });
+    expect(selectButton).toHaveClass("button-secondary", "section-select-button");
+    expect(selectButton).toHaveAttribute("aria-pressed", "false");
+    selectButton.focus();
+    expect(selectButton).toHaveFocus();
+    await userEvent.keyboard("{Enter}");
+    expect(screen.getByRole("button", { name: "Done" })).toHaveAttribute("aria-pressed", "true");
     await userEvent.click(screen.getByRole("button", { name: "Select all" }));
     expect(screen.getAllByRole("checkbox")).toHaveLength(2);
     for (const checkbox of screen.getAllByRole("checkbox")) {
@@ -984,6 +998,9 @@ describe("GSwitch account workspace", () => {
     await userEvent.click(within(exportDialog).getByRole("button", { name: "Export unencrypted accounts" }));
     await waitFor(() => expect(mocks.exportAccounts).toHaveBeenCalledWith(["account-1"]));
     expect(await screen.findByText("Exported 1 selected account(s). Keep this unencrypted file private.")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Done" }));
+    expect(screen.queryAllByRole("checkbox")).toHaveLength(0);
+    expect(screen.getByRole("button", { name: "Select accounts" })).toHaveAttribute("aria-pressed", "false");
   });
 
   it("offers a signed update once and keeps Later local to the current session", async () => {

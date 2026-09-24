@@ -46,12 +46,13 @@ status badge. Actions stay next to the account they affect. Global actions such
 as **Add account** and **Wake All** stay near the cards rather than behind a
 sidebar.
 
-Next to Saved accounts, **Select** enters a compact selection mode. Checkboxes
-appear only in that mode, with Select all, Clear, Wake, and Export in one
-compact action bar. It must remain a card-grid interaction rather than a
-dashboard, table, bulk-management page, or second navigation system. Export
-always opens a focused warning before the native save dialog because its
-portable JSON contains unencrypted credentials.
+The account section has one heading: the saved-account count. A persistent,
+bordered **Select accounts** button sits directly beside it, with a clear
+keyboard focus indicator. It enters a compact selection mode. Checkboxes appear
+only in that mode, with Select all, Clear, Wake, and Export in one compact
+action bar. It remains a card-grid interaction. Export always opens a focused
+warning before the native save dialog because its portable JSON contains
+unencrypted credentials.
 
 Reset credits remain compact in the row. Details and the destructive
 **Use reset** confirmation appear only on demand, with the earliest-expiring
