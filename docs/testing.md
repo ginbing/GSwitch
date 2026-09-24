@@ -6,13 +6,13 @@ acceptance.
 
 ## Local validation
 
-Frontend feedback:
+Frontend source proof:
 
 ```bash
 pnpm run ci:source -- frontend
 ```
 
-Rust feedback:
+Full source proof (run on Linux to match CI):
 
 ```bash
 pnpm run ci:source -- linux
@@ -44,11 +44,12 @@ The CI workflow always starts and detects changed paths inside the run, so a
 path filter cannot leave a required workflow pending. Frontend changes call the
 repository-owned `ci:source` command for the version check, UI tests, and
 production frontend build. Rust changes call its Linux mode for version,
-frontend build, Rust formatting, Clippy, and the full Rust test suite. Changes
-to application or build inputs also compile all Rust targets on Windows and
-macOS; those jobs do not repeat tests or create installer bundles. Node and
-Cargo dependencies use runner caches, and newer runs cancel older runs for the
-same pull request or branch.
+frontend build, Rust formatting, Clippy, and the full Rust test suite. Frontend
+only changes do not start the Rust or platform workers. Changes to application
+or build inputs also compile all Rust targets on Windows and macOS; those jobs
+do not repeat tests or create installer bundles. Node and Cargo dependencies
+use runner caches, and newer runs cancel older runs for the same pull request
+or branch.
 
 `CI gate` reports whether the scoped source jobs and security checks succeeded.
 It runs even when a scoped source job is skipped and fails if scope detection

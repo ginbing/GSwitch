@@ -113,6 +113,8 @@ from shared tracking. Before changing a selected Issue, read its current body,
 comments, metadata, and relationships. When the maintainer names a task,
 execute it without scanning the Issue queue.
 
+Write GitHub Issue titles, bodies, and comments in English.
+
 After implementation, reconcile the affected Issue against current behavior.
 Close it only when its acceptance evidence is satisfied; otherwise retain only
 the remaining gap and point durable facts to their canonical owner.

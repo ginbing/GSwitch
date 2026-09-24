@@ -52,19 +52,20 @@ and update decision and is not part of the current GitHub Releases path.
 ## Maintainer Windows preview
 
 When a desktop change needs maintainer interaction before merge, build a local
-NSIS preview from a committed source revision and provide the installer before
-the final PR checks. This is an opt-in feedback path; ordinary PR CI does not
-build installers. Record the source commit, preview version, and installer
-location in the PR or its tracking Issue. If feedback leads to another change,
-commit it and increase the preview suffix before rebuilding.
+NSIS preview from a committed source revision and provide the installer as an
+opt-in feedback path. Ordinary PR CI does not build installers. Record the
+source commit, preview version, and installer location in the PR or its tracking
+Issue. If feedback leads to another change, commit it and increase the preview
+suffix before rebuilding.
 
-From the repository root in PowerShell 7, set `$previewVersion` to a unique
-pre-release value for the current product version, then build:
+From the repository root in PowerShell 7, derive a unique preview version from
+the current product version, then build:
 
 ```powershell
 $dirty = git status --porcelain
 if ($dirty) { throw 'Build the preview from a clean, committed source revision.' }
-$previewVersion = '1.0.6-rc.1'
+$baseVersion = node -p "require('./src-tauri/tauri.conf.json').version"
+$previewVersion = "$baseVersion-rc.1"
 New-Item -ItemType Directory -Force -Path 'src-tauri/target' | Out-Null
 $previewConfig = Join-Path (Resolve-Path 'src-tauri/target').Path "tauri-$previewVersion.json"
 Set-Content -LiteralPath $previewConfig -Value "{`"version`":`"$previewVersion`"}" -NoNewline -Encoding utf8

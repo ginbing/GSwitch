@@ -199,15 +199,17 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Install repository Rust toolchain
         run: rustup show active-toolchain
-      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      - id: audit-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
             ~/.cargo/bin
             ~/.cargo/registry/index
             ~/.cargo/registry/cache
             ~/.cargo/git/db
-          key: ${{ runner.os }}-rustsec-${{ hashFiles('rust-toolchain.toml', 'src-tauri/Cargo.lock') }}-0.22.2
+          key: ${{ runner.os }}-rustsec-${{ hashFiles('rust-toolchain.toml') }}-cargo-audit-0.22.2
       - name: Install RustSec cargo-audit
+        if: steps.audit-cache.outputs.cache-hit != 'true'
         run: cargo install --locked cargo-audit --version 0.22.2
       - name: Audit Cargo.lock
         run: cargo audit --file src-tauri/Cargo.lock
@@ -248,10 +250,7 @@ jobs:
             fi
           }
           check_scoped "Frontend" "$FRONTEND_SCOPE" "$FRONTEND_RESULT"
-          linux_scope=false
-          if [[ "$RUST_SCOPE" == "true" || "$FRONTEND_SCOPE" == "true" ]]; then
-            linux_scope=true
-          fi
+          linux_scope="$RUST_SCOPE"
           check_scoped "Linux build" "$linux_scope" "$LINUX_RESULT"
           check_scoped "Windows/macOS build" "$PLATFORM_SCOPE" "$PLATFORM_RESULT"
           if [[ "$EVENT_NAME" == "pull_request" && "$DEPENDENCY_REVIEW_RESULT" != "success" ]]; then

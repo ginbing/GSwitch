@@ -56,6 +56,21 @@ pub struct OperationGuard<'a> {
     lock_file: File,
 }
 
+#[derive(Debug)]
+pub(crate) enum OperationAcquireFailure {
+    Busy,
+    Failed(String),
+}
+
+impl std::fmt::Display for OperationAcquireFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Busy => formatter.write_str("Another GSwitch operation is already in progress"),
+            Self::Failed(message) => formatter.write_str(message),
+        }
+    }
+}
+
 impl Drop for OperationGuard<'_> {
     fn drop(&mut self) {
         let _ = FileExt::unlock(&self.lock_file);
@@ -720,23 +735,35 @@ impl AppState {
     pub fn acquire_operation(&self) -> Result<OperationGuard<'_>, String> {
         self.ensure_store_ready()?;
         self.acquire_operation_lock()
+            .map_err(|error| error.to_string())
+    }
+
+    pub(crate) fn acquire_operation_for_switch(
+        &self,
+    ) -> Result<OperationGuard<'_>, OperationAcquireFailure> {
+        self.ensure_store_ready()
+            .map_err(OperationAcquireFailure::Failed)?;
+        self.acquire_operation_lock()
     }
 
     fn acquire_recovery_operation(&self) -> Result<OperationGuard<'_>, String> {
         self.acquire_operation_lock()
+            .map_err(|error| error.to_string())
     }
 
-    fn acquire_operation_lock(&self) -> Result<OperationGuard<'_>, String> {
+    fn acquire_operation_lock(&self) -> Result<OperationGuard<'_>, OperationAcquireFailure> {
         let in_process = self
             .operation_lock
             .try_lock()
-            .map_err(|_| "Another GSwitch operation is already in progress".to_string())?;
-        let parent = self
-            .store_path
-            .parent()
-            .ok_or_else(|| "Invalid GSwitch storage path".to_string())?;
-        fs::create_dir_all(parent)
-            .map_err(|_| "Unable to prepare GSwitch operation storage".to_string())?;
+            .map_err(|_| OperationAcquireFailure::Busy)?;
+        let parent = self.store_path.parent().ok_or_else(|| {
+            OperationAcquireFailure::Failed("Invalid GSwitch storage path".to_string())
+        })?;
+        fs::create_dir_all(parent).map_err(|_| {
+            OperationAcquireFailure::Failed(
+                "Unable to prepare GSwitch operation storage".to_string(),
+            )
+        })?;
 
         let lock_file = OpenOptions::new()
             .create(true)
@@ -744,10 +771,12 @@ impl AppState {
             .write(true)
             .truncate(false)
             .open(parent.join("operations.lock"))
-            .map_err(|_| "Unable to lock GSwitch operations".to_string())?;
+            .map_err(|_| {
+                OperationAcquireFailure::Failed("Unable to lock GSwitch operations".to_string())
+            })?;
         lock_file
             .try_lock_exclusive()
-            .map_err(|_| "Another GSwitch operation is already in progress".to_string())?;
+            .map_err(|_| OperationAcquireFailure::Busy)?;
 
         Ok(OperationGuard {
             _in_process: in_process,

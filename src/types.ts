@@ -57,6 +57,7 @@ export interface SwitchOutcome {
 }
 
 export type SwitchFailureCode =
+  | "operation_busy"
   | "codex_open"
   | "account_needs_sign_in"
   | "file_store_required"

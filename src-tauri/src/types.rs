@@ -228,6 +228,7 @@ pub struct SwitchOutcome {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SwitchFailureCode {
+    OperationBusy,
     CodexOpen,
     AccountNeedsSignIn,
     FileStoreRequired,

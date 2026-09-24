@@ -129,6 +129,7 @@ function friendlyError(t: Translator, error: unknown, fallback = t("error.action
 }
 
 const switchFailureCodes = new Set<SwitchFailureCode>([
+  "operation_busy",
   "codex_open",
   "account_needs_sign_in",
   "file_store_required",
@@ -154,6 +155,7 @@ function asSwitchFailure(error: unknown): SwitchFailure | undefined {
 function switchFailureMessage(t: Translator, error: unknown, account: AccountView) {
   const failure = asSwitchFailure(error);
   const messages = {
+    operation_busy: "switch.error.operationBusy",
     codex_open: "switch.error.codexOpen",
     account_needs_sign_in: "switch.error.needsSignIn",
     file_store_required: "switch.error.fileStoreRequired",

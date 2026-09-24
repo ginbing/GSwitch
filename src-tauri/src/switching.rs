@@ -1,7 +1,7 @@
 use serde_json::{json, Value};
 
 use crate::{
-    accounts::{AppState, OperationGuard},
+    accounts::{AppState, OperationAcquireFailure, OperationGuard},
     app_server::{account_metadata, AccountMetadata, AppServer, TempCodexHome},
     chatgpt::{self, ChatGptClient, RequestFailureKind},
     codex,
@@ -272,9 +272,13 @@ pub fn enable_file_store(state: &AppState) -> Result<bool, String> {
 }
 
 pub fn switch_account(state: &AppState, target_id: &str) -> Result<SwitchOutcome, SwitchFailure> {
-    let operation = state
-        .acquire_operation()
-        .map_err(|_| switch_failure(SwitchFailureCode::LocalVerificationFailed))?;
+    let operation = state.acquire_operation_for_switch().map_err(|error| {
+        let code = match error {
+            OperationAcquireFailure::Busy => SwitchFailureCode::OperationBusy,
+            OperationAcquireFailure::Failed(_) => SwitchFailureCode::LocalVerificationFailed,
+        };
+        switch_failure(code)
+    })?;
     if state
         .pending_switch_under_operation(&operation)
         .map_err(|_| switch_failure(SwitchFailureCode::RecoveryRequired))?
@@ -874,6 +878,18 @@ mod tests {
             .expect("target");
         drop(operation);
         (state, target, root)
+    }
+
+    #[test]
+    fn switch_reports_a_busy_operation_lock_as_actionable() {
+        let (state, target, root) = state_with_chatgpt_target();
+        let operation = state.acquire_operation().expect("operation lock");
+
+        let error = switch_account(&state, &target.id).expect_err("busy operation");
+        assert_eq!(error.code, SwitchFailureCode::OperationBusy);
+
+        drop(operation);
+        let _ = fs::remove_dir_all(root);
     }
 
     fn account_check_server(

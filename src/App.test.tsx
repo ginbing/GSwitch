@@ -751,6 +751,7 @@ describe("GSwitch account workspace", () => {
   });
 
   it.each([
+    ["operation_busy", /Another GSwitch operation is in progress/],
     ["codex_open", /Quit the other Codex session/],
     ["account_needs_sign_in", /needs sign-in again/],
     ["file_store_required", /Enable file-backed Codex credentials/],
