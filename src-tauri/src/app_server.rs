@@ -363,42 +363,87 @@ fn app_server_command(codex_home: &Path) -> Command {
 #[cfg(windows)]
 fn windows_app_server_command() -> Command {
     if let Some(path) = configured_codex_binary() {
-        if path
-            .extension()
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("cmd"))
-        {
-            if let Some(npm_dir) = path.parent() {
-                let script = npm_dir
-                    .join("node_modules")
-                    .join("@openai")
-                    .join("codex")
-                    .join("bin")
-                    .join("codex.js");
-                if script.is_file() {
-                    // Calling a batch shim through cmd makes its child process
-                    // lifecycle ambiguous and failed with redirected stdin in
-                    // the installed Codex 0.144.5 runtime. Invoke its actual
-                    // Node entrypoint instead.
-                    let bundled_node = npm_dir.join("node.exe");
-                    let mut command = if bundled_node.is_file() {
-                        Command::new(bundled_node)
-                    } else {
-                        Command::new("node.exe")
-                    };
-                    command.args([script, PathBuf::from("app-server")]);
-                    return command;
-                }
-            }
-        }
-
-        let mut command = Command::new(path);
-        command.arg("app-server");
-        return command;
+        return windows_app_server_command_for(&path);
     }
 
     let mut command = Command::new("codex");
     command.arg("app-server");
     command
+}
+
+#[cfg(windows)]
+fn windows_app_server_command_for(path: &Path) -> Command {
+    if path
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("cmd"))
+    {
+        if let Some(native) = windows_npm_codex_executable(path) {
+            let mut command = Command::new(native);
+            command.arg("app-server");
+            return command;
+        }
+        if let Some(npm_dir) = path.parent() {
+            let script = npm_dir
+                .join("node_modules")
+                .join("@openai")
+                .join("codex")
+                .join("bin")
+                .join("codex.js");
+            if script.is_file() {
+                // The npm shim is a batch file and cannot reliably carry the
+                // App Server's redirected stdin. Use its Node entrypoint when
+                // the package's native executable is unavailable.
+                let bundled_node = npm_dir.join("node.exe");
+                let mut command = if bundled_node.is_file() {
+                    Command::new(bundled_node)
+                } else {
+                    Command::new("node.exe")
+                };
+                command.args([script, PathBuf::from("app-server")]);
+                return command;
+            }
+        }
+    }
+
+    let mut command = Command::new(path);
+    command.arg("app-server");
+    command
+}
+
+#[cfg(windows)]
+fn windows_npm_codex_executable(shim: &Path) -> Option<PathBuf> {
+    if !shim
+        .file_name()
+        .is_some_and(|name| name.eq_ignore_ascii_case("codex.cmd"))
+    {
+        return None;
+    }
+    let npm_dir = shim.parent()?;
+    let (package, target) = match std::env::consts::ARCH {
+        "x86_64" => ("codex-win32-x64", "x86_64-pc-windows-msvc"),
+        "aarch64" => ("codex-win32-arm64", "aarch64-pc-windows-msvc"),
+        _ => return None,
+    };
+    let package_root = npm_dir.join("node_modules").join("@openai").join("codex");
+    // The official npm launcher resolves the platform package through Node's
+    // package lookup and falls back to its own vendor directory. Match those
+    // shipped locations so a desktop launch does not depend on node.exe in PATH.
+    [
+        package_root
+            .join("node_modules")
+            .join("@openai")
+            .join(package)
+            .join("vendor"),
+        npm_dir
+            .join("node_modules")
+            .join("@openai")
+            .join(package)
+            .join("vendor"),
+        package_root.join("vendor"),
+    ]
+    .into_iter()
+    .map(|vendor| vendor.join(target).join("bin").join("codex.exe"))
+    .find(|executable| executable.is_file())
 }
 
 fn configured_codex_binary() -> Option<PathBuf> {
@@ -646,6 +691,40 @@ pub fn account_metadata(result: &Value) -> Result<AccountMetadata, String> {
 mod tests {
     use super::*;
 
+    #[cfg(windows)]
+    #[test]
+    fn npm_codex_uses_its_native_executable_without_node_in_path() {
+        use std::ffi::OsStr;
+
+        let root = test_profile_root();
+        let npm_dir = root.join("npm");
+        let shim = npm_dir.join("codex.cmd");
+        let (package, target) = match std::env::consts::ARCH {
+            "x86_64" => ("codex-win32-x64", "x86_64-pc-windows-msvc"),
+            "aarch64" => ("codex-win32-arm64", "aarch64-pc-windows-msvc"),
+            _ => return,
+        };
+        let native = npm_dir
+            .join("node_modules")
+            .join("@openai")
+            .join("codex")
+            .join("node_modules")
+            .join("@openai")
+            .join(package)
+            .join("vendor")
+            .join(target)
+            .join("bin")
+            .join("codex.exe");
+        fs::create_dir_all(native.parent().expect("native parent")).expect("package tree");
+        fs::write(&shim, b"npm shim fixture").expect("shim");
+        fs::write(&native, b"native binary fixture").expect("native executable");
+
+        let command = windows_app_server_command_for(&shim);
+        assert_eq!(command.get_program(), native.as_os_str());
+        assert_eq!(command.get_args().next(), Some(OsStr::new("app-server")));
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
     #[cfg(not(windows))]
     #[test]
     fn derives_the_official_unix_installer_location() {
@@ -765,6 +844,7 @@ mod tests {
             .join(format!("gswitch-app-server-test-{}", Uuid::new_v4()));
         {
             let profile = TempCodexHome::create(&root).expect("profile");
+            let profile_path = profile.path.clone();
             let mut server = AppServer::start(&profile.path).expect("start app server");
             let config = server.config_read(1).expect("read config");
             let expected_version = config
@@ -792,6 +872,11 @@ mod tests {
                     .and_then(Value::as_str),
                 Some("file")
             );
+            drop(server);
+            profile
+                .cleanup()
+                .expect("remove completed isolated profile");
+            assert!(!profile_path.exists());
         }
         let _ = fs::remove_dir_all(root);
     }
