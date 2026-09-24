@@ -478,8 +478,8 @@ fn check_effective_file_store(
             .map_err(|_| SwitchFailureCode::CodexConfigUnavailable)?,
     )
     .map_err(|_| SwitchFailureCode::CodexConfigUnavailable)?;
-    let mut server =
-        AppServer::start(&profile.path).map_err(|_| SwitchFailureCode::CodexConfigUnavailable)?;
+    let mut server = AppServer::start(&profile.path)
+        .map_err(|_| SwitchFailureCode::CodexAppServerUnavailable)?;
     runtime::ensure_no_external_codex(&[server.pid()]).map_err(|_| SwitchFailureCode::CodexOpen)?;
     let config = server
         .config_read(1)
@@ -491,7 +491,7 @@ fn check_effective_file_store(
     drop(server);
     profile
         .cleanup()
-        .map_err(|_| SwitchFailureCode::CodexConfigUnavailable)?;
+        .map_err(|_| SwitchFailureCode::CodexConfigCleanupFailed)?;
     Ok(())
 }
 
