@@ -9,13 +9,13 @@ acceptance.
 Frontend source proof:
 
 ```bash
-pnpm run ci:source -- frontend
+pnpm run ci:source frontend
 ```
 
 Full source proof (run on Linux to match CI):
 
 ```bash
-pnpm run ci:source -- linux
+pnpm run ci:source linux
 ```
 
 Desktop compilation without producing an installer:

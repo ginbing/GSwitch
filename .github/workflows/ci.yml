@@ -87,7 +87,7 @@ jobs:
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
-      - run: pnpm run ci:source -- frontend
+      - run: pnpm run ci:source frontend
         env:
           GSWITCH_DIFF_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
           GSWITCH_DIFF_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -130,7 +130,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-${{ hashFiles('rust-toolchain.toml', 'src-tauri/Cargo.lock') }}-
       - name: Check platform Rust targets
-        run: pnpm run ci:source -- platform
+        run: pnpm run ci:source platform
         env:
           GSWITCH_DIFF_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
           GSWITCH_DIFF_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -173,7 +173,7 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('rust-toolchain.toml', 'src-tauri/Cargo.lock') }}-${{ hashFiles('src-tauri/**/*.rs') }}
           restore-keys: |
             ${{ runner.os }}-cargo-${{ hashFiles('rust-toolchain.toml', 'src-tauri/Cargo.lock') }}-
-      - run: pnpm run ci:source -- linux
+      - run: pnpm run ci:source linux
         env:
           GSWITCH_DIFF_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
           GSWITCH_DIFF_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
