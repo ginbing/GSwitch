@@ -155,7 +155,7 @@ fn parse_version(output: &str) -> Option<String> {
 fn help_lists_update(output: &str) -> bool {
     output
         .lines()
-        .any(|line| line.trim_start().split_whitespace().next() == Some("update"))
+        .any(|line| line.split_whitespace().next() == Some("update"))
 }
 
 #[cfg(windows)]
