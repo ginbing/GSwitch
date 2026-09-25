@@ -329,11 +329,16 @@ summary:focus-visible {
 }
 
 .toast {
+  position: fixed;
+  bottom: 16px;
+  left: 16px;
+  z-index: 9;
   display: flex;
-  max-width: 760px;
+  width: min(380px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
   align-items: center;
   gap: 9px;
-  margin: 0 0 18px;
+  overflow-y: auto;
   padding: 10px 12px 10px 13px;
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -345,12 +350,6 @@ summary:focus-visible {
 }
 
 .toast-success {
-  position: fixed;
-  right: 20px;
-  bottom: 20px;
-  z-index: 20;
-  width: min(380px, calc(100vw - 40px));
-  margin: 0;
   border-color: color-mix(in srgb, var(--success) 30%, var(--border));
 }
 
@@ -917,6 +916,41 @@ summary:focus-visible {
   font-size: 10.5px;
   line-height: 1.35;
 }
+
+.quota-reset-time {
+  position: relative;
+  display: inline-block;
+  border-radius: 2px;
+  cursor: help;
+}
+
+.quota-reset-time:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.quota-reset-time::after {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  z-index: 8;
+  width: max-content;
+  max-width: min(250px, 70vw);
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: var(--text);
+  background: var(--surface);
+  box-shadow: var(--shadow-soft);
+  content: attr(data-full-time);
+  opacity: 0;
+  pointer-events: none;
+  visibility: hidden;
+}
+
+.quota-meter:last-child .quota-reset-time::after { right: 0; left: auto; }
+.quota-reset-time:hover::after,
+.quota-reset-time:focus-visible::after { opacity: 1; visibility: visible; }
 
 .credit-row {
   min-height: 37px;
