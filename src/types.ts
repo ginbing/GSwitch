@@ -138,6 +138,7 @@ export type QuotaStatus = "fresh" | "stale" | "unknown" | "not_applicable";
 
 export type QuotaRefreshFailureCode =
   | "operation_busy" | "codex_account_unknown" | "authentication"
+  | "manual_refresh_needed"
   | "rate_limited" | "network" | "service" | "invalid_response"
   | "identity_mismatch" | "unavailable";
 

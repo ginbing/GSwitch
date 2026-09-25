@@ -345,6 +345,12 @@ summary:focus-visible {
 }
 
 .toast-success {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 20;
+  width: min(380px, calc(100vw - 40px));
+  margin: 0;
   border-color: color-mix(in srgb, var(--success) 30%, var(--border));
 }
 

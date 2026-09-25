@@ -513,6 +513,7 @@ pub enum QuotaRefreshFailureCode {
     OperationBusy,
     CodexAccountUnknown,
     Authentication,
+    ManualRefreshNeeded,
     RateLimited,
     Network,
     Service,

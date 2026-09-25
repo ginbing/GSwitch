@@ -348,7 +348,8 @@ impl AppState {
         vault: &CredentialVault,
         store: &mut AccountStore,
     ) -> Result<(), String> {
-        for account in &mut store.accounts {
+        let mut references = Vec::with_capacity(store.accounts.len());
+        for account in &store.accounts {
             if !account.credential.is_null() || account.reset_credits.is_some() {
                 return Err(
                     "Protected credential metadata contains inline secret material".to_string(),
@@ -357,7 +358,10 @@ impl AppState {
             if account.credential_ref.is_empty() || account.credential_generation == 0 {
                 return Err("A saved account is missing protected credential material".to_string());
             }
-            let secret: AccountSecret = vault.get(&Self::account_secret_key(account))?;
+            references.push(Self::account_secret_key(account));
+        }
+        let secrets: Vec<AccountSecret> = vault.get_many(&references)?;
+        for (account, secret) in store.accounts.iter_mut().zip(secrets) {
             let kind = document_kind(&secret.credential)?;
             let identity = derive_identity(&kind, &secret.credential)?;
             if account.kind != kind || account.identity.as_ref() != Some(&identity) {
@@ -738,6 +742,36 @@ impl AppState {
             .map_err(|error| error.to_string())
     }
 
+    /// A read-only quota request finishes its network work before reaching this
+    /// lock. Waiting here lets a user-started credential operation finish first;
+    /// the short quota commit still uses the cross-process storage boundary.
+    pub(crate) fn acquire_quota_commit_operation(&self) -> Result<OperationGuard<'_>, String> {
+        self.ensure_store_ready()?;
+        let in_process = self
+            .operation_lock
+            .lock()
+            .map_err(|_| "Unable to lock GSwitch operations".to_string())?;
+        let parent = self
+            .store_path
+            .parent()
+            .ok_or_else(|| "Invalid GSwitch storage path".to_string())?;
+        fs::create_dir_all(parent)
+            .map_err(|_| "Unable to prepare GSwitch operation storage".to_string())?;
+        let lock_file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(parent.join("operations.lock"))
+            .map_err(|_| "Unable to lock GSwitch operations".to_string())?;
+        FileExt::lock_exclusive(&lock_file)
+            .map_err(|_| "Unable to lock GSwitch operations".to_string())?;
+        Ok(OperationGuard {
+            _in_process: in_process,
+            lock_file,
+        })
+    }
+
     /// Updating the installed CLI must not overlap a GSwitch operation that
     /// may launch App Server. This remains available when account storage
     /// needs recovery because it never reads or changes saved accounts.
@@ -953,6 +987,9 @@ impl AppState {
             .iter()
             .position(|account| account.id == id)
             .ok_or_else(|| "The selected account is no longer saved".to_string())?;
+        if store.accounts[index].credential == credential {
+            return Ok(());
+        }
         let mut candidate = store.clone();
         candidate.accounts[index].credential = credential;
         self.persist_candidate(&store, &mut candidate)?;
@@ -978,6 +1015,21 @@ impl AppState {
             .iter()
             .position(|account| account.id == id)
             .ok_or_else(|| "The selected account is no longer saved".to_string())?;
+        let saved = &store.accounts[index];
+        if credential.is_none()
+            && saved.email == metadata.email
+            && saved.plan_type == metadata.plan_type
+            && metadata
+                .workspace_name
+                .as_ref()
+                .is_none_or(|name| saved.workspace_name.as_ref() == Some(name))
+            && metadata
+                .account_structure
+                .as_ref()
+                .is_none_or(|structure| saved.account_structure.as_ref() == Some(structure))
+        {
+            return Ok(());
+        }
         let mut candidate = store.clone();
         let account = &mut candidate.accounts[index];
         account.email = metadata.email.clone();

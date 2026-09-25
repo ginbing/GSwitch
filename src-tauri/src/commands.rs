@@ -309,14 +309,21 @@ pub async fn get_account_quota(
 pub async fn refresh_account_quota(
     state: State<'_, AppState>,
     id: String,
+    background: bool,
 ) -> Result<QuotaView, QuotaRefreshFailure> {
     let state = state.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || quota::refresh_quota(&state, &id))
-        .await
-        .map_err(|_| QuotaRefreshFailure {
-            code: QuotaRefreshFailureCode::Unavailable,
-        })?
-        .map_err(|error| quota::refresh_failure(&error))
+    tauri::async_runtime::spawn_blocking(move || {
+        if background {
+            quota::refresh_quota_background(&state, &id)
+        } else {
+            quota::refresh_quota(&state, &id)
+        }
+    })
+    .await
+    .map_err(|_| QuotaRefreshFailure {
+        code: QuotaRefreshFailureCode::Unavailable,
+    })?
+    .map_err(|error| quota::refresh_failure(&error))
 }
 
 #[tauri::command]
