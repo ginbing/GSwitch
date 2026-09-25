@@ -570,9 +570,60 @@ describe("GSwitch account workspace", () => {
     const card = (await screen.findByRole("heading", { name: "person@example.com" })).closest(".account-card");
     expect(card).toHaveTextContent("5 weeks");
     expect(card).toHaveTextContent("100%");
-    expect(card).toHaveTextContent("Resets");
+    const resetTime = card?.querySelector("time.quota-reset-time");
+    expect(resetTime).toHaveTextContent(/in \d+ days/);
+    expect(resetTime).toHaveAttribute("aria-label", expect.stringContaining("Resets"));
+    expect(resetTime).toHaveAttribute("data-full-time", expect.any(String));
+    expect(card).not.toHaveTextContent(/Resets \d/);
     expect(card).not.toHaveTextContent("5-hour");
     expect(card).not.toHaveTextContent("Reset time unavailable");
+  });
+
+  it("shows a short Chinese reset time with keyboard access to the exact date", async () => {
+    Object.defineProperty(window.navigator, "language", { configurable: true, value: "zh-CN" });
+    const resetAt = Math.floor(Date.now() / 1000) + 5 * 60 * 60;
+    mocks.listAccounts.mockResolvedValue([chatAccount]);
+    mocks.accountQuota.mockResolvedValue({
+      account_id: chatAccount.id,
+      status: "fresh",
+      snapshot: {
+        fetched_at_unix_ms: Date.now(),
+        buckets: [{
+          limit_id: "codex",
+          kind: "codex",
+          windows: [{ kind: "five_hour", window_duration_mins: 300, remaining_percent: 50, used_percent: 50, resets_at: resetAt }],
+        }],
+      },
+    });
+    render(<App />);
+
+    const card = (await screen.findByRole("heading", { name: "person@example.com" })).closest(".account-card");
+    const resetTime = card?.querySelector("time.quota-reset-time");
+    expect(resetTime).toHaveTextContent("5小时后");
+    expect(resetTime).toHaveAttribute("aria-label", expect.stringContaining("重置于"));
+    expect(resetTime).toHaveAttribute("tabindex", "0");
+    expect(card).not.toHaveTextContent("重置于");
+  });
+
+  it("does not show a past reset time as a current countdown", async () => {
+    const resetAt = Math.floor(Date.now() / 1000) - 60;
+    mocks.listAccounts.mockResolvedValue([chatAccount]);
+    mocks.accountQuota.mockResolvedValue({
+      account_id: chatAccount.id,
+      status: "fresh",
+      snapshot: {
+        fetched_at_unix_ms: Date.now(),
+        buckets: [{
+          limit_id: "codex",
+          kind: "codex",
+          windows: [{ kind: "five_hour", window_duration_mins: 300, remaining_percent: 50, used_percent: 50, resets_at: resetAt }],
+        }],
+      },
+    });
+    render(<App />);
+
+    const card = (await screen.findByRole("heading", { name: "person@example.com" })).closest(".account-card");
+    expect(card?.querySelector("time.quota-reset-time")).toHaveTextContent("Reset time passed");
   });
   it("uses ChatGPT email as the primary identity and workspace as context", async () => {
     mocks.listAccounts.mockResolvedValue([chatAccount]);

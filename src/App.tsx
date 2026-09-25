@@ -38,9 +38,11 @@ import {
 import { api, type UpdateDelivery } from "./api";
 import {
   createTranslator,
+  formatDateTime,
   formatDateTimeWithRelative,
   formatNumber,
   formatPercent,
+  formatRelativeTime,
   readLanguagePreference,
   resolveLocale,
   saveLanguagePreference,
@@ -438,6 +440,34 @@ function Modal({
   );
 }
 
+function QuotaResetTime({ timestamp, t, formatLocale }: {
+  timestamp: number;
+  t: Translator;
+  formatLocale: string;
+}) {
+  const [nowMs, setNowMs] = useState(Date.now);
+  useEffect(() => {
+    const interval = window.setInterval(() => setNowMs(Date.now()), 60_000);
+    return () => window.clearInterval(interval);
+  }, []);
+
+  const fullTime = formatDateTime(timestamp, formatLocale);
+  const passed = timestamp * 1000 <= nowMs;
+  return (
+    <time
+      aria-label={passed
+        ? `${t("quota.resetTimePassed")}: ${fullTime}`
+        : t("quota.resets", { time: fullTime })}
+      className="quota-reset-time"
+      data-full-time={fullTime}
+      dateTime={new Date(timestamp * 1000).toISOString()}
+      tabIndex={0}
+    >
+      {passed ? t("quota.resetTimePassed") : formatRelativeTime(timestamp, formatLocale, nowMs)}
+    </time>
+  );
+}
+
 function QuotaMeter({
   label,
   window,
@@ -502,7 +532,7 @@ function QuotaMeter({
           : status === "stale"
             ? t("quota.lastResultStale")
             : window?.resets_at
-              ? t("quota.resets", { time: formatDateTimeWithRelative(window.resets_at, formatLocale) })
+              ? <QuotaResetTime timestamp={window.resets_at} formatLocale={formatLocale} t={t} />
               : t("quota.resetTimeUnavailable")}
       </small>
     </div>
@@ -836,10 +866,10 @@ export default function App() {
   const t = useMemo(() => createTranslator(locale.language), [locale.language]);
 
   useEffect(() => {
-    if (notice?.kind !== "success") return;
+    if (!notice || notice.kind === "error") return;
     const timeout = window.setTimeout(() => {
       setNotice((current) => current === notice ? null : current);
-    }, 4000);
+    }, notice.kind === "success" ? 4000 : 6000);
     return () => window.clearTimeout(timeout);
   }, [notice]);
 

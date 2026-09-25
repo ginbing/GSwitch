@@ -84,7 +84,9 @@ the dialog; the account grid remains the primary workspace.
 - After a verified switch, update the toolbar identity and active card directly.
   That state is the visible confirmation; do not insert a success banner above
   the account grid or reload the whole workspace before showing it. Other brief
-  success messages may float without moving the grid and dismiss themselves.
+  success and information messages use one compact floating notice without
+  moving the grid and dismiss themselves. Errors stay until dismissed. Focused
+  dialogs cover this notice; recovery and update actions use their own surfaces.
 - Opening a dialog moves keyboard focus inside it. Tab stays inside, and closing
   restores focus to the launching control. A dialog cannot be dismissed while
   its non-cancellable action is in progress.
@@ -111,7 +113,8 @@ the dialog; the account grid remains the primary workspace.
   account will be updated; a mismatched login changes no account.
 - Keep card content compact. Truncated account and workspace names expose their
   full value on hover; do not reserve empty vertical space for the old heading
-  reminder.
+  reminder. Quota reset timing shows only a short relative time in the card;
+  hover, keyboard focus, and assistive text provide the exact date and time.
 - Keep pasted credentials and API keys in transient, non-persistent inputs and
   clear them immediately after submission.
 - File import reads the selected path in Rust rather than copying file contents
