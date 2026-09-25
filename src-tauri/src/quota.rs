@@ -41,6 +41,8 @@ pub fn refresh_failure(error: &str) -> QuotaRefreshFailure {
         QuotaRefreshFailureCode::OperationBusy
     } else if error.contains("cannot safely identify its active account") {
         QuotaRefreshFailureCode::CodexAccountUnknown
+    } else if error.contains("Refresh this account to retry its saved sign-in") {
+        QuotaRefreshFailureCode::ManualRefreshNeeded
     } else if error.contains("rejected the read-only quota request") {
         QuotaRefreshFailureCode::Authentication
     } else if error.contains("rate-limited the quota request") {
@@ -100,6 +102,73 @@ pub fn refresh_quota(state: &AppState, account_id: &str) -> Result<QuotaView, St
     }
 }
 
+/// Automatic refresh only reads a credential snapshot and provider quota.
+/// Network latency cannot hold the credential-operation lock or start a token
+/// refresh. A later short commit rechecks the saved credential generation.
+pub fn refresh_quota_background(state: &AppState, account_id: &str) -> Result<QuotaView, String> {
+    state.ensure_store_ready()?;
+    let account = state.account_by_id(account_id)?;
+    if account.kind == AccountKind::ApiKey {
+        return Ok(not_applicable(&account));
+    }
+    let identity = verified_chatgpt_identity(&account)?;
+    let (credential, matching_live) = match external_credential_state_for_identity(&identity)? {
+        ExternalCredentialState::Matching(credential) => (credential, true),
+        ExternalCredentialState::Unidentifiable => {
+            return Err(
+                "Codex is running and GSwitch cannot safely identify its active account"
+                    .to_string(),
+            );
+        }
+        ExternalCredentialState::NotRunning | ExternalCredentialState::DifferentAccount => {
+            (account.credential.clone(), false)
+        }
+    };
+    let normalized = match fetch_quota_projection(&identity, &credential) {
+        Ok(normalized) => normalized,
+        Err(ReadOnlyRefreshFailure::Provider(error))
+            if matching_live && error.can_fallback_to_managed_refresh() =>
+        {
+            let latest = live_credential_for_identity(&identity)?.ok_or_else(|| {
+                "Codex is running and GSwitch could not reread its active account credential"
+                    .to_string()
+            })?;
+            if latest == credential {
+                return Err(ReadOnlyRefreshFailure::Provider(error).message());
+            }
+            fetch_quota_projection(&identity, &latest).map_err(ReadOnlyRefreshFailure::message)?
+        }
+        Err(ReadOnlyRefreshFailure::Provider(error)) if error.can_fallback_to_managed_refresh() => {
+            return Err("Refresh this account to retry its saved sign-in".to_string());
+        }
+        Err(error) => return Err(error.message()),
+    };
+
+    let operation = state.acquire_quota_commit_operation()?;
+    let current = state.account_by_id_under_operation(&operation, account_id)?;
+    if current.kind != account.kind
+        || current.identity != account.identity
+        || current.credential_generation != account.credential_generation
+    {
+        return Err("The saved account changed while quota was refreshing".to_string());
+    }
+    if current
+        .quota
+        .as_ref()
+        .is_some_and(|saved| saved.fetched_at_unix_ms >= normalized.snapshot.fetched_at_unix_ms)
+    {
+        return Ok(cached_view(&current, now_unix_ms()));
+    }
+    let snapshot = normalized.snapshot;
+    state.update_quota_under_operation(
+        &operation,
+        account_id,
+        snapshot.clone(),
+        normalized.reset_credits,
+    )?;
+    Ok(view_from_snapshot(account_id, snapshot, now_unix_ms()))
+}
+
 fn refresh_active_read_only(
     state: &AppState,
     operation: &OperationGuard<'_>,
@@ -147,6 +216,23 @@ pub(crate) fn refresh_quota_snapshot(
     identity: &AccountIdentity,
     credential: &Value,
 ) -> Result<QuotaSnapshot, ReadOnlyRefreshFailure> {
+    let normalized = fetch_quota_projection(identity, credential)?;
+    let snapshot = normalized.snapshot;
+    state
+        .update_quota_under_operation(
+            operation,
+            &account.id,
+            snapshot.clone(),
+            normalized.reset_credits,
+        )
+        .map_err(ReadOnlyRefreshFailure::Message)?;
+    Ok(snapshot)
+}
+
+fn fetch_quota_projection(
+    identity: &AccountIdentity,
+    credential: &Value,
+) -> Result<NormalizedRateLimits, ReadOnlyRefreshFailure> {
     let client = ChatGptClient::new().map_err(ReadOnlyRefreshFailure::Message)?;
     let response = client
         .quota(credential)
@@ -168,16 +254,7 @@ pub(crate) fn refresh_quota_snapshot(
             ));
         }
     }
-    let snapshot = normalized.snapshot;
-    state
-        .update_quota_under_operation(
-            operation,
-            &account.id,
-            snapshot.clone(),
-            normalized.reset_credits,
-        )
-        .map_err(ReadOnlyRefreshFailure::Message)?;
-    Ok(snapshot)
+    Ok(normalized)
 }
 
 pub(crate) enum ReadOnlyRefreshFailure {

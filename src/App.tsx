@@ -187,7 +187,7 @@ function switchFailureMessage(t: Translator, error: unknown, account: AccountVie
 
 const quotaFailureCodes = new Set<QuotaRefreshFailureCode>([
   "operation_busy", "codex_account_unknown", "authentication", "rate_limited",
-  "network", "service", "invalid_response", "identity_mismatch", "unavailable",
+  "manual_refresh_needed", "network", "service", "invalid_response", "identity_mismatch", "unavailable",
 ]);
 
 function quotaFailureCode(error: unknown): QuotaRefreshFailureCode {
@@ -202,6 +202,7 @@ function quotaFailureMessage(t: Translator, code: QuotaRefreshFailureCode) {
     operation_busy: "quota.failureBusy",
     codex_account_unknown: "quota.failureCodexUnknown",
     authentication: "quota.failureAuthentication",
+    manual_refresh_needed: "quota.failureManualRefresh",
     rate_limited: "quota.failureRateLimited",
     network: "quota.failureNetwork",
     service: "quota.failureService",
@@ -834,6 +835,14 @@ export default function App() {
   const locale = useMemo(() => resolveLocale(languagePreference), [languagePreference]);
   const t = useMemo(() => createTranslator(locale.language), [locale.language]);
 
+  useEffect(() => {
+    if (notice?.kind !== "success") return;
+    const timeout = window.setTimeout(() => {
+      setNotice((current) => current === notice ? null : current);
+    }, 4000);
+    return () => window.clearTimeout(timeout);
+  }, [notice]);
+
   const changeLanguage = (preference: LanguagePreference) => {
     setLanguagePreference(preference);
     saveLanguagePreference(preference);
@@ -876,13 +885,13 @@ export default function App() {
     }
   };
 
-  const requestQuotaRefresh = useCallback((accountId: string): Promise<QuotaView> => {
+  const requestQuotaRefresh = useCallback((accountId: string, background = false): Promise<QuotaView> => {
     const inFlight = quotaRefreshes.current.get(accountId);
     if (inFlight) {
       return inFlight;
     }
 
-    const request = quotaRefreshQueue.current.then(() => api.refreshAccountQuota(accountId)).then(
+    const request = quotaRefreshQueue.current.then(() => api.refreshAccountQuota(accountId, background)).then(
       (quota) => {
         setQuotas((current) => ({ ...current, [accountId]: quota }));
         setQuotaFailures((current) => {
@@ -949,7 +958,7 @@ export default function App() {
           setQuotas((current) => ({ ...cached, ...current }));
           for (const quota of Object.values(cached)) {
             if (quota.status === "unknown" || quota.status === "stale") {
-              void requestQuotaRefresh(quota.account_id).catch(() => undefined);
+              void requestQuotaRefresh(quota.account_id, true).catch(() => undefined);
             }
           }
         });
@@ -1431,13 +1440,15 @@ export default function App() {
   const switchAccount = async (account: AccountView) => {
     setBusy("switch:" + account.id);
     try {
-      await api.switchAccount(account.id);
+      const outcome = await api.switchAccount(account.id);
       setAccountSignInNeeded((current) => ({ ...current, [account.id]: false }));
-      await loadSnapshot();
-      setNotice({
-        kind: "success",
-        text: t("notice.switched", { name: accountPrimaryName(account) }),
-      });
+      setAccounts((current) => current.map((saved) =>
+        saved.id === outcome.account.id
+          ? { ...outcome.account, active: true }
+          : { ...saved, active: false },
+      ).sort((left, right) => Number(right.active) - Number(left.active)));
+      setLive({ status: "ready", credential_store: "file", account: outcome.account });
+      setNotice(null);
     } catch (error) {
       if (asSwitchFailure(error)?.code === "account_needs_sign_in") {
         setAccountSignInNeeded((current) => ({ ...current, [account.id]: true }));
@@ -1666,7 +1677,7 @@ export default function App() {
           <img alt="" aria-hidden="true" className="brand-mark" src="/gswitch-icon.svg" />
           <div className="brand-copy">
             <h1>GSwitch</h1>
-            <p className="brand-status">
+            <p aria-atomic="true" aria-live="polite" className="brand-status">
               <span aria-hidden="true" className={live?.status === "ready" ? "status-dot status-ready" : "status-dot"} />
               <span className="brand-status-label">{liveAccountLabel}</span>
               <span aria-hidden="true">·</span>
@@ -1737,7 +1748,7 @@ export default function App() {
         ) : null}
 
         {notice ? (
-          <div className={"toast toast-" + notice.kind} role="status">
+          <div className={"toast toast-" + notice.kind} role={notice.kind === "error" ? "alert" : "status"}>
             {notice.kind === "success" ? <CircleCheck size={17} /> : <CircleAlert size={17} />}
             <span>{notice.text}</span>
             <button aria-label={t("common.dismissMessage")} onClick={() => setNotice(null)} type="button"><X size={15} /></button>

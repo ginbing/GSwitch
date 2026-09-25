@@ -115,10 +115,13 @@ or recovery records.
 Potentially blocking Rust commands are asynchronous and move their existing
 synchronous domain operation to Tauri's blocking worker pool. This keeps the
 window able to repaint, scroll, and accept unrelated input without weakening
-the Rust operation mutex or cross-process lock. React keeps point-operation
-state local: a single-account quota refresh replaces only that account's quota
-projection, while a full workspace reload is reserved for initial state or a
-real topology change.
+the Rust operation mutex or cross-process lock. Automatic quota reads release
+that lock during network waiting and reacquire it only to commit a projection
+after checking the saved credential generation. Startup reads account secrets
+from one Stronghold session instead of reopening the snapshot for every card.
+React keeps point-operation state local: a single-account quota refresh
+replaces only that account's quota projection, while a full workspace reload is
+reserved for initial state or a real topology change.
 
 `accounts.json` is metadata, not a vault. Its version-4 account records carry
 an opaque credential reference and generation; complete documents and

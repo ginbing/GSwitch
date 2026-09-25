@@ -224,7 +224,14 @@ Quota is operational account state, not usage analytics.
 The workspace renders its cached quota immediately and refreshes unknown or
 stale ChatGPT accounts in the background. Startup and manual refreshes share one
 serial request queue, and requests for the same account join the in-flight
-request. One failed account does not stop the remaining queue. Its card keeps
+request. Automatic refresh uses only a credential snapshot for its provider
+read. It does not hold the credential-operation lock while waiting for the
+provider or start a managed token refresh. A short locked commit rechecks the
+saved account identity and credential generation, so a concurrent switch or
+sign-in cannot make an old result authoritative. If the saved sign-in is
+rejected, the card asks for a manual refresh, which may use the existing
+identity-checked managed refresh path when safe. One failed account does not
+stop the remaining queue. Its card keeps
 the last result marked stale, or shows quota as unavailable when no snapshot
 exists. A compact warning on that card explains the safe failure category and
 last successful update; old percentages are explicitly labelled as the last

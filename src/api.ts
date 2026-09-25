@@ -64,7 +64,8 @@ export const api = {
   removeSavedAccount: (id: string) =>
     invoke<void>("remove_saved_account", { id }),
   accountQuota: (id: string) => invoke<QuotaView>("get_account_quota", { id }),
-  refreshAccountQuota: (id: string) => invoke<QuotaView>("refresh_account_quota", { id }),
+  refreshAccountQuota: (id: string, background = false) =>
+    invoke<QuotaView>("refresh_account_quota", { id, background }),
   redeemEarliestResetCredit: (id: string) =>
     invoke<ResetCreditOutcome>("redeem_earliest_reset_credit", { id }),
   recoverPendingResetCredit: () =>

@@ -177,6 +177,31 @@ impl CredentialVault {
         })
     }
 
+    /// Read several records from one unlocked snapshot. Startup uses this so
+    /// adding accounts does not repeat the native-key and snapshot setup.
+    pub fn get_many<T: DeserializeOwned>(&self, references: &[String]) -> Result<Vec<T>, String> {
+        if references.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.with_client(false, |_stronghold, client, _key| {
+            let store = client.store();
+            references
+                .iter()
+                .map(|reference| {
+                    let bytes = store
+                        .get(reference.as_bytes())
+                        .map_err(|_| "Unable to read the protected credential vault".to_string())?
+                        .ok_or_else(|| {
+                            "A saved account is missing protected credential material".to_string()
+                        })?;
+                    serde_json::from_slice(&bytes).map_err(|_| {
+                        "Protected credential material could not be read safely".to_string()
+                    })
+                })
+                .collect()
+        })
+    }
+
     pub fn delete(&self, reference: &str) -> Result<(), String> {
         self.with_client(false, |stronghold, client, key| {
             client
@@ -322,6 +347,31 @@ mod tests {
         assert!(!String::from_utf8_lossy(&fs::read(&path).expect("snapshot")).contains("secret"));
         let read: serde_json::Value = vault.get("account:one:1").expect("read");
         assert_eq!(read, credential);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn reads_multiple_accounts_from_one_snapshot_and_rejects_missing_material() {
+        let root = std::env::temp_dir().join(format!("gswitch-vault-{}", uuid::Uuid::new_v4()));
+        let vault = CredentialVault::with_test_root(root.join("credentials.hold"));
+        vault
+            .put("account:one:1", &json!({"token": "one"}))
+            .expect("first");
+        vault
+            .put("account:two:1", &json!({"token": "two"}))
+            .expect("second");
+
+        let values: Vec<serde_json::Value> = vault
+            .get_many(&["account:one:1".into(), "account:two:1".into()])
+            .expect("both accounts");
+        assert_eq!(
+            values,
+            vec![json!({"token": "one"}), json!({"token": "two"})]
+        );
+        assert!(vault
+            .get_many::<serde_json::Value>(&["account:one:1".into(), "account:missing:1".into()])
+            .is_err());
 
         let _ = fs::remove_dir_all(root);
     }

@@ -81,6 +81,10 @@ CLI points to the official install guide. Update progress and failures stay in
 the dialog; the account grid remains the primary workspace.
 
 - Do not optimistically display a switch or redemption as complete.
+- After a verified switch, update the toolbar identity and active card directly.
+  That state is the visible confirmation; do not insert a success banner above
+  the account grid or reload the whole workspace before showing it. Other brief
+  success messages may float without moving the grid and dismiss themselves.
 - Opening a dialog moves keyboard focus inside it. Tab stays inside, and closing
   restores focus to the launching control. A dialog cannot be dismissed while
   its non-cancellable action is in progress.
@@ -95,7 +99,9 @@ the dialog; the account grid remains the primary workspace.
   current identity stays protected. Operation-lock failures remain visible in
   the confirmation with a retry instruction.
 - Quota refreshes share a serialized request path across startup and manual
-  refresh. A failed card keeps a visible, compact warning icon beside quota;
+  refresh. Automatic reads leave switching available while waiting for the
+  provider and never refresh a saved credential. A failed card keeps a visible,
+  compact warning icon beside quota;
   its hover/focus explanation gives the safe reason and last successful update.
   Old percentages say "Last" and use muted meters; an unavailable result stays
   unknown. Actions stay in the account menu, not in the warning tooltip. Batch
