@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import {
   LANGUAGE_PREFERENCE_KEY,
+  formatCompactExpiry,
   formatDateTimeWithRelative,
   readLanguagePreference,
   resolveLocale,
@@ -42,5 +43,14 @@ describe("GSwitch language settings", () => {
     expect(formatDateTimeWithRelative(timestamp, "zh-CN", nowMs)).toBe(
       `${expectedDate} (${expectedRelative})`,
     );
+  });
+
+  it("keeps credit expiry compact while showing the year only across years", () => {
+    const now = new Date(2026, 8, 26, 10, 0).getTime();
+    const thisYear = new Date(2026, 9, 4, 13, 0).getTime() / 1000;
+    const nextYear = new Date(2027, 0, 1, 10, 0).getTime() / 1000;
+    expect(formatCompactExpiry(thisYear, "zh-CN", now)).toMatch(/^8天3小时后 · 10\/04 13:00$/);
+    expect(formatCompactExpiry(nextYear, "en-US", now)).toContain("2027/01/01 10:00");
+    expect(formatCompactExpiry(now / 1000 - 60, "zh-CN", now)).toBe("已到期");
   });
 });

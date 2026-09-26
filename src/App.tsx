@@ -38,6 +38,7 @@ import {
 import { api, type UpdateDelivery } from "./api";
 import {
   createTranslator,
+  formatCompactExpiry,
   formatDateTime,
   formatDateTimeWithRelative,
   formatNumber,
@@ -323,19 +324,11 @@ function accountSecondaryName(account: AccountView, primary: string, t: Translat
   return undefined;
 }
 
-function wakeStatusLabel(status: WakeOperationView["status"], t: Translator) {
-  const key = `wake.status${status.slice(0, 1).toUpperCase()}${status.slice(1)}` as
-    | "wake.statusRunning"
-    | "wake.statusCompleted"
-    | "wake.statusCancelled"
-    | "wake.statusFailed";
-  return t(key);
-}
-
 function wakeResultLabel(result: WakeOperationView["results"][number]["result"], t: Translator) {
   const labels = {
     started: "wake.started",
     already_active: "wake.alreadyActive",
+    no_five_hour_window: "wake.noFiveHourWindow",
     five_hour_exhausted: "wake.fiveHourExhausted",
     weekly_exhausted: "wake.weeklyExhausted",
     no_ordinary_capacity: "wake.noOrdinaryCapacity",
@@ -347,6 +340,24 @@ function wakeResultLabel(result: WakeOperationView["results"][number]["result"],
     cancelled: "wake.cancelled",
   } as const;
   return t(labels[result]);
+}
+
+function wakeSummary(wake: WakeOperationView, t: Translator) {
+  const counts = { started: 0, skipped: 0, unconfirmed: 0, failed: 0, cancelled: 0 };
+  for (const { result, request_state } of wake.results) {
+    if (result === "started") counts.started++;
+    else if (request_state === "not_sent" && ["already_active", "no_five_hour_window", "five_hour_exhausted", "weekly_exhausted", "no_ordinary_capacity"].includes(result)) counts.skipped++;
+    else if (result === "sent_not_confirmed") counts.unconfirmed++;
+    else if (result === "cancelled") counts.cancelled++;
+    else counts.failed++;
+  }
+  return ([
+    ["wake.summaryStarted", counts.started],
+    ["wake.summarySkipped", counts.skipped],
+    ["wake.summaryUnconfirmed", counts.unconfirmed],
+    ["wake.summaryFailed", counts.failed],
+    ["wake.summaryCancelled", counts.cancelled],
+  ] as const).filter(([, count]) => count > 0).map(([key, count]) => t(key, { count })).join(" · ");
 }
 
 function Modal({
@@ -584,6 +595,8 @@ function AccountCard({
 }) {
   const credits = quota?.snapshot?.reset_credits;
   const isApiKey = account.kind === "api_key";
+  const knownFiveHour = quota?.status === "fresh" && codexQuotaWindows(quota).some((window) => window.kind === "five_hour");
+  const noFiveHour = quota?.status === "fresh" && !knownFiveHour;
   const primaryName = accountPrimaryName(account);
   const secondaryName = accountSecondaryName(account, primaryName, t);
   const controlsBusy = globalBusy || busyAction !== undefined;
@@ -671,17 +684,17 @@ function AccountCard({
             )) : <QuotaMeter failure={quotaFailure} failureId={"quota-error-" + account.id} lastSuccess={quota?.snapshot?.fetched_at_unix_ms} formatLocale={formatLocale} label={t("quota.otherWindow")} status={quota?.status} t={t} />}
           </div>
           <div className="credit-row">
-            <span>
+            <span className="credit-count">
               {t("credit.resetCredits")}
               <strong>{credits ? formatNumber(credits.available_count, formatLocale) : "—"}</strong>
             </span>
-            {credits?.nearest_expiry ? <small>{t("credit.earliest", { time: formatDateTimeWithRelative(credits.nearest_expiry, formatLocale) })}</small> : null}
             {credits?.available_count && credits.available_count > 0 ? (
               <button className="text-button" onClick={onReset} type="button">
                 {resetRecoveryRequired ? t("common.recoveryRequired") : t("common.details")}
                 <ChevronRight size={15} />
               </button>
             ) : null}
+            {credits?.nearest_expiry ? <small className="credit-expiry" tabIndex={0} data-full-time={formatDateTime(credits.nearest_expiry, formatLocale)} aria-label={t("credit.earliest", { time: formatDateTime(credits.nearest_expiry, formatLocale) })}>{formatCompactExpiry(credits.nearest_expiry, formatLocale)}</small> : null}
           </div>
         </>
       )}
@@ -697,12 +710,13 @@ function AccountCard({
           <RefreshCw className={busyAction === "refresh" ? "spin" : ""} size={17} />
         </button>
         <div className="card-footer-actions">
-          {!isApiKey ? (
+          {!isApiKey && !noFiveHour ? (
             <button
               aria-label={t("account.wake", { name: primaryName })}
               className="button button-secondary"
-              disabled={controlsBusy}
+              disabled={controlsBusy || !knownFiveHour}
               onClick={onWake}
+              title={!knownFiveHour ? t("wake.refreshFirst") : undefined}
               type="button"
             >
               {busyAction === "wake" ? <LoaderCircle className="spin" size={15} /> : <Zap size={15} />}
@@ -892,12 +906,30 @@ export default function App() {
   };
 
   const openCodexCli = () => {
-    setCliInfo(null);
     setCliResult(null);
     setCliError(null);
     setDialog("codex-cli");
     void checkCodexCli();
   };
+
+  useEffect(() => {
+    if (loading) return;
+    let closed = false;
+    const check = () => {
+      void api.codexCliInfo().then((info) => {
+        if (!closed) setCliInfo(info);
+      }).catch(() => {
+        if (!closed) setCliInfo(null);
+      });
+    };
+    const initial = window.setTimeout(check, 250);
+    const interval = window.setInterval(check, 6 * 60 * 60 * 1000);
+    return () => {
+      closed = true;
+      window.clearTimeout(initial);
+      window.clearInterval(interval);
+    };
+  }, [loading]);
 
   const updateCodexCli = async () => {
     const previousVersion = cliInfo?.version;
@@ -906,7 +938,7 @@ export default function App() {
     setBusy("codex-cli-update");
     try {
       const updated = await api.updateCodexCli();
-      setCliInfo(updated);
+      setCliInfo(await api.codexCliInfo().catch(() => updated));
       setCliResult({ kind: previousVersion === updated.version ? "sameVersion" : "updated", version: updated.version || "—" });
     } catch (error) {
       setCliError(cliUpdateFailureCode(error));
@@ -1738,10 +1770,12 @@ export default function App() {
             <Plus size={16} />
             {t("common.addAccount")}
           </button>
-          <button className="button button-secondary cli-toolbar-button" disabled={busy !== null} onClick={openCodexCli} type="button">
-            <Terminal size={16} />
-            {t("toolbar.codexCli")}
-          </button>
+          {cliInfo?.update_status === "available" ? (
+            <button className="button button-secondary cli-toolbar-button" disabled={busy !== null} onClick={openCodexCli} type="button">
+              <Terminal size={16} />
+              {t("cli.available", { version: cliInfo.latest_version || "" })}
+            </button>
+          ) : null}
           <details className="language-menu">
             <summary aria-label={t("toolbar.language")} title={t("toolbar.language")}><Globe2 size={18} /></summary>
             <div className="language-menu-popover" aria-label={t("settings.language")}>
@@ -1958,9 +1992,10 @@ export default function App() {
             {cliChecking ? <p className="cli-status" role="status"><LoaderCircle className="spin" size={18} />{t("cli.checking")}</p> : (
               <p className="cli-status"><Terminal size={18} />{cliInfo?.version ? t("cli.installed", { version: cliInfo.version }) : t("cli.missing")}</p>
             )}
-            {cliInfo?.version ? <p>{t("cli.context")}</p> : null}
+            {cliInfo?.latest_version ? <p>{t("cli.latest", { version: cliInfo.latest_version })}</p> : null}
+            {cliInfo?.version ? <p>{t("cli.separate")}</p> : null}
             {cliInfo?.version && !cliInfo.supports_update ? <p>{t("cli.unsupported")}</p> : null}
-            {cliInfo?.supports_update ? <p>{t("cli.closeCodex")}</p> : null}
+            {cliInfo?.update_status === "available" && cliInfo.supports_update ? <p>{t("cli.closeCodex")}</p> : null}
             {busy === "codex-cli-update" ? <p role="status">{t("cli.updating")}</p> : null}
             {cliResult ? <p className="cli-result" role="status">{t(cliResult.kind === "updated" ? "cli.updated" : "cli.sameVersion", { version: cliResult.version })}</p> : null}
             {cliError ? <p className="cli-error" role="alert">{t(({
@@ -1976,7 +2011,7 @@ export default function App() {
             <div className="modal-actions">
               <button className="button button-quiet" disabled={busy !== null} onClick={() => void api.openCodexCliGuide().catch(() => setCliError("open_guide"))} type="button">{t("cli.guide")}</button>
               <button className="button button-secondary" disabled={busy !== null || cliChecking} onClick={() => void checkCodexCli()} type="button">{t("cli.checkAgain")}</button>
-              {cliInfo?.supports_update ? (
+              {cliInfo?.update_status === "available" && cliInfo.supports_update ? (
                 <button className="button button-primary" disabled={busy !== null || cliChecking} onClick={() => void updateCodexCli()} type="button">
                   {busy === "codex-cli-update" ? <LoaderCircle className="spin" size={15} /> : <Download size={15} />}
                   {t("cli.update")}
@@ -2433,10 +2468,10 @@ export default function App() {
         <Modal dismissible={busy === null} onClose={() => setDialog(null)} t={t} title={t("wake.title")}>
           <div className="wake-panel">
             <div className="wake-status">
-              {wake.status === "running" ? <LoaderCircle className="spin" size={21} /> : <CircleCheck size={21} />}
+              {wake.status === "running" ? <LoaderCircle className="spin" size={21} /> : wake.status === "completed" ? <CircleCheck size={21} /> : <CircleAlert size={21} />}
               <div>
-                <strong>{wake.status === "running" ? t("wake.running") : t("wake.status", { status: wakeStatusLabel(wake.status, t) })}</strong>
-                <p>{wake.current_account_id ? t("wake.oneProcessing") : t("wake.perAccount")}</p>
+                <strong>{wake.status === "running" ? t("wake.running") : wake.status === "completed" ? t("wake.resultsTitle") : t("wake.stopped")}</strong>
+                <p>{wakeSummary(wake, t) || (wake.status === "running" ? t("wake.oneProcessing") : "")}</p>
               </div>
             </div>
             <ul className="wake-results">
@@ -2450,7 +2485,11 @@ export default function App() {
                     <div>
                       <strong>{primary}</strong>
                       {secondary ? <p className="wake-result-workspace">{secondary}</p> : null}
-                      <p>{wakeResultLabel(result.result, t)}</p>
+                      <p><span className="wake-result-request">{t(({
+                        not_sent: "wake.requestNotSent",
+                        may_have_sent: "wake.requestMayHaveSent",
+                        sent: "wake.requestSent",
+                      } as const)[result.request_state])} · </span><span>{wakeResultLabel(result.result, t)}</span></p>
                     </div>
                   </li>
                 );

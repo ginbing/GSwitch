@@ -6,11 +6,11 @@ use crate::{
     accounts::AppState,
     cli_update, codex, intake, migration, quota, switching,
     types::{
-        AccountView, AppSnapshot, CodexCliInfo, CodexCliUpdateFailure, ExportResult, ImportResult,
-        LiveAccountView, MigrationPreview, OAuthLoginStart, OAuthLoginStatus, QuotaRefreshFailure,
-        QuotaRefreshFailureCode, QuotaView, ResetCreditOutcome, RuntimeInfo, StorageStatus,
-        SwitchFailure, SwitchFailureCode, SwitchOutcome, UpdateDelivery, WakeOperationView,
-        WakeStart,
+        AccountView, AppSnapshot, CodexCliInfo, CodexCliUpdateFailure, CodexCliUpdateStatus,
+        ExportResult, ImportResult, LiveAccountView, MigrationPreview, OAuthLoginStart,
+        OAuthLoginStatus, QuotaRefreshFailure, QuotaRefreshFailureCode, QuotaView,
+        ResetCreditOutcome, RuntimeInfo, StorageStatus, SwitchFailure, SwitchFailureCode,
+        SwitchOutcome, UpdateDelivery, WakeOperationView, WakeStart,
     },
     wake,
 };
@@ -36,11 +36,13 @@ pub async fn get_runtime_info() -> Result<RuntimeInfo, String> {
 
 #[tauri::command]
 pub async fn get_codex_cli_info() -> CodexCliInfo {
-    tauri::async_runtime::spawn_blocking(cli_update::inspect)
+    tauri::async_runtime::spawn_blocking(cli_update::check_latest)
         .await
         .unwrap_or(CodexCliInfo {
             version: None,
             supports_update: false,
+            latest_version: None,
+            update_status: CodexCliUpdateStatus::Unknown,
         })
 }
 

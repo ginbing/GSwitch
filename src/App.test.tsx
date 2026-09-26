@@ -112,8 +112,8 @@ const staleQuota: QuotaView = {
 };
 
 function prepareDefaults() {
-  mocks.codexCliInfo.mockResolvedValue({ version: "0.156.1", supports_update: true });
-  mocks.updateCodexCli.mockResolvedValue({ version: "0.157.0", supports_update: true });
+  mocks.codexCliInfo.mockResolvedValue({ version: "0.156.1", latest_version: "0.157.0", update_status: "available", supports_update: true });
+  mocks.updateCodexCli.mockResolvedValue({ version: "0.157.0", update_status: "unknown", supports_update: true });
   mocks.openCodexCliGuide.mockResolvedValue(undefined);
   mocks.runtimeInfo.mockResolvedValue({
     codex_home: "C:\\Codex",
@@ -208,36 +208,62 @@ describe("GSwitch account workspace", () => {
   });
 
   it("shows and updates the same Codex CLI without touching accounts", async () => {
+    let updated = false;
+    mocks.codexCliInfo.mockImplementation(async () => updated
+      ? { version: "0.157.0", latest_version: "0.157.0", update_status: "current", supports_update: true }
+      : { version: "0.156.1", latest_version: "0.157.0", update_status: "available", supports_update: true });
+    mocks.updateCodexCli.mockImplementation(async () => {
+      updated = true;
+      return { version: "0.157.0", update_status: "unknown", supports_update: true };
+    });
     render(<App />);
-    await userEvent.click(screen.getByRole("button", { name: "Codex CLI" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Codex CLI 0.157.0 available" }));
     const dialog = await screen.findByRole("dialog", { name: "Codex CLI" });
     expect(await within(dialog).findByText("Installed version: 0.156.1")).toBeInTheDocument();
-    await userEvent.click(within(dialog).getByRole("button", { name: "Update CLI" }));
+    expect(within(dialog).getByText("Latest version: 0.157.0")).toBeInTheDocument();
+    await userEvent.click(within(dialog).getByRole("button", { name: "Update Codex CLI" }));
     expect(await within(dialog).findByText("Update finished. Installed version: 0.157.0.")).toBeInTheDocument();
     expect(mocks.updateCodexCli).toHaveBeenCalledOnce();
     expect(mocks.switchAccount).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: /Codex CLI .* available/ })).not.toBeInTheDocument();
   });
 
   it("keeps CLI update failures in the Chinese dialog with a next step", async () => {
     Object.defineProperty(window.navigator, "language", { configurable: true, value: "zh-CN" });
     mocks.updateCodexCli.mockRejectedValue("codex_open");
     render(<App />);
-    await userEvent.click(screen.getByRole("button", { name: "Codex CLI" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Codex CLI 0.157.0 可更新" }));
     const dialog = await screen.findByRole("dialog", { name: "Codex CLI" });
     expect(await within(dialog).findByText("已安装版本：0.156.1")).toBeInTheDocument();
-    await userEvent.click(within(dialog).getByRole("button", { name: "更新 CLI" }));
+    await userEvent.click(within(dialog).getByRole("button", { name: "更新 Codex CLI" }));
     expect(await within(dialog).findByRole("alert")).toHaveTextContent("请退出 Codex 后再更新");
     expect(within(dialog).getByText("已安装版本：0.156.1")).toBeInTheDocument();
   });
 
   it("does not offer an update to a CLI without the official command", async () => {
-    mocks.codexCliInfo.mockResolvedValue({ version: "0.100.0", supports_update: false });
+    mocks.codexCliInfo.mockResolvedValue({ version: "0.100.0", latest_version: "0.157.0", update_status: "available", supports_update: false });
     render(<App />);
-    await userEvent.click(screen.getByRole("button", { name: "Codex CLI" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Codex CLI 0.157.0 available" }));
     const dialog = await screen.findByRole("dialog", { name: "Codex CLI" });
     expect(await within(dialog).findByText("Installed version: 0.100.0")).toBeInTheDocument();
-    expect(within(dialog).queryByRole("button", { name: "Update CLI" })).not.toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: "Update Codex CLI" })).not.toBeInTheDocument();
     expect(within(dialog).getByRole("button", { name: "Official install guide" })).toBeInTheDocument();
+  });
+
+  it("keeps current and offline CLI checks out of the toolbar", async () => {
+    mocks.codexCliInfo.mockResolvedValue({ version: "0.157.0", latest_version: "0.157.0", update_status: "current", supports_update: true });
+    render(<App />);
+    await screen.findByRole("heading", { name: "0 saved accounts" });
+    await waitFor(() => expect(mocks.codexCliInfo).toHaveBeenCalled());
+    expect(screen.queryByRole("button", { name: /Codex CLI .* available/ })).not.toBeInTheDocument();
+  });
+
+  it("keeps a failed CLI release check quiet", async () => {
+    mocks.codexCliInfo.mockResolvedValue({ version: "0.157.0", update_status: "unknown", supports_update: true });
+    render(<App />);
+    await waitFor(() => expect(mocks.codexCliInfo).toHaveBeenCalled());
+    expect(screen.queryByRole("button", { name: /Codex CLI/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
   it("uses the Simplified Chinese system locale and keeps the main account flow localized", async () => {
@@ -577,6 +603,7 @@ describe("GSwitch account workspace", () => {
     expect(card).not.toHaveTextContent(/Resets \d/);
     expect(card).not.toHaveTextContent("5-hour");
     expect(card).not.toHaveTextContent("Reset time unavailable");
+    expect(screen.queryByRole("button", { name: "Wake person@example.com" })).not.toBeInTheDocument();
   });
 
   it("shows a short Chinese reset time with keyboard access to the exact date", async () => {
@@ -632,7 +659,8 @@ describe("GSwitch account workspace", () => {
     expect(await screen.findByRole("heading", { name: "person@example.com" })).toBeInTheDocument();
     expect(screen.getByText("Personal")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Refresh person@example.com" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Wake person@example.com" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Wake person@example.com" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Wake person@example.com" })).toHaveAttribute("title", "Refresh quota before using Wake.");
     expect(screen.getByRole("button", { name: "Switch to person@example.com" })).toBeEnabled();
   });
 
@@ -642,7 +670,8 @@ describe("GSwitch account workspace", () => {
     render(<App />);
 
     expect(await screen.findByRole("button", { name: "切换到 person@example.com" })).toBeEnabled();
-    expect(screen.getByRole("button", { name: "唤醒 person@example.com" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "唤醒 person@example.com" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "唤醒 person@example.com" })).toHaveAttribute("title", "请先刷新额度，再使用唤醒。");
   });
 
   it("identifies the current account in its disabled action", async () => {
@@ -1078,7 +1107,7 @@ describe("GSwitch account workspace", () => {
   it("shows localized Wake identity and outcome and can reopen a background operation", async () => {
     mocks.listAccounts.mockResolvedValue([chatAccount]);
     mocks.accountQuota.mockResolvedValue({ ...staleQuota, status: "fresh" });
-    let resolveWake: ((result: { id: string; status: "completed"; results: Array<{ account_id: string; label: string; result: "failed"; message: string }> }) => void) | undefined;
+    let resolveWake: ((result: { id: string; status: "completed"; results: Array<{ account_id: string; label: string; result: "failed"; request_state: "not_sent"; message: string }> }) => void) | undefined;
     mocks.wakeOperation.mockImplementation(() => new Promise((resolve) => { resolveWake = resolve; }));
     render(<App />);
     await screen.findByRole("heading", { name: "person@example.com" });
@@ -1091,16 +1120,43 @@ describe("GSwitch account workspace", () => {
     resolveWake?.({
       id: "wake-all",
       status: "completed",
-      results: [{ account_id: "account-1", label: "Legacy label", result: "failed", message: "raw provider error text" }],
+      results: [{ account_id: "account-1", label: "Legacy label", result: "failed", request_state: "not_sent", message: "raw provider error text" }],
     });
     await userEvent.click(await screen.findByRole("button", { name: "View Wake results" }));
     const resultDialog = await screen.findByRole("dialog", { name: "Wake" });
     expect(await within(resultDialog).findByText("person@example.com")).toBeInTheDocument();
     expect(within(resultDialog).getByText("Personal")).toBeInTheDocument();
     expect(within(resultDialog).getByText("Wake did not complete for this account.")).toBeInTheDocument();
+    expect(within(resultDialog).getByText(/1 failed/)).toBeInTheDocument();
+    expect(within(resultDialog).getByText(/No request sent/)).toBeInTheDocument();
     expect(within(resultDialog).queryByText("raw provider error text")).not.toBeInTheDocument();
     await userEvent.click(within(resultDialog).getByRole("button", { name: "Done" }));
     expect(await screen.findByRole("button", { name: "Wake all" })).toBeInTheDocument();
+  });
+
+  it("distinguishes sent, skipped and uncertain Wake outcomes", async () => {
+    const saved = [chatAccount,
+      { ...chatAccount, id: "account-2", email: "other@example.com" },
+      { ...chatAccount, id: "account-3", email: "third@example.com" }];
+    mocks.listAccounts.mockResolvedValue(saved);
+    mocks.accountQuota.mockImplementation(async (id: string) => ({ ...staleQuota, account_id: id, status: "fresh" }));
+    mocks.wakeOperation.mockResolvedValue({
+      id: "wake-all",
+      status: "completed",
+      results: [
+        { account_id: "account-1", label: "Personal", result: "started", request_state: "sent" },
+        { account_id: "account-2", label: "Other", result: "already_active", request_state: "not_sent" },
+        { account_id: "account-3", label: "Third", result: "sent_not_confirmed", request_state: "may_have_sent" },
+      ],
+    });
+    render(<App />);
+    await screen.findByRole("heading", { name: "3 saved accounts" });
+    await userEvent.click(screen.getByRole("button", { name: "Wake all" }));
+    const dialog = await screen.findByRole("dialog", { name: "Wake" });
+    expect(await within(dialog).findByText("1 started · 1 skipped · 1 unconfirmed")).toBeInTheDocument();
+    expect(within(dialog).getByText(/No request sent/)).toBeInTheDocument();
+    expect(within(dialog).getByText(/Delivery uncertain/)).toBeInTheDocument();
+    expect(within(dialog).getByText("5-hour quota is already available.")).toBeInTheDocument();
   });
 
   it("shows a per-operation Wake surface instead of silently running in the background", async () => {
@@ -1111,7 +1167,7 @@ describe("GSwitch account workspace", () => {
 
     await userEvent.click(screen.getByRole("button", { name: /^Wake all$/ }));
     expect(await screen.findByRole("dialog", { name: "Wake" })).toBeInTheDocument();
-    expect(screen.getByText("Wake is running safely")).toBeInTheDocument();
+    expect(screen.getByText("Checking accounts for Wake…")).toBeInTheDocument();
     expect(mocks.startWakeAll).toHaveBeenCalledOnce();
   });
 

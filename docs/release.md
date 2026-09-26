@@ -132,6 +132,12 @@ release asset once after startup and then at most once every six hours. The
 native updater verifies every update signature before installation; it never
 reads, exports, or changes a Codex account.
 
+After the main view appears, a separate background check reads the installed
+Codex CLI version and OpenAI's latest stable Codex release metadata from GitHub.
+It repeats at most every six hours while the app is open. An unavailable check
+stays quiet; only a confirmed newer version produces an update entry. Installing
+that CLI update requires a user click and uses the CLI's own update command.
+
 Windows uses a passive NSIS installer and exits while the installer runs. macOS
 and AppImage installations request a normal relaunch. Debian packages are not
 self-replaced; when an update is available, GSwitch opens the verified release
