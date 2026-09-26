@@ -177,8 +177,9 @@ Default release posture:
 - no analytics or telemetry;
 - no crash-reporting service without a separate accepted privacy decision;
 - no listening port, localhost API, or remote-control surface;
-- outbound traffic only for user-visible Codex/OpenAI operations and signed
-  update checks.
+- outbound traffic only for user-visible Codex/OpenAI operations, signed app
+  update checks, and the background Codex CLI release-metadata check described
+  above.
 
 ## Versioning
 
