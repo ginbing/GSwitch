@@ -9,6 +9,11 @@ to manage them.
 
 It gets the job done.
 
+![GSwitch main window with six fictional accounts](./assets/readme-demo.png)
+
+The screenshot uses fictional `example.com`, `example.org`, and `example.net`
+accounts and fixed sample quota data. It contains no saved user accounts.
+
 ## What it does
 
 - Keep multiple Codex accounts on your computer
@@ -65,6 +70,9 @@ install supported updates from inside the app.
 GSwitch has no analytics or telemetry. It contacts Codex/OpenAI for account
 operations you request and GitHub Releases for signed update checks and
 downloads.
+It also checks OpenAI's stable Codex CLI release metadata after the main window
+appears and shows an update option only when a newer CLI version is confirmed.
+CLI updates require your click; the Codex desktop app updates separately.
 
 ## Build from source
 

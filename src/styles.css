@@ -953,9 +953,11 @@ summary:focus-visible {
 .quota-reset-time:focus-visible::after { opacity: 1; visibility: visible; }
 
 .credit-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   min-height: 37px;
-  justify-content: space-between;
-  gap: 8px;
+  column-gap: 8px;
+  row-gap: 5px;
   margin-top: auto;
   padding-top: 12px;
   border-top: 1px solid var(--border);
@@ -963,7 +965,7 @@ summary:focus-visible {
   font-size: 11px;
 }
 
-.credit-row > span {
+.credit-row > .credit-count {
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -975,15 +977,36 @@ summary:focus-visible {
   font-size: 12px;
 }
 
-.credit-row small {
-  overflow: hidden;
-  flex: 1;
+.credit-row .credit-expiry {
+  position: relative;
+  grid-column: 1 / -1;
+  width: max-content;
+  max-width: 100%;
   color: var(--soft-muted);
-  font-size: 10px;
-  text-align: right;
-  text-overflow: ellipsis;
+  font-size: 10.5px;
+  text-align: left;
   white-space: nowrap;
 }
+
+.credit-expiry::after {
+  position: absolute;
+  z-index: 5;
+  bottom: calc(100% + 4px);
+  left: 0;
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: var(--text);
+  background: var(--surface);
+  box-shadow: var(--shadow-soft);
+  content: attr(data-full-time);
+  opacity: 0;
+  pointer-events: none;
+  visibility: hidden;
+}
+
+.credit-expiry:hover::after,
+.credit-expiry:focus-visible::after { opacity: 1; visibility: visible; }
 
 .text-button,
 .back-link {
@@ -1651,8 +1674,7 @@ textarea {
   background: var(--soft-muted);
 }
 
-.wake-started,
-.wake-already_active {
+.wake-started {
   background: var(--success);
 }
 
@@ -1684,6 +1706,11 @@ textarea {
   color: var(--muted);
   font-size: 11.5px;
   line-height: 1.4;
+}
+
+.wake-result-request {
+  color: var(--text);
+  font-weight: 600;
 }
 
 .wake-results .wake-result-workspace {

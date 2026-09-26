@@ -285,8 +285,11 @@ Codex request. It is not a health check, router, load balancer, account rotation
 or keep-warm service.
 
 Wake reads quota first through GSwitch's narrow ChatGPT backend client. It
-reports an already-active five-hour window or unavailable ordinary capacity
-without sending a request, and it never uses Reserve or reset credits. A running
+reports an already-active five-hour window, a plan without a five-hour window,
+or unavailable ordinary capacity without sending a request, and it never uses
+Reserve or reset credits. The account card hides Wake when fresh quota proves
+there is no five-hour window and asks the user to refresh when quota is unknown
+or stale. A running
 Codex process never makes an account ineligible: a matching active identity uses
 one live access-token snapshot, a different identity uses the saved snapshot,
 and an unidentifiable active process uses the saved snapshot without a managed
@@ -308,7 +311,7 @@ confirmed.
 
 Wake All and selected-account Wake are sequential, cancellable, and return one
 result per eligible ChatGPT account:
-Started, Already active, No ordinary capacity, Needs sign-in, Sent not
+Started, Already active, No five-hour window, No ordinary capacity, Needs sign-in, Sent not
 confirmed, Failed, or Cancelled. The result view resolves each result to the
 saved account's email and workspace and shows a localized outcome instead of
 provider error text. A running operation can continue in the background and be
@@ -316,6 +319,11 @@ reopened from the toolbar; completed results stay available there until dismisse
 silently relabel another account. Wake is user-triggered; there is no cron,
 background schedule, automatic rotation, history dashboard, or job-management
 surface.
+
+The result heading summarizes started, skipped, unconfirmed, failed, and
+cancelled accounts. Rust records each account's request state as not sent,
+possibly sent, or sent; per-account copy shows that state before the reason.
+"Already active" is a neutral skip, not a successful new Wake.
 
 When the freshly read quota specifically shows a zero five-hour or weekly
 balance in an active window, name that window in the result. Otherwise say only

@@ -19,8 +19,8 @@ use crate::{
     },
     types::{
         AccountIdentity, AccountKind, QuotaBucketKind, QuotaSnapshot, QuotaWindowKind,
-        StoredAccount, WakeAccountResult, WakeOperationStatus, WakeOperationView, WakeResultKind,
-        WakeStart,
+        StoredAccount, WakeAccountResult, WakeOperationStatus, WakeOperationView, WakeRequestState,
+        WakeResultKind, WakeStart,
     },
 };
 
@@ -37,6 +37,7 @@ struct WakeTarget {
 
 struct WakeAccountOutcome {
     result: WakeResultKind,
+    request_state: WakeRequestState,
     message: String,
 }
 
@@ -44,8 +45,14 @@ impl WakeAccountOutcome {
     fn new(result: WakeResultKind, message: impl Into<String>) -> Self {
         Self {
             result,
+            request_state: WakeRequestState::NotSent,
             message: message.into(),
         }
+    }
+
+    fn request_state(mut self, request_state: WakeRequestState) -> Self {
+        self.request_state = request_state;
+        self
     }
 }
 
@@ -215,6 +222,7 @@ fn run_targets(
             account_id: target.id.clone(),
             label: target.label.clone(),
             result: outcome.result,
+            request_state: outcome.request_state,
             message: outcome.message,
         });
         state.update_wake_operation(view.clone())?;
@@ -237,6 +245,7 @@ fn append_cancelled_targets(view: &mut WakeOperationView, targets: &[WakeTarget]
             account_id: target.id.clone(),
             label: target.label.clone(),
             result: WakeResultKind::Cancelled,
+            request_state: WakeRequestState::NotSent,
             message: "Wake queue was cancelled before this account started".to_string(),
         });
     }
@@ -256,6 +265,7 @@ fn fail_operation(
             account_id: target.id.clone(),
             label: target.label.clone(),
             result: WakeResultKind::Failed,
+            request_state: WakeRequestState::NotSent,
             message: message.clone(),
         });
     }
@@ -327,20 +337,20 @@ fn wake_account(
                     WakeAccountOutcome::new(
                         WakeResultKind::SentNotConfirmed,
                         "Wake may have reached ChatGPT, but delivery was not confirmed and was not retried",
-                    )
+                    ).request_state(WakeRequestState::MayHaveSent)
                 }
                 RequestFailureKind::Authentication => WakeAccountOutcome::new(
                     WakeResultKind::NeedsSignIn,
                     "ChatGPT rejected the Wake credential; sign in again before trying another Wake",
-                ),
+                ).request_state(WakeRequestState::Sent),
                 RequestFailureKind::RateLimited => WakeAccountOutcome::new(
                     WakeResultKind::NoOrdinaryCapacity,
                     "ChatGPT reported no ordinary Codex capacity; Wake did not use Reserve or reset credits",
-                ),
+                ).request_state(WakeRequestState::Sent),
                 RequestFailureKind::Http => WakeAccountOutcome::new(
                     WakeResultKind::RequestRejected,
                     "ChatGPT rejected the Wake request before it could start",
-                ),
+                ).request_state(WakeRequestState::Sent),
             };
         }
     }
@@ -355,15 +365,18 @@ fn wake_account(
                     WakeResultKind::SentNotConfirmed,
                     "Wake was sent, but the quota response did not confirm a new five-hour window",
                 )
+                .request_state(WakeRequestState::Sent)
             }
         };
     if window_started(&before, &after, now_unix_ms() / 1000) {
         WakeAccountOutcome::new(WakeResultKind::Started, "The five-hour window is active")
+            .request_state(WakeRequestState::Sent)
     } else {
         WakeAccountOutcome::new(
             WakeResultKind::SentNotConfirmed,
             "Wake was sent, but the quota response did not confirm a new five-hour window",
         )
+        .request_state(WakeRequestState::Sent)
     }
 }
 
@@ -455,6 +468,12 @@ fn preflight_failure(error: ReadOnlyRefreshFailure) -> WakeAccountOutcome {
 
 fn quota_eligibility(snapshot: &QuotaSnapshot) -> Option<WakeAccountOutcome> {
     let now_seconds = now_unix_ms() / 1000;
+    if five_hour(snapshot).is_none() {
+        return Some(WakeAccountOutcome::new(
+            WakeResultKind::NoFiveHourWindow,
+            "No five-hour quota window was reported; no Wake request was sent",
+        ));
+    }
     if window_is_active(snapshot, now_seconds) {
         return Some(WakeAccountOutcome::new(
             WakeResultKind::AlreadyActive,
@@ -651,8 +670,15 @@ mod tests {
     fn reports_active_or_exhausted_ordinary_windows_without_sending_wake() {
         let active = quota_eligibility(&snapshot(10, 90, i64::MAX)).expect("active result");
         assert_eq!(active.result, WakeResultKind::AlreadyActive);
+        assert_eq!(active.request_state, WakeRequestState::NotSent);
         let exhausted = quota_eligibility(&snapshot(100, 0, i64::MAX)).expect("capacity result");
         assert_eq!(exhausted.result, WakeResultKind::FiveHourExhausted);
+        let mut other_plan = snapshot(10, 90, i64::MAX);
+        other_plan.buckets[0].windows[0].kind = QuotaWindowKind::Other;
+        other_plan.buckets[0].windows[0].window_duration_mins = Some(43_200);
+        let unavailable = quota_eligibility(&other_plan).expect("no five-hour window result");
+        assert_eq!(unavailable.result, WakeResultKind::NoFiveHourWindow);
+        assert_eq!(unavailable.request_state, WakeRequestState::NotSent);
     }
 
     #[test]

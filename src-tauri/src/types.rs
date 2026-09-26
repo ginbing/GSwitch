@@ -5,6 +5,17 @@ use serde_json::Value;
 pub struct CodexCliInfo {
     pub version: Option<String>,
     pub supports_update: bool,
+    pub latest_version: Option<String>,
+    pub update_status: CodexCliUpdateStatus,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CodexCliUpdateStatus {
+    Available,
+    Current,
+    Unknown,
+    Missing,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -391,6 +402,7 @@ pub struct ResetCreditOutcome {
 pub enum WakeResultKind {
     Started,
     AlreadyActive,
+    NoFiveHourWindow,
     FiveHourExhausted,
     WeeklyExhausted,
     NoOrdinaryCapacity,
@@ -402,11 +414,20 @@ pub enum WakeResultKind {
     Cancelled,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WakeRequestState {
+    NotSent,
+    MayHaveSent,
+    Sent,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WakeAccountResult {
     pub account_id: String,
     pub label: String,
     pub result: WakeResultKind,
+    pub request_state: WakeRequestState,
     #[serde(default, skip_serializing)]
     pub message: String,
 }

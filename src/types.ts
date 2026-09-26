@@ -26,6 +26,8 @@ export interface RuntimeInfo {
 export interface CodexCliInfo {
   version?: string;
   supports_update: boolean;
+  latest_version?: string;
+  update_status: "available" | "current" | "unknown" | "missing";
 }
 
 export type CodexCliUpdateFailure =
@@ -205,6 +207,7 @@ export interface ResetCreditOutcome {
 export type WakeResultKind =
   | "started"
   | "already_active"
+  | "no_five_hour_window"
   | "five_hour_exhausted"
   | "weekly_exhausted"
   | "no_ordinary_capacity"
@@ -219,6 +222,7 @@ export interface WakeAccountResult {
   account_id: string;
   label: string;
   result: WakeResultKind;
+  request_state: "not_sent" | "may_have_sent" | "sent";
 }
 
 export interface WakeOperationView {

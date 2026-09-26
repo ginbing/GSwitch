@@ -73,12 +73,13 @@ explicit reset preserves GSwitch's damaged file without touching Codex.
 
 ## Interaction states
 
-The toolbar offers a small **Codex CLI** entry. Its focused dialog shows the
-version of the CLI GSwitch actually launches and an explicit update action only
-when that CLI exposes the official `update` command. Do not claim a version is
-the latest without checking a source for that claim. A missing or unsupported
-CLI points to the official install guide. Update progress and failures stay in
-the dialog; the account grid remains the primary workspace.
+After the account grid appears, GSwitch checks the installed Codex CLI against
+OpenAI's latest stable release in the background. The toolbar shows a compact
+entry only when a newer version is confirmed. Its dialog names the installed
+and latest versions and offers an explicit update action only when that CLI
+exposes the official `update` command. An unsupported CLI points to the
+official install guide. A failed check remains quiet; no update is installed
+without a click. Codex CLI and the Codex desktop app update separately.
 
 - Do not optimistically display a switch or redemption as complete.
 - After a verified switch, update the toolbar identity and active card directly.
@@ -93,8 +94,10 @@ the dialog; the account grid remains the primary workspace.
 - Disable conflicting credential actions while one is in progress.
 - Show progress on the affected row or in the focused operation dialog.
 - Keep Wake results per account; identify each result by email and workspace,
-  localize its status, and make partial failure explicit without exposing raw
-  provider errors. A running Wake can continue in the background and reopen
+  localize its status, and distinguish a sent request from a skip, an
+  unconfirmed request, and a failure. An already usable five-hour window or a
+  plan with no five-hour window causes no Wake request. When quota is unknown,
+  the card asks for a refresh first. A running Wake can continue in the background and reopen
   from the toolbar, including completed results until the user dismisses them.
 - Account removal confirms the email and workspace. It explains that removing a
   non-current saved copy does not change a running Codex identity, while the
@@ -115,6 +118,10 @@ the dialog; the account grid remains the primary workspace.
   full value on hover; do not reserve empty vertical space for the old heading
   reminder. Quota reset timing shows only a short relative time in the card;
   hover, keyboard focus, and assistive text provide the exact date and time.
+  Reset credits use two aligned lines: count and action above, compact relative
+  expiry with month, day, and time below. Show the year only when the expiry
+  crosses into another year; the exact date remains available on hover, focus,
+  and to assistive technology.
 - Keep pasted credentials and API keys in transient, non-persistent inputs and
   clear them immediately after submission.
 - File import reads the selected path in Rust rather than copying file contents
@@ -137,6 +144,13 @@ language choice. Dates, reset/expiry timing, numbers, and percentages use the
 selected locale's platform formatters.
 
 ## Visual rules
+
+The README screenshot comes from `demo/api.ts`, which contains only fictional
+reserved-domain accounts and fixed sample quota data. Generate it with
+`pwsh scripts/capture-demo.ps1` on Windows and visually inspect the image before
+committing it. The demo build replaces account and updater APIs and rejects
+account operations; never capture the installed app or a personal account list
+for README. Keep the screenshot source and command alongside the image.
 
 Use Segoe UI Variable or the system UI font, natural information density, clear
 light/dark behavior, restrained purple action color, quiet status color, simple

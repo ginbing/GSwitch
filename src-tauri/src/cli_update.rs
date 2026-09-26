@@ -8,11 +8,12 @@ use std::{
 use crate::{
     accounts::{AppState, OperationAcquireFailure},
     app_server, runtime,
-    types::{CodexCliInfo, CodexCliUpdateFailure},
+    types::{CodexCliInfo, CodexCliUpdateFailure, CodexCliUpdateStatus},
 };
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_PROBE_OUTPUT: usize = 32 * 1024;
+const LATEST_RELEASE_URL: &str = "https://api.github.com/repos/openai/codex/releases/latest";
 
 /// Only the version and presence of the official update subcommand cross IPC.
 /// Never return CLI diagnostics, environment values, paths, or command output.
@@ -29,9 +30,89 @@ fn inspect_with(mut command: impl FnMut() -> Command) -> CodexCliInfo {
             .as_deref()
             .is_some_and(help_lists_update);
     CodexCliInfo {
+        update_status: if version.is_some() {
+            CodexCliUpdateStatus::Unknown
+        } else {
+            CodexCliUpdateStatus::Missing
+        },
         version,
         supports_update,
+        latest_version: None,
     }
+}
+
+/// A bounded, credential-free check of the latest stable upstream CLI release.
+/// Failure is an unknown status, never an invitation to update blindly.
+pub fn check_latest() -> CodexCliInfo {
+    let info = inspect();
+    if info.version.is_none() {
+        return info;
+    }
+    with_latest(info, latest_stable_version())
+}
+
+fn with_latest(mut info: CodexCliInfo, latest: Option<String>) -> CodexCliInfo {
+    let Some(installed) = info.version.as_deref() else {
+        return info;
+    };
+    if let Some(latest) = latest {
+        info.update_status = if newer_than(&latest, installed) {
+            CodexCliUpdateStatus::Available
+        } else {
+            CodexCliUpdateStatus::Current
+        };
+        info.latest_version = Some(latest);
+    }
+    info
+}
+
+fn latest_stable_version() -> Option<String> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let client = reqwest::blocking::Client::builder()
+        .connect_timeout(Duration::from_secs(3))
+        .timeout(Duration::from_secs(5))
+        .build()
+        .ok()?;
+    let response = client
+        .get(LATEST_RELEASE_URL)
+        .header(reqwest::header::USER_AGENT, "GSwitch")
+        .send()
+        .ok()?
+        .error_for_status()
+        .ok()?;
+    let mut body = Vec::new();
+    response.take(4 * 1024 * 1024).read_to_end(&mut body).ok()?;
+    let value: serde_json::Value = serde_json::from_slice(&body).ok()?;
+    parse_release_tag(value.get("tag_name")?.as_str()?)
+}
+
+fn parse_release_tag(tag: &str) -> Option<String> {
+    let tag = tag.strip_prefix("rust-v")?;
+    let version = parse_version(&format!("codex-cli {tag}"))?;
+    if version.contains('-') {
+        return None;
+    }
+    Some(version)
+}
+
+fn newer_than(latest: &str, installed: &str) -> bool {
+    let parse = |version: &str| -> Option<([u64; 3], bool)> {
+        let mut parts = version.splitn(2, ['-', '+']);
+        let core = parts.next()?;
+        let numbers = core
+            .split('.')
+            .map(str::parse::<u64>)
+            .collect::<Result<Vec<_>, _>>()
+            .ok()?;
+        let numbers: [u64; 3] = numbers.try_into().ok()?;
+        Some((numbers, version.contains('-')))
+    };
+    let (Some((latest_core, latest_pre)), Some((installed_core, installed_pre))) =
+        (parse(latest), parse(installed))
+    else {
+        return false;
+    };
+    latest_core > installed_core || (latest_core == installed_core && installed_pre && !latest_pre)
 }
 
 pub fn update(state: &AppState) -> Result<CodexCliInfo, CodexCliUpdateFailure> {
@@ -188,6 +269,33 @@ mod tests {
             "Commands:\n  update  Update Codex to the latest version\n"
         ));
         assert!(!help_lists_update("Commands:\n  exec  Run Codex\n"));
+    }
+
+    #[test]
+    fn checks_only_valid_stable_releases_and_does_not_guess_when_offline() {
+        assert_eq!(parse_release_tag("rust-v0.158.0"), Some("0.158.0".into()));
+        assert_eq!(parse_release_tag("rust-v0.158.0-beta.1"), None);
+        assert_eq!(parse_release_tag("other-v0.158.0"), None);
+        let info = CodexCliInfo {
+            version: Some("0.157.0".into()),
+            supports_update: true,
+            latest_version: None,
+            update_status: CodexCliUpdateStatus::Unknown,
+        };
+        assert_eq!(
+            with_latest(info.clone(), None).update_status,
+            CodexCliUpdateStatus::Unknown
+        );
+        assert_eq!(
+            with_latest(info.clone(), Some("0.157.0".into())).update_status,
+            CodexCliUpdateStatus::Current
+        );
+        assert_eq!(
+            with_latest(info, Some("0.158.0".into())).update_status,
+            CodexCliUpdateStatus::Available
+        );
+        assert!(newer_than("0.158.0", "0.158.0-beta.1"));
+        assert!(!newer_than("0.157.0", "0.158.0-beta.1"));
     }
 
     #[cfg(windows)]
