@@ -559,7 +559,9 @@ fn window_started(before: &QuotaSnapshot, after: &QuotaSnapshot, now_seconds: i6
     };
     let after_reset = after_window.resets_at;
     after_reset.is_some_and(|reset| reset > now_seconds)
-        && after_window.remaining_percent.is_some_and(|remaining| remaining > 0)
+        && after_window
+            .remaining_percent
+            .is_some_and(|remaining| remaining > 0)
         && five_hour(before).and_then(|window| window.resets_at) != after_reset
 }
 
