@@ -11,6 +11,7 @@ import {
   FileJson,
   FolderOpen,
   Globe2,
+  Info,
   KeyRound,
   ListChecks,
   LoaderCircle,
@@ -43,6 +44,7 @@ import {
   formatDateTimeWithRelative,
   formatNumber,
   formatPercent,
+  formatQuotaResetTime,
   formatRelativeTime,
   readLanguagePreference,
   resolveLocale,
@@ -343,6 +345,9 @@ function wakeResultLabel(result: WakeOperationView["results"][number]["result"],
 }
 
 function wakeSummary(wake: WakeOperationView, t: Translator) {
+  if (wake.status === "completed" && wake.results.length > 0 && wake.results.every(({ result }) => result === "already_active")) {
+    return t("wake.summaryAllActive", { count: wake.results.length });
+  }
   const counts = { started: 0, skipped: 0, unconfirmed: 0, failed: 0, cancelled: 0 };
   for (const { result, request_state } of wake.results) {
     if (result === "started") counts.started++;
@@ -464,17 +469,18 @@ function QuotaResetTime({ timestamp, t, formatLocale }: {
 
   const fullTime = formatDateTime(timestamp, formatLocale);
   const passed = timestamp * 1000 <= nowMs;
+  const [relative, absolute] = formatQuotaResetTime(timestamp, formatLocale, nowMs).split(" · ");
   return (
     <time
       aria-label={passed
         ? `${t("quota.resetTimePassed")}: ${fullTime}`
         : t("quota.resets", { time: fullTime })}
       className="quota-reset-time"
-      data-full-time={fullTime}
+      data-full-time={passed ? `${fullTime} · ${t("quota.resetTimePassed")}` : t("quota.resets", { time: fullTime })}
       dateTime={new Date(timestamp * 1000).toISOString()}
       tabIndex={0}
     >
-      {passed ? t("quota.resetTimePassed") : formatRelativeTime(timestamp, formatLocale, nowMs)}
+      {passed ? t("quota.resetTimePassed") : <><span>{relative}</span><span className="quota-reset-date"> · {absolute}</span></>}
     </time>
   );
 }
@@ -595,8 +601,12 @@ function AccountCard({
 }) {
   const credits = quota?.snapshot?.reset_credits;
   const isApiKey = account.kind === "api_key";
-  const knownFiveHour = quota?.status === "fresh" && codexQuotaWindows(quota).some((window) => window.kind === "five_hour");
+  const fiveHourWindow = quota?.status === "fresh" ? codexQuotaWindows(quota).find((window) => window.kind === "five_hour") : undefined;
+  const knownFiveHour = fiveHourWindow !== undefined;
   const noFiveHour = quota?.status === "fresh" && !knownFiveHour;
+  const fiveHourAvailable = fiveHourWindow?.remaining_percent !== undefined
+    && fiveHourWindow.remaining_percent > 0
+    && (fiveHourWindow.resets_at ?? 0) * 1000 > Date.now();
   const primaryName = accountPrimaryName(account);
   const secondaryName = accountSecondaryName(account, primaryName, t);
   const controlsBusy = globalBusy || busyAction !== undefined;
@@ -710,7 +720,7 @@ function AccountCard({
           <RefreshCw className={busyAction === "refresh" ? "spin" : ""} size={17} />
         </button>
         <div className="card-footer-actions">
-          {!isApiKey && !noFiveHour ? (
+          {!isApiKey && !noFiveHour && !fiveHourAvailable ? (
             <button
               aria-label={t("account.wake", { name: primaryName })}
               className="button button-secondary"
@@ -1754,13 +1764,14 @@ export default function App() {
           </button>
           <button
             className="button button-secondary"
-            disabled={busy !== null || (!wake && (loading || storageRecovery || chatGptAccounts.length === 0))}
-            onClick={() => wake ? setDialog("wake") : void startWake()}
+            disabled={busy !== null || loading || storageRecovery || chatGptAccounts.length === 0 || wake?.status === "running"}
+            onClick={() => void startWake()}
             type="button"
           >
             <Zap size={16} />
-            {t(wake?.status === "running" ? "wake.viewProgress" : wake ? "wake.viewResults" : "toolbar.wakeAll")}
+            {t("toolbar.wakeAll")}
           </button>
+          {wake ? <button className="button button-quiet wake-last-result" onClick={() => setDialog("wake")} type="button">{t(wake.status === "running" ? "wake.viewProgress" : "wake.viewResults")}</button> : null}
           <button
             className="button button-primary"
             disabled={loading || busy !== null || storageRecovery}
@@ -2468,7 +2479,7 @@ export default function App() {
         <Modal dismissible={busy === null} onClose={() => setDialog(null)} t={t} title={t("wake.title")}>
           <div className="wake-panel">
             <div className="wake-status">
-              {wake.status === "running" ? <LoaderCircle className="spin" size={21} /> : wake.status === "completed" ? <CircleCheck size={21} /> : <CircleAlert size={21} />}
+              {wake.status === "running" ? <LoaderCircle className="spin" size={21} /> : wake.status === "completed" ? <Info size={21} /> : <CircleAlert size={21} />}
               <div>
                 <strong>{wake.status === "running" ? t("wake.running") : wake.status === "completed" ? t("wake.resultsTitle") : t("wake.stopped")}</strong>
                 <p>{wakeSummary(wake, t) || (wake.status === "running" ? t("wake.oneProcessing") : "")}</p>
@@ -2502,7 +2513,6 @@ export default function App() {
               ) : null}
               <button className="button button-primary" disabled={busy !== null} onClick={() => {
                 setDialog(null);
-                if (wake.status !== "running") setWake(null);
               }} type="button">{t(wake.status === "running" ? "wake.continueInBackground" : "common.done")}</button>
             </div>
           </div>

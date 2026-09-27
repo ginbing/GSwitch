@@ -288,7 +288,8 @@ Wake reads quota first through GSwitch's narrow ChatGPT backend client. It
 reports an already-active five-hour window, a plan without a five-hour window,
 or unavailable ordinary capacity without sending a request, and it never uses
 Reserve or reset credits. The account card hides Wake when fresh quota proves
-there is no five-hour window and asks the user to refresh when quota is unknown
+there is no five-hour window or confirms that the five-hour window already has
+usable quota. It asks the user to refresh when quota is unknown
 or stale. A running
 Codex process never makes an account ineligible: a matching active identity uses
 one live access-token snapshot, a different identity uses the saved snapshot,
@@ -306,16 +307,21 @@ ChatGPT Codex route: `gpt-5.6-luna`, standard tier, no reasoning, a single
 `OK` text input, no tools, no files or project context, and no stored response.
 There is no generic Responses client, proxy, second App Server, or retry after
 the request may have reached ChatGPT. Wake rereads quota afterward only to
-confirm the new window; an unavailable confirmation is reported as sent but not
-confirmed.
+confirm the new window. A future reset marker different from the preflight
+marker plus positive remaining five-hour quota confirms it, including a new
+100%-remaining window with zero used percentage. An unavailable confirmation
+is reported as sent but not confirmed. A card's reset countdown describes
+quota timing; it is not evidence that Wake sent a request.
 
-Wake All and selected-account Wake are sequential, cancellable, and return one
+Wake if needed and selected-account Wake are sequential, cancellable, and return one
 result per eligible ChatGPT account:
 Started, Already active, No five-hour window, No ordinary capacity, Needs sign-in, Sent not
 confirmed, Failed, or Cancelled. The result view resolves each result to the
 saved account's email and workspace and shows a localized outcome instead of
 provider error text. A running operation can continue in the background and be
-reopened from the toolbar; completed results stay available there until dismissed. A single account failure does not corrupt or
+reopened from the toolbar; completed results stay available through a separate
+Last result entry for the current session while the main Wake action can run
+again. A single account failure does not corrupt or
 silently relabel another account. Wake is user-triggered; there is no cron,
 background schedule, automatic rotation, history dashboard, or job-management
 surface.
@@ -323,7 +329,9 @@ surface.
 The result heading summarizes started, skipped, unconfirmed, failed, and
 cancelled accounts. Rust records each account's request state as not sent,
 possibly sent, or sent; per-account copy shows that state before the reason.
-"Already active" is a neutral skip, not a successful new Wake.
+"Already active" is a neutral skip, not a successful new Wake. When every
+account already has usable quota, the summary says no requests were sent and
+names how many accounts were already ready.
 
 When the freshly read quota specifically shows a zero five-hour or weekly
 balance in an active window, name that window in the result. Otherwise say only

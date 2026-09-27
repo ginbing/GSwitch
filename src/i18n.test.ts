@@ -4,6 +4,7 @@ import {
   LANGUAGE_PREFERENCE_KEY,
   formatCompactExpiry,
   formatDateTimeWithRelative,
+  formatQuotaResetTime,
   readLanguagePreference,
   resolveLocale,
   saveLanguagePreference,
@@ -52,5 +53,18 @@ describe("GSwitch language settings", () => {
     expect(formatCompactExpiry(thisYear, "zh-CN", now)).toMatch(/^8天3小时后 · 10\/04 13:00$/);
     expect(formatCompactExpiry(nextYear, "en-US", now)).toContain("2027/01/01 10:00");
     expect(formatCompactExpiry(now / 1000 - 60, "zh-CN", now)).toBe("已到期");
+  });
+
+  it("formats quota reset time compactly in both languages across minute, day, and year boundaries", () => {
+    const now = new Date(2026, 8, 27, 11, 35).getTime();
+    const today = new Date(2026, 8, 27, 16, 30).getTime() / 1000;
+    expect(formatQuotaResetTime(today, "zh-CN", now)).toBe("4小时55分 · 09/27 16:30");
+    expect(formatQuotaResetTime(today, "en-US", now)).toBe("4h 55m · 09/27 16:30");
+    const tomorrow = new Date(2026, 8, 28, 11, 35).getTime() / 1000;
+    expect(formatQuotaResetTime(tomorrow, "en-US", now)).toBe("1d · 09/28 11:35");
+    const nextYear = new Date(2027, 0, 1, 10, 0).getTime() / 1000;
+    expect(formatQuotaResetTime(nextYear, "zh-CN", now)).toContain("2027/01/01 10:00");
+    expect(formatQuotaResetTime(now / 1000 + 1, "en-US", now)).toContain("1m · ");
+    expect(formatQuotaResetTime(now / 1000 - 1, "zh-CN", now)).toBe("待刷新");
   });
 });

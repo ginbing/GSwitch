@@ -1,6 +1,6 @@
 # GSwitch
 
-<img src="./assets/gswitch-icon.svg" width="64" alt="GSwitch mark">
+[简体中文](./README.zh-CN.md) · English
 
 A simple and reliable Codex account switcher.
 
@@ -22,7 +22,7 @@ accounts and fixed sample quota data. It contains no saved user accounts.
 - Show quota, reset times, and available reset credits
 - Change accounts safely
 - Use the eligible reset credit that expires first, after confirmation
-- Wake one account or all saved accounts
+- Send a Wake request only when an account needs a new 5-hour window, with a per-account result
 
 ## Install
 
