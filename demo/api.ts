@@ -20,7 +20,7 @@ const accounts: AccountView[] = [
 ];
 
 const quotaValues = [
-  [72, 38], [44, 81], [100, 16], [23, 61], [89, 7], [68],
+  [72, 38], [44, 81], [100, 16], [23, 61], [0, 7], [68],
 ];
 const quotas = Object.fromEntries(accounts.map((account, index) => {
   const values = quotaValues[index]!;

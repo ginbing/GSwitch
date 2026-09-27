@@ -12,14 +12,16 @@ The interface does not need to advertise feature depth.
 ## Window and hierarchy
 
 Keep one native-titlebar main window and one primary information hierarchy.
-The default desktop canvas is 1100 by 700, with a 900 by 580 minimum. The
+The default desktop canvas is 1360 by 900, centered on cold start and kept
+inside the available work area, with a 700 by 520 minimum. Refocusing does
+not move a window the user has positioned. The
 main surface is an account workspace: a quiet toolbar, a narrow safety notice
 when needed, and a responsive grid of small account cards. Three cards fit on a
-wide desktop, then collapse to two and one card without introducing navigation.
+wide desktop with enough card width, then collapse to two and one card without introducing navigation.
 Focused dialogs may handle add-account, explicit confirmation, progress/results,
 or recovery; they do not create a second navigation system.
 
-The toolbar contains the current Codex account, Refresh, Wake all, Add account,
+The toolbar contains the current Codex account, Refresh, Wake if needed, Add account,
 and a compact language menu. It is a command bar, not a dashboard header
 or a custom window chrome. Its status dot always remains visible; only a long
 account label may truncate. The status is also written in text so ready, unknown,
@@ -43,7 +45,7 @@ readers and keyboard users.
 
 The active account must be obvious at a glance through a clear border and
 status badge. Actions stay next to the account they affect. Global actions such
-as **Add account** and **Wake All** stay near the cards rather than behind a
+as **Add account** and **Wake if needed** stay near the cards rather than behind a
 sidebar.
 
 The account section has one heading: the saved-account count. A persistent,
@@ -96,9 +98,12 @@ without a click. Codex CLI and the Codex desktop app update separately.
 - Keep Wake results per account; identify each result by email and workspace,
   localize its status, and distinguish a sent request from a skip, an
   unconfirmed request, and a failure. An already usable five-hour window or a
-  plan with no five-hour window causes no Wake request. When quota is unknown,
+  plan with no five-hour window causes no Wake request. Fresh quota confirming
+  usable five-hour capacity hides that card's Wake button. An all-skipped batch
+  says explicitly that no requests were sent. Keep the batch command repeatable
+  and its session's last result accessible from a separate compact entry. When quota is unknown,
   the card asks for a refresh first. A running Wake can continue in the background and reopen
-  from the toolbar, including completed results until the user dismisses them.
+  from the toolbar, including completed results after the dialog closes.
 - Account removal confirms the email and workspace. It explains that removing a
   non-current saved copy does not change a running Codex identity, while the
   current identity stays protected. Operation-lock failures remain visible in
@@ -116,8 +121,13 @@ without a click. Codex CLI and the Codex desktop app update separately.
   account will be updated; a mismatched login changes no account.
 - Keep card content compact. Truncated account and workspace names expose their
   full value on hover; do not reserve empty vertical space for the old heading
-  reminder. Quota reset timing shows only a short relative time in the card;
-  hover, keyboard focus, and assistive text provide the exact date and time.
+  reminder. Quota reset timing shows one compact relative and absolute line,
+  such as `4h 55m · 09/27 16:30` or `4小时55分 · 09/27 16:30`, without a visible
+  introductory label or trailing “in/后”. Show the year only across years and
+  allow wrapping at the separator on narrow cards without truncating the date.
+  Stale data shows its stale state instead of a live countdown; an elapsed
+  fresh reset marker says to refresh. Hover, keyboard focus, and assistive
+  text provide the full reset meaning and date.
   Reset credits use two aligned lines: count and action above, compact relative
   expiry with month, day, and time below. Show the year only when the expiry
   crosses into another year; the exact date remains available on hover, focus,
@@ -145,9 +155,9 @@ selected locale's platform formatters.
 
 ## Visual rules
 
-The README screenshot comes from `demo/api.ts`, which contains only fictional
+The English and Chinese README screenshots come from `demo/api.ts`, which contains only fictional
 reserved-domain accounts and fixed sample quota data. Generate it with
-`pwsh scripts/capture-demo.ps1` on Windows and visually inspect the image before
+`pwsh scripts/capture-demo.ps1` on Windows and visually inspect both images before
 committing it. The demo build replaces account and updater APIs and rejects
 account operations; never capture the installed app or a personal account list
 for README. Keep the screenshot source and command alongside the image.

@@ -597,7 +597,7 @@ describe("GSwitch account workspace", () => {
     expect(card).toHaveTextContent("5 weeks");
     expect(card).toHaveTextContent("100%");
     const resetTime = card?.querySelector("time.quota-reset-time");
-    expect(resetTime).toHaveTextContent(/in \d+ days/);
+    expect(resetTime).toHaveTextContent(/\d+d/);
     expect(resetTime).toHaveAttribute("aria-label", expect.stringContaining("Resets"));
     expect(resetTime).toHaveAttribute("data-full-time", expect.any(String));
     expect(card).not.toHaveTextContent(/Resets \d/);
@@ -626,10 +626,11 @@ describe("GSwitch account workspace", () => {
 
     const card = (await screen.findByRole("heading", { name: "person@example.com" })).closest(".account-card");
     const resetTime = card?.querySelector("time.quota-reset-time");
-    expect(resetTime).toHaveTextContent("5小时后");
+    expect(resetTime).toHaveTextContent(/5小时 · \d{2}\/\d{2} \d{2}:\d{2}/);
     expect(resetTime).toHaveAttribute("aria-label", expect.stringContaining("重置于"));
     expect(resetTime).toHaveAttribute("tabindex", "0");
     expect(card).not.toHaveTextContent("重置于");
+    expect(screen.queryByRole("button", { name: "唤醒 person@example.com" })).not.toBeInTheDocument();
   });
 
   it("does not show a past reset time as a current countdown", async () => {
@@ -650,7 +651,7 @@ describe("GSwitch account workspace", () => {
     render(<App />);
 
     const card = (await screen.findByRole("heading", { name: "person@example.com" })).closest(".account-card");
-    expect(card?.querySelector("time.quota-reset-time")).toHaveTextContent("Reset time passed");
+    expect(card?.querySelector("time.quota-reset-time")).toHaveTextContent("Refresh to update");
   });
   it("uses ChatGPT email as the primary identity and workspace as context", async () => {
     mocks.listAccounts.mockResolvedValue([chatAccount]);
@@ -895,6 +896,15 @@ describe("GSwitch account workspace", () => {
       ...staleQuota,
       account_id: accountId,
       status: "fresh",
+      snapshot: accountId === "account-2" ? {
+        ...staleQuota.snapshot!,
+        buckets: [{
+          ...staleQuota.snapshot!.buckets[0]!,
+          windows: staleQuota.snapshot!.buckets[0]!.windows.map((window) => window.kind === "five_hour"
+            ? { ...window, remaining_percent: 0, used_percent: 100 }
+            : window),
+        }],
+      } : staleQuota.snapshot,
     }));
     let resolveRefresh: ((quota: QuotaView) => void) | undefined;
     mocks.refreshAccountQuota.mockImplementation(
@@ -1112,7 +1122,7 @@ describe("GSwitch account workspace", () => {
     render(<App />);
     await screen.findByRole("heading", { name: "person@example.com" });
 
-    await userEvent.click(screen.getByRole("button", { name: "Wake all" }));
+    await userEvent.click(screen.getByRole("button", { name: "Wake if needed" }));
     const dialog = await screen.findByRole("dialog", { name: "Wake" });
     expect(within(dialog).getByRole("button", { name: "Continue in background" })).toBeInTheDocument();
     await userEvent.click(within(dialog).getByRole("button", { name: "Continue in background" }));
@@ -1122,7 +1132,7 @@ describe("GSwitch account workspace", () => {
       status: "completed",
       results: [{ account_id: "account-1", label: "Legacy label", result: "failed", request_state: "not_sent", message: "raw provider error text" }],
     });
-    await userEvent.click(await screen.findByRole("button", { name: "View Wake results" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Last result" }));
     const resultDialog = await screen.findByRole("dialog", { name: "Wake" });
     expect(await within(resultDialog).findByText("person@example.com")).toBeInTheDocument();
     expect(within(resultDialog).getByText("Personal")).toBeInTheDocument();
@@ -1131,7 +1141,9 @@ describe("GSwitch account workspace", () => {
     expect(within(resultDialog).getByText(/No request sent/)).toBeInTheDocument();
     expect(within(resultDialog).queryByText("raw provider error text")).not.toBeInTheDocument();
     await userEvent.click(within(resultDialog).getByRole("button", { name: "Done" }));
-    expect(await screen.findByRole("button", { name: "Wake all" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Wake if needed" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Last result" }));
+    expect(await screen.findByRole("dialog", { name: "Wake" })).toBeInTheDocument();
   });
 
   it("distinguishes sent, skipped and uncertain Wake outcomes", async () => {
@@ -1151,12 +1163,35 @@ describe("GSwitch account workspace", () => {
     });
     render(<App />);
     await screen.findByRole("heading", { name: "3 saved accounts" });
-    await userEvent.click(screen.getByRole("button", { name: "Wake all" }));
+    await userEvent.click(screen.getByRole("button", { name: "Wake if needed" }));
     const dialog = await screen.findByRole("dialog", { name: "Wake" });
     expect(await within(dialog).findByText("1 started · 1 skipped · 1 unconfirmed")).toBeInTheDocument();
     expect(within(dialog).getByText(/No request sent/)).toBeInTheDocument();
     expect(within(dialog).getByText(/Delivery uncertain/)).toBeInTheDocument();
     expect(within(dialog).getByText("5-hour quota is already available.")).toBeInTheDocument();
+  });
+
+  it("states when every account already had quota and no Wake request was sent", async () => {
+    const saved = Array.from({ length: 5 }, (_, index) => ({
+      ...chatAccount,
+      id: `account-${index + 1}`,
+      email: `person${index + 1}@example.com`,
+    }));
+    mocks.listAccounts.mockResolvedValue(saved);
+    mocks.accountQuota.mockImplementation(async (id: string) => ({ ...staleQuota, account_id: id, status: "fresh" }));
+    mocks.wakeOperation.mockResolvedValue({
+      id: "wake-all",
+      status: "completed",
+      results: saved.map((account) => ({ account_id: account.id, label: account.label, result: "already_active", request_state: "not_sent" })),
+    });
+    render(<App />);
+    await screen.findByRole("heading", { name: "5 saved accounts" });
+    await userEvent.click(screen.getByRole("button", { name: "Wake if needed" }));
+    const dialog = await screen.findByRole("dialog", { name: "Wake" });
+    expect(await within(dialog).findByText("No requests sent: 5 accounts already have quota")).toBeInTheDocument();
+    expect(within(dialog).getAllByText(/No request sent/)).toHaveLength(5);
+    expect(within(dialog).getAllByText("5-hour quota is already available.")).toHaveLength(5);
+    expect(screen.getByRole("button", { name: "Wake if needed" })).toBeEnabled();
   });
 
   it("shows a per-operation Wake surface instead of silently running in the background", async () => {
@@ -1165,7 +1200,7 @@ describe("GSwitch account workspace", () => {
     render(<App />);
     await screen.findByText("Personal");
 
-    await userEvent.click(screen.getByRole("button", { name: /^Wake all$/ }));
+    await userEvent.click(screen.getByRole("button", { name: /^Wake if needed$/ }));
     expect(await screen.findByRole("dialog", { name: "Wake" })).toBeInTheDocument();
     expect(screen.getByText("Checking accounts for Wake…")).toBeInTheDocument();
     expect(mocks.startWakeAll).toHaveBeenCalledOnce();

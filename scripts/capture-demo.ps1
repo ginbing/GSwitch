@@ -1,3 +1,4 @@
+param([switch]$VisualReview)
 $ErrorActionPreference = 'Stop'
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 Set-Location -LiteralPath $repoRoot
@@ -26,11 +27,34 @@ try {
   if (-not $ready) { throw 'The isolated demo preview did not start.' }
 
   $env:npm_config_cache = Join-Path $repoRoot 'src-tauri/target/npm-cache'
-  npx --yes playwright screenshot --channel=msedge --lang=en-US --timezone=Asia/Shanghai `
-    --viewport-size='1440,850' --wait-for-selector='article.account-card:nth-child(6)' `
-    --wait-for-timeout=700 --full-page 'http://127.0.0.1:1420/' 'assets/readme-demo.png'
-  if ($LASTEXITCODE -ne 0) { throw 'The demo screenshot failed.' }
-  Write-Output 'Review assets/readme-demo.png visually before committing it.'
+  foreach ($capture in @(
+    @{ Locale = 'en-US'; Output = 'assets/readme-demo.png' },
+    @{ Locale = 'zh-CN'; Output = 'assets/readme-demo-zh-CN.png' }
+  )) {
+    npx --yes playwright screenshot --channel=msedge --lang=$($capture.Locale) --timezone=Asia/Shanghai `
+      --viewport-size='1440,900' --wait-for-selector='article.account-card:nth-child(6)' `
+      --wait-for-timeout=700 --full-page 'http://127.0.0.1:1420/' $capture.Output
+    if ($LASTEXITCODE -ne 0) { throw "The $($capture.Locale) demo screenshot failed." }
+  }
+  if ($VisualReview) {
+    $reviewDir = Join-Path $repoRoot 'src-tauri/target/visual-review'
+    New-Item -ItemType Directory -Force -Path $reviewDir | Out-Null
+    foreach ($capture in @(
+    @{ Locale = 'en-US'; Theme = 'dark'; Size = '1440,900'; Name = 'en-dark-wide.png' },
+    @{ Locale = 'zh-CN'; Theme = 'dark'; Size = '1440,900'; Name = 'zh-dark-wide.png' },
+    @{ Locale = 'en-US'; Theme = 'light'; Size = '700,520'; Name = 'en-light-min.png' },
+    @{ Locale = 'zh-CN'; Theme = 'light'; Size = '700,520'; Name = 'zh-light-min.png' },
+    @{ Locale = 'en-US'; Theme = 'dark'; Size = '700,520'; Name = 'en-dark-min.png' },
+    @{ Locale = 'zh-CN'; Theme = 'dark'; Size = '700,520'; Name = 'zh-dark-min.png' }
+    )) {
+      $output = Join-Path $reviewDir $capture.Name
+      npx --yes playwright screenshot --channel=msedge --lang=$($capture.Locale) --color-scheme=$($capture.Theme) --timezone=Asia/Shanghai `
+        --viewport-size=$($capture.Size) --wait-for-selector='article.account-card:nth-child(6)' `
+        --wait-for-timeout=700 --full-page 'http://127.0.0.1:1420/' $output
+      if ($LASTEXITCODE -ne 0) { throw "The $($capture.Name) visual review screenshot failed." }
+    }
+  }
+  Write-Output 'Review both assets/readme-demo.png and assets/readme-demo-zh-CN.png visually before committing them.'
 } finally {
   Stop-Process -Id $server.Id -ErrorAction SilentlyContinue
 }

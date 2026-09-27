@@ -56,7 +56,7 @@ const en = {
   "quota.notAvailable": "Not available",
   "quota.lastResultStale": "Last result is stale",
   "quota.resets": "Resets {time}",
-  "quota.resetTimePassed": "Reset time passed",
+  "quota.resetTimePassed": "Refresh to update",
   "quota.resetTimeUnavailable": "Reset time unavailable",
   "quota.remaining": "{label} remaining",
   "quota.runningCodex": "Codex is running and its active account could not be identified. The last quota result is shown; try again when the account is available.",
@@ -87,7 +87,7 @@ const en = {
   "firstRun.authJson": "Cockpit Tools export, Codex auth.json, or another supported account export",
   "toolbar.language": "Language",
   "toolbar.codexCli": "Codex CLI",
-  "toolbar.wakeAll": "Wake all",
+  "toolbar.wakeAll": "Wake if needed",
   "toolbar.currentAccount": "Current Codex account",
   "toolbar.statusChecking": "Checking",
   "toolbar.statusReady": "Ready",
@@ -332,6 +332,7 @@ const en = {
   "wake.preparing": "Checking quota before sending a request…",
   "wake.summaryStarted": "{count} started",
   "wake.summarySkipped": "{count} skipped",
+  "wake.summaryAllActive": "No requests sent: {count} accounts already have quota",
   "wake.summaryUnconfirmed": "{count} unconfirmed",
   "wake.summaryFailed": "{count} failed",
   "wake.summaryCancelled": "{count} cancelled",
@@ -341,11 +342,11 @@ const en = {
   "wake.cancelRemaining": "Cancel remaining",
   "wake.continueInBackground": "Continue in background",
   "wake.viewProgress": "View Wake progress",
-  "wake.viewResults": "View Wake results",
+  "wake.viewResults": "Last result",
   "wake.alreadyActive": "5-hour quota is already available.",
   "wake.noFiveHourWindow": "This account has no 5-hour window to start.",
   "wake.refreshFirst": "Refresh quota before using Wake.",
-  "wake.started": "A new 5-hour window started.",
+  "wake.started": "Request sent; a new 5-hour window is available.",
   "wake.fiveHourExhausted": "5-hour quota is used up.",
   "wake.weeklyExhausted": "Weekly quota is used up.",
   "wake.noOrdinaryCapacity": "Ordinary Codex quota is unavailable.",
@@ -403,7 +404,7 @@ const zhCN: Record<keyof typeof en, string> = {
   "quota.notAvailable": "不可用",
   "quota.lastResultStale": "上次结果已过期",
   "quota.resets": "重置于 {time}",
-  "quota.resetTimePassed": "重置时间已过",
+  "quota.resetTimePassed": "待刷新",
   "quota.resetTimeUnavailable": "重置时间不可用",
   "quota.remaining": "{label} 剩余量",
   "quota.runningCodex": "Codex 正在运行，GSwitch 无法识别其当前账户。现显示上次额度结果；账户可用后请重试。",
@@ -434,7 +435,7 @@ const zhCN: Record<keyof typeof en, string> = {
   "firstRun.authJson": "Cockpit Tools 导出、Codex auth.json 或其他受支持的账户导出文件",
   "toolbar.language": "语言",
   "toolbar.codexCli": "Codex CLI",
-  "toolbar.wakeAll": "全部唤醒",
+  "toolbar.wakeAll": "按需唤醒",
   "toolbar.currentAccount": "当前 Codex 账户",
   "toolbar.statusChecking": "检查中",
   "toolbar.statusReady": "已就绪",
@@ -679,6 +680,7 @@ const zhCN: Record<keyof typeof en, string> = {
   "wake.preparing": "发送请求前正在检查额度…",
   "wake.summaryStarted": "已启动 {count}",
   "wake.summarySkipped": "已跳过 {count}",
+  "wake.summaryAllActive": "未发送请求：{count} 个账户已有可用额度",
   "wake.summaryUnconfirmed": "未确认 {count}",
   "wake.summaryFailed": "失败 {count}",
   "wake.summaryCancelled": "已取消 {count}",
@@ -688,11 +690,11 @@ const zhCN: Record<keyof typeof en, string> = {
   "wake.cancelRemaining": "取消其余操作",
   "wake.continueInBackground": "在后台继续",
   "wake.viewProgress": "查看唤醒进度",
-  "wake.viewResults": "查看唤醒结果",
+  "wake.viewResults": "上次结果",
   "wake.alreadyActive": "已有可用的 5 小时额度。",
   "wake.noFiveHourWindow": "此账户没有可启动的 5 小时窗口。",
   "wake.refreshFirst": "请先刷新额度，再使用唤醒。",
-  "wake.started": "新的 5 小时窗口已启动。",
+  "wake.started": "请求已发送，新 5 小时窗口已可用。",
   "wake.fiveHourExhausted": "5 小时额度已用完。",
   "wake.weeklyExhausted": "每周额度已用完。",
   "wake.noOrdinaryCapacity": "当前没有可用的常规 Codex 额度。",
@@ -785,6 +787,24 @@ export function formatRelativeTime(timestamp: number, formatLocale: string, nowM
     Math.round(seconds / divisor),
     unit,
   );
+}
+
+export function formatQuotaResetTime(timestamp: number, formatLocale: string, nowMs = Date.now()) {
+  const target = new Date(timestamp * 1000);
+  const remainingMinutes = Math.ceil((target.getTime() - nowMs) / 60_000);
+  if (remainingMinutes <= 0) return formatLocale.startsWith("zh") ? "待刷新" : "Refresh to update";
+  const days = Math.floor(remainingMinutes / 1_440);
+  const hours = Math.floor((remainingMinutes % 1_440) / 60);
+  const minutes = remainingMinutes % 60;
+  const chinese = formatLocale.startsWith("zh");
+  const relative = days
+    ? chinese ? `${days}天${hours ? `${hours}小时` : ""}` : `${days}d${hours ? ` ${hours}h` : ""}`
+    : hours
+      ? chinese ? `${hours}小时${minutes ? `${minutes}分` : ""}` : `${hours}h${minutes ? ` ${minutes}m` : ""}`
+      : chinese ? `${minutes}分` : `${minutes}m`;
+  const two = (value: number) => String(value).padStart(2, "0");
+  const year = target.getFullYear() === new Date(nowMs).getFullYear() ? "" : `${target.getFullYear()}/`;
+  return `${relative} · ${year}${two(target.getMonth() + 1)}/${two(target.getDate())} ${two(target.getHours())}:${two(target.getMinutes())}`;
 }
 
 export function formatDateTimeWithRelative(

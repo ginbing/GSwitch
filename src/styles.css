@@ -912,17 +912,20 @@ summary:focus-visible {
   display: block;
   min-height: 30px;
   margin-top: 7px;
-  color: var(--soft-muted);
-  font-size: 10.5px;
+  color: var(--muted);
+  font-size: 12px;
   line-height: 1.35;
 }
 
 .quota-reset-time {
   position: relative;
-  display: inline-block;
+  display: inline;
   border-radius: 2px;
   cursor: help;
 }
+
+.quota-reset-time > span { display: inline-block; white-space: nowrap; }
+.quota-reset-date { margin-left: 3px; }
 
 .quota-reset-time:focus-visible {
   outline: 2px solid var(--accent);
@@ -962,7 +965,7 @@ summary:focus-visible {
   padding-top: 12px;
   border-top: 1px solid var(--border);
   color: var(--muted);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .credit-row > .credit-count {
@@ -982,8 +985,8 @@ summary:focus-visible {
   grid-column: 1 / -1;
   width: max-content;
   max-width: 100%;
-  color: var(--soft-muted);
-  font-size: 10.5px;
+  color: var(--muted);
+  font-size: 12px;
   text-align: left;
   white-space: nowrap;
 }
@@ -1761,7 +1764,7 @@ textarea {
   }
 }
 
-@media (max-width: 1030px) {
+@media (max-width: 1180px) {
   .account-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
