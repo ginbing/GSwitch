@@ -205,15 +205,10 @@ export interface ResetCreditOutcome {
 }
 
 export type WakeResultKind =
-  | "started"
-  | "already_active"
-  | "no_five_hour_window"
-  | "five_hour_exhausted"
-  | "weekly_exhausted"
-  | "no_ordinary_capacity"
+  | "reply_received"
+  | "rate_limited"
   | "needs_sign_in"
   | "sent_not_confirmed"
-  | "quota_unavailable"
   | "request_rejected"
   | "failed"
   | "cancelled";

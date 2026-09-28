@@ -400,15 +400,10 @@ pub struct ResetCreditOutcome {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum WakeResultKind {
-    Started,
-    AlreadyActive,
-    NoFiveHourWindow,
-    FiveHourExhausted,
-    WeeklyExhausted,
-    NoOrdinaryCapacity,
+    ReplyReceived,
+    RateLimited,
     NeedsSignIn,
     SentNotConfirmed,
-    QuotaUnavailable,
     RequestRejected,
     Failed,
     Cancelled,

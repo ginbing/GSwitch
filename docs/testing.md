@@ -170,10 +170,11 @@ as applicable:
 - earliest eligible unexpired reset-credit selection and idempotent outcomes;
 - a pending reset being surfaced as a boolean-only recovery prompt and replayed
   only after a new explicit user action;
-- Wake's fixed minimal Responses payload, quota guards, active-token reread,
+- Wake's fixed minimal Responses payload, complete assistant reply confirmation,
+  active-token reread, available-quota and no-five-hour-window request paths,
   externally owned no-refresh path, inactive authentication-only refresh,
   no-retry sent-but-unconfirmed outcome, sequential queue continuation, saved
-  email/workspace identity, localized outcome, and background progress actions;
+  email/workspace identity, localized outcome, and foreground progress;
 - frontend clearing secret inputs, confirming reset consumption, and disabling
   conflicting actions;
 - browser-login cancellation, selected-file import boundaries, account-space

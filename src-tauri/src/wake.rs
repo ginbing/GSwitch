@@ -13,20 +13,17 @@ use crate::{
     accounts::{AppState, OperationGuard},
     chatgpt::{ChatGptClient, RequestFailureKind},
     quota::{
-        external_credential_state_for_identity, now_unix_ms, refresh_quota_snapshot,
-        refresh_via_managed_profile_for_wake, verified_chatgpt_identity, ExternalCredentialState,
-        ReadOnlyRefreshFailure,
+        external_credential_state_for_identity, refresh_via_managed_profile_for_wake,
+        verified_chatgpt_identity, ExternalCredentialState,
     },
     types::{
-        AccountIdentity, AccountKind, QuotaBucketKind, QuotaSnapshot, QuotaWindowKind,
-        StoredAccount, WakeAccountResult, WakeOperationStatus, WakeOperationView, WakeRequestState,
-        WakeResultKind, WakeStart,
+        AccountIdentity, AccountKind, StoredAccount, WakeAccountResult, WakeOperationStatus,
+        WakeOperationView, WakeRequestState, WakeResultKind, WakeStart,
     },
 };
 
-/// Current Codex exposes this lightweight visible text model on the standard
-/// service tier. Wake deliberately sends one request only; it never probes or
-/// falls back to another model after the provider may have received it.
+/// Use one short text turn on the standard tier. No model fallback is allowed
+/// after a request may have reached the provider.
 const WAKE_MODEL: &str = "gpt-5.6-luna";
 
 #[derive(Clone)]
@@ -89,7 +86,7 @@ pub fn start_one(state: AppState, account_id: String) -> Result<WakeStart, Strin
 }
 
 /// Starts a sequential Wake queue for every saved ChatGPT account. API-key
-/// accounts do not participate because they have no subscription window.
+/// accounts use a different credential route and do not participate.
 pub fn start_all(state: AppState) -> Result<WakeStart, String> {
     state.ensure_store_ready()?;
     let targets = state
@@ -293,32 +290,12 @@ fn wake_account(
         Err(error) => return WakeAccountOutcome::new(WakeResultKind::Failed, error),
     };
     let mut credential = wake_credential(account, &identity);
-    let mut before = match preflight_quota(state, operation, account, &identity, &mut credential) {
-        Ok(snapshot) => snapshot,
-        Err(outcome) => return outcome,
-    };
-    if let Some(outcome) = quota_eligibility(&before) {
-        return outcome;
-    }
-    if cancelled.load(Ordering::SeqCst) {
-        return WakeAccountOutcome::new(WakeResultKind::Cancelled, "Wake was cancelled");
-    }
-
-    // Codex can rotate its access token while it owns this identity. Re-read
-    // once immediately before the one Wake request, then repeat only the safe
-    // quota preflight if the snapshot changed.
-    if refresh_credential_ownership_before_wake(
+    // Codex can rotate an active token. Use one fresh read immediately before
+    // the request without making Wake depend on quota availability.
+    let _ = refresh_credential_ownership_before_wake(
         &mut credential,
         external_credential_state_for_identity(&identity),
-    ) {
-        before = match preflight_quota(state, operation, account, &identity, &mut credential) {
-            Ok(snapshot) => snapshot,
-            Err(outcome) => return outcome,
-        };
-        if let Some(outcome) = quota_eligibility(&before) {
-            return outcome;
-        }
-    }
+    );
     if cancelled.load(Ordering::SeqCst) {
         return WakeAccountOutcome::new(WakeResultKind::Cancelled, "Wake was cancelled");
     }
@@ -327,57 +304,62 @@ fn wake_account(
         Ok(client) => client,
         Err(error) => return WakeAccountOutcome::new(WakeResultKind::Failed, error),
     };
-    match client.wake(&credential.value, WAKE_MODEL) {
-        Ok(()) => {}
-        Err(error) => {
-            return match error.kind {
-                // A send failure may occur after the provider received the
-                // request. Do not retry it or start an auth refresh.
-                RequestFailureKind::Transport | RequestFailureKind::InvalidJson => {
-                    WakeAccountOutcome::new(
-                        WakeResultKind::SentNotConfirmed,
-                        "Wake may have reached ChatGPT, but delivery was not confirmed and was not retried",
-                    ).request_state(WakeRequestState::MayHaveSent)
+    let mut result = client.wake(&credential.value, WAKE_MODEL);
+    // A definite authentication rejection cannot have completed a model turn.
+    // Only a definitely inactive account may use one isolated official refresh;
+    // an uncertain send or an externally owned token is never retried.
+    if result.as_ref().is_err_and(|error| {
+        error.kind == RequestFailureKind::Authentication
+            && credential.ownership == CredentialOwnership::Inactive
+    }) {
+        let refreshed =
+            match refresh_via_managed_profile_for_wake(state, operation, account, &identity) {
+                Ok(refreshed) => refreshed,
+                Err(error) => {
+                    let request_state = result
+                        .as_ref()
+                        .err()
+                        .map_or(WakeRequestState::NotSent, |failure| failure.request_state);
+                    return WakeAccountOutcome::new(WakeResultKind::NeedsSignIn, error)
+                        .request_state(request_state);
                 }
-                RequestFailureKind::Authentication => WakeAccountOutcome::new(
-                    WakeResultKind::NeedsSignIn,
-                    "ChatGPT rejected the Wake credential; sign in again before trying another Wake",
-                ).request_state(WakeRequestState::Sent),
-                RequestFailureKind::RateLimited => WakeAccountOutcome::new(
-                    WakeResultKind::NoOrdinaryCapacity,
-                    "ChatGPT reported no ordinary Codex capacity; Wake did not use Reserve or reset credits",
-                ).request_state(WakeRequestState::Sent),
-                RequestFailureKind::Http => WakeAccountOutcome::new(
-                    WakeResultKind::RequestRejected,
-                    "ChatGPT rejected the Wake request before it could start",
-                ).request_state(WakeRequestState::Sent),
             };
+        credential.value = refreshed.credential;
+        if cancelled.load(Ordering::SeqCst) {
+            return WakeAccountOutcome::new(WakeResultKind::Cancelled, "Wake was cancelled");
         }
+        result = client.wake(&credential.value, WAKE_MODEL);
     }
-
-    // The request has been sent. A subsequent quota problem is confirmation
-    // only, never a reason to send another Wake request.
-    let after =
-        match refresh_quota_snapshot(state, operation, account, &identity, &credential.value) {
-            Ok(snapshot) => snapshot,
-            Err(_) => {
-                return WakeAccountOutcome::new(
-                    WakeResultKind::SentNotConfirmed,
-                    "Wake was sent, but the quota response did not confirm a new five-hour window",
-                )
-                .request_state(WakeRequestState::Sent)
-            }
-        };
-    if window_started(&before, &after, now_unix_ms() / 1000) {
-        WakeAccountOutcome::new(WakeResultKind::Started, "The five-hour window is active")
-            .request_state(WakeRequestState::Sent)
-    } else {
-        WakeAccountOutcome::new(
-            WakeResultKind::SentNotConfirmed,
-            "Wake was sent, but the quota response did not confirm a new five-hour window",
+    match result {
+        Ok(()) => WakeAccountOutcome::new(
+            WakeResultKind::ReplyReceived,
+            "Codex replied to the Wake request",
         )
-        .request_state(WakeRequestState::Sent)
+        .request_state(WakeRequestState::Sent),
+        Err(error) => wake_failure(error.kind, error.request_state),
     }
+}
+
+fn wake_failure(kind: RequestFailureKind, request_state: WakeRequestState) -> WakeAccountOutcome {
+    let (result, message) = match kind {
+        RequestFailureKind::Transport | RequestFailureKind::InvalidJson => (
+            WakeResultKind::SentNotConfirmed,
+            "A Wake request may have reached ChatGPT, but no complete model reply was confirmed",
+        ),
+        RequestFailureKind::Authentication => (
+            WakeResultKind::NeedsSignIn,
+            "ChatGPT rejected this account credential; sign in again",
+        ),
+        RequestFailureKind::RateLimited => (
+            WakeResultKind::RateLimited,
+            "ChatGPT rate-limited or declined capacity for this Wake request",
+        ),
+        RequestFailureKind::Http => (
+            WakeResultKind::RequestRejected,
+            "ChatGPT rejected the Wake request",
+        ),
+    };
+    WakeAccountOutcome::new(result, message).request_state(request_state)
 }
 
 fn wake_credential(account: &StoredAccount, identity: &AccountIdentity) -> WakeCredential {
@@ -431,168 +413,11 @@ fn refresh_credential_ownership_before_wake(
     }
 }
 
-fn preflight_quota(
-    state: &AppState,
-    operation: &OperationGuard<'_>,
-    account: &StoredAccount,
-    identity: &AccountIdentity,
-    credential: &mut WakeCredential,
-) -> Result<QuotaSnapshot, WakeAccountOutcome> {
-    match refresh_quota_snapshot(state, operation, account, identity, &credential.value) {
-        Ok(snapshot) => Ok(snapshot),
-        Err(error) if can_use_managed_refresh(credential.ownership, &error) => {
-            let refreshed =
-                refresh_via_managed_profile_for_wake(state, operation, account, identity)
-                    .map_err(|error| WakeAccountOutcome::new(WakeResultKind::NeedsSignIn, error))?;
-            credential.value = refreshed.credential;
-            Ok(refreshed.snapshot)
-        }
-        Err(error) => Err(preflight_failure(error)),
-    }
-}
-
-fn can_use_managed_refresh(ownership: CredentialOwnership, error: &ReadOnlyRefreshFailure) -> bool {
-    ownership == CredentialOwnership::Inactive && error.can_fallback_to_managed_refresh()
-}
-
-fn preflight_failure(error: ReadOnlyRefreshFailure) -> WakeAccountOutcome {
-    if error.can_fallback_to_managed_refresh() {
-        WakeAccountOutcome::new(
-            WakeResultKind::NeedsSignIn,
-            "ChatGPT rejected the Wake credential; sign in again before trying another Wake",
-        )
-    } else {
-        WakeAccountOutcome::new(WakeResultKind::QuotaUnavailable, error.message())
-    }
-}
-
-fn quota_eligibility(snapshot: &QuotaSnapshot) -> Option<WakeAccountOutcome> {
-    let now_seconds = now_unix_ms() / 1000;
-    if five_hour(snapshot).is_none() {
-        return Some(WakeAccountOutcome::new(
-            WakeResultKind::NoFiveHourWindow,
-            "No five-hour quota window was reported; no Wake request was sent",
-        ));
-    }
-    if window_is_active(snapshot, now_seconds) {
-        return Some(WakeAccountOutcome::new(
-            WakeResultKind::AlreadyActive,
-            "The five-hour window is already active",
-        ));
-    }
-    if ordinary_quota_exhausted(snapshot, now_seconds) {
-        let exhausted_window = snapshot
-            .buckets
-            .iter()
-            .find(|bucket| bucket.kind == QuotaBucketKind::Codex)
-            .and_then(|bucket| {
-                bucket
-                    .windows
-                    .iter()
-                    .find(|window| {
-                        window.kind == QuotaWindowKind::FiveHour
-                            && window.remaining_percent == Some(0)
-                            && window.resets_at.is_some_and(|reset| reset > now_seconds)
-                    })
-                    .or_else(|| {
-                        bucket.windows.iter().find(|window| {
-                            window.kind == QuotaWindowKind::Weekly
-                                && window.remaining_percent == Some(0)
-                                && window.resets_at.is_some_and(|reset| reset > now_seconds)
-                        })
-                    })
-            });
-        let result = match exhausted_window.map(|window| &window.kind) {
-            Some(QuotaWindowKind::FiveHour) => WakeResultKind::FiveHourExhausted,
-            Some(QuotaWindowKind::Weekly) => WakeResultKind::WeeklyExhausted,
-            _ => WakeResultKind::NoOrdinaryCapacity,
-        };
-        return Some(WakeAccountOutcome::new(
-            result,
-            "Codex quota is exhausted; Wake will not use Reserve or reset credits",
-        ));
-    }
-    None
-}
-
-fn five_hour(snapshot: &QuotaSnapshot) -> Option<&crate::types::QuotaWindow> {
-    snapshot
-        .buckets
-        .iter()
-        .find(|bucket| bucket.kind == QuotaBucketKind::Codex)
-        .and_then(|bucket| {
-            bucket
-                .windows
-                .iter()
-                .find(|window| window.kind == QuotaWindowKind::FiveHour)
-        })
-}
-
-fn window_is_active(snapshot: &QuotaSnapshot, now_seconds: i64) -> bool {
-    five_hour(snapshot).is_some_and(|window| {
-        window.resets_at.is_some_and(|reset| reset > now_seconds)
-            && window
-                .remaining_percent
-                .is_some_and(|remaining| remaining > 0)
-    })
-}
-
-fn ordinary_quota_exhausted(snapshot: &QuotaSnapshot, now_seconds: i64) -> bool {
-    if snapshot.ordinary_usage_allowed == Some(false) {
-        return true;
-    }
-    snapshot
-        .buckets
-        .iter()
-        .find(|bucket| bucket.kind == QuotaBucketKind::Codex)
-        .is_some_and(|bucket| {
-            bucket.windows.iter().any(|window| {
-                window.remaining_percent == Some(0)
-                    && window.resets_at.is_none_or(|reset| reset > now_seconds)
-            })
-        })
-}
-
-fn window_started(before: &QuotaSnapshot, after: &QuotaSnapshot, now_seconds: i64) -> bool {
-    let Some(after_window) = five_hour(after) else {
-        return false;
-    };
-    let after_reset = after_window.resets_at;
-    after_reset.is_some_and(|reset| reset > now_seconds)
-        && after_window
-            .remaining_percent
-            .is_some_and(|remaining| remaining > 0)
-        && five_hour(before).and_then(|window| window.resets_at) != after_reset
-}
-
 #[cfg(test)]
 mod tests {
     use serde_json::json;
 
     use super::*;
-
-    fn snapshot(used: u8, remaining: u8, resets_at: i64) -> QuotaSnapshot {
-        QuotaSnapshot {
-            fetched_at_unix_ms: 0,
-            account_id: None,
-            ordinary_usage_allowed: None,
-            buckets: vec![crate::types::QuotaBucket {
-                limit_id: "codex".into(),
-                limit_name: None,
-                plan_type: None,
-                rate_limit_reached_type: None,
-                kind: QuotaBucketKind::Codex,
-                windows: vec![crate::types::QuotaWindow {
-                    kind: QuotaWindowKind::FiveHour,
-                    used_percent: Some(used),
-                    remaining_percent: Some(remaining),
-                    window_duration_mins: Some(300),
-                    resets_at: Some(resets_at),
-                }],
-            }],
-            reset_credits: None,
-        }
-    }
 
     #[test]
     fn keeps_externally_owned_and_inactive_refresh_paths_distinct() {
@@ -649,56 +474,20 @@ mod tests {
     }
 
     #[test]
-    fn only_a_definitely_inactive_auth_failure_can_refresh() {
-        let auth_failure = ReadOnlyRefreshFailure::Provider(crate::chatgpt::RequestFailure {
-            kind: RequestFailureKind::Authentication,
-            status: Some(401),
-        });
-        assert!(can_use_managed_refresh(
-            CredentialOwnership::Inactive,
-            &auth_failure
-        ));
-        assert!(!can_use_managed_refresh(
-            CredentialOwnership::External,
-            &auth_failure
-        ));
-        assert!(!can_use_managed_refresh(
-            CredentialOwnership::Uncertain,
-            &auth_failure
-        ));
-    }
+    fn request_failures_preserve_whether_a_request_was_sent() {
+        let uncertain = wake_failure(RequestFailureKind::Transport, WakeRequestState::MayHaveSent);
+        assert_eq!(uncertain.result, WakeResultKind::SentNotConfirmed);
+        assert_eq!(uncertain.request_state, WakeRequestState::MayHaveSent);
 
-    #[test]
-    fn reports_active_or_exhausted_ordinary_windows_without_sending_wake() {
-        let active = quota_eligibility(&snapshot(10, 90, i64::MAX)).expect("active result");
-        assert_eq!(active.result, WakeResultKind::AlreadyActive);
-        assert_eq!(active.request_state, WakeRequestState::NotSent);
-        let exhausted = quota_eligibility(&snapshot(100, 0, i64::MAX)).expect("capacity result");
-        assert_eq!(exhausted.result, WakeResultKind::FiveHourExhausted);
-        let mut other_plan = snapshot(10, 90, i64::MAX);
-        other_plan.buckets[0].windows[0].kind = QuotaWindowKind::Other;
-        other_plan.buckets[0].windows[0].window_duration_mins = Some(43_200);
-        let unavailable = quota_eligibility(&other_plan).expect("no five-hour window result");
-        assert_eq!(unavailable.result, WakeResultKind::NoFiveHourWindow);
-        assert_eq!(unavailable.request_state, WakeRequestState::NotSent);
-    }
+        let rejected = wake_failure(RequestFailureKind::RateLimited, WakeRequestState::Sent);
+        assert_eq!(rejected.result, WakeResultKind::RateLimited);
+        assert_eq!(rejected.request_state, WakeRequestState::Sent);
 
-    #[test]
-    fn confirms_a_new_window_only_when_the_reset_marker_changes() {
-        assert!(window_started(
-            &snapshot(100, 0, 99),
-            &snapshot(1, 99, 400),
-            100
-        ));
-        assert!(window_started(
-            &snapshot(100, 0, 99),
-            &snapshot(0, 100, 400),
-            100
-        ));
-        assert!(!window_started(
-            &snapshot(99, 1, 400),
-            &snapshot(1, 99, 400),
-            100
-        ));
+        let local = wake_failure(
+            RequestFailureKind::Authentication,
+            WakeRequestState::NotSent,
+        );
+        assert_eq!(local.result, WakeResultKind::NeedsSignIn);
+        assert_eq!(local.request_state, WakeRequestState::NotSent);
     }
 }

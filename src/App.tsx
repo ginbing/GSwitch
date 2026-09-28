@@ -338,15 +338,10 @@ function accountSecondaryName(account: AccountView, primary: string, t: Translat
 
 function wakeResultLabel(result: WakeOperationView["results"][number]["result"], t: Translator) {
   const labels = {
-    started: "wake.started",
-    already_active: "wake.alreadyActive",
-    no_five_hour_window: "wake.noFiveHourWindow",
-    five_hour_exhausted: "wake.fiveHourExhausted",
-    weekly_exhausted: "wake.weeklyExhausted",
-    no_ordinary_capacity: "wake.noOrdinaryCapacity",
+    reply_received: "wake.replyReceived",
+    rate_limited: "wake.rateLimited",
     needs_sign_in: "wake.needsSignIn",
     sent_not_confirmed: "wake.sentNotConfirmed",
-    quota_unavailable: "wake.quotaUnavailable",
     request_rejected: "wake.requestRejected",
     failed: "wake.failed",
     cancelled: "wake.cancelled",
@@ -355,20 +350,15 @@ function wakeResultLabel(result: WakeOperationView["results"][number]["result"],
 }
 
 function wakeSummary(wake: WakeOperationView, t: Translator) {
-  if (wake.status === "completed" && wake.results.length > 0 && wake.results.every(({ result }) => result === "already_active")) {
-    return wake.results.length === 1 ? t("wake.summaryOneActive") : t("wake.summaryAllActive", { count: wake.results.length });
-  }
-  const counts = { started: 0, skipped: 0, unconfirmed: 0, failed: 0, cancelled: 0 };
-  for (const { result, request_state } of wake.results) {
-    if (result === "started") counts.started++;
-    else if (request_state === "not_sent" && ["already_active", "no_five_hour_window", "five_hour_exhausted", "weekly_exhausted", "no_ordinary_capacity"].includes(result)) counts.skipped++;
+  const counts = { replied: 0, unconfirmed: 0, failed: 0, cancelled: 0 };
+  for (const { result } of wake.results) {
+    if (result === "reply_received") counts.replied++;
     else if (result === "sent_not_confirmed") counts.unconfirmed++;
     else if (result === "cancelled") counts.cancelled++;
     else counts.failed++;
   }
   return ([
-    [counts.started === 1 ? "wake.summaryOneStarted" : "wake.summaryStarted", counts.started],
-    ["wake.summarySkipped", counts.skipped],
+    ["wake.summaryReplied", counts.replied],
     ["wake.summaryUnconfirmed", counts.unconfirmed],
     ["wake.summaryFailed", counts.failed],
     ["wake.summaryCancelled", counts.cancelled],
@@ -613,12 +603,6 @@ function AccountCard({
 }) {
   const credits = quota?.snapshot?.reset_credits;
   const isApiKey = account.kind === "api_key";
-  const fiveHourWindow = quota?.status === "fresh" ? codexQuotaWindows(quota).find((window) => window.kind === "five_hour") : undefined;
-  const knownFiveHour = fiveHourWindow !== undefined;
-  const noFiveHour = quota?.status === "fresh" && !knownFiveHour;
-  const fiveHourAvailable = fiveHourWindow?.remaining_percent !== undefined
-    && fiveHourWindow.remaining_percent > 0
-    && (fiveHourWindow.resets_at ?? 0) * 1000 > Date.now();
   const primaryName = accountPrimaryName(account);
   const secondaryName = accountSecondaryName(account, primaryName, t);
   const controlsBusy = globalBusy || busyAction !== undefined;
@@ -723,28 +707,17 @@ function AccountCard({
       )}
 
       {!selectionMode ? <div className="card-footer">
-        {(!isApiKey && !noFiveHour && !knownFiveHour) ? null : <button
+        {!isApiKey ? <button
           aria-label={t("account.refresh", { name: primaryName })}
           className="icon-button"
-          disabled={controlsBusy || isApiKey}
+          disabled={controlsBusy}
           onClick={onRefresh}
           type="button"
         >
           <RefreshCw className={busyAction === "refresh" ? "spin" : ""} size={17} />
-        </button>}
+        </button> : null}
         <div className="card-footer-actions">
-          {!isApiKey && !noFiveHour && !knownFiveHour ? (
-            <button
-              aria-label={t("account.refresh", { name: primaryName })}
-              className="button button-secondary"
-              disabled={controlsBusy}
-              onClick={onRefresh}
-              type="button"
-            >
-              <RefreshCw size={15} />{t("wake.refreshQuota")}
-            </button>
-          ) : null}
-          {!isApiKey && knownFiveHour && !fiveHourAvailable ? (
+          {!isApiKey ? (
             <button
               aria-label={t("account.wake", { name: primaryName })}
               className="button button-secondary"
@@ -1804,7 +1777,6 @@ export default function App() {
             <Zap size={16} />
             {t("toolbar.wakeAll")}
           </button>
-          {wake ? <button className="button button-quiet wake-last-result" onClick={() => setDialog("wake")} type="button">{t(wake.status === "running" ? "wake.viewProgress" : "wake.viewResults")}</button> : null}
           <button
             className="button button-primary"
             disabled={loading || busy !== null || storageRecovery}
@@ -2511,7 +2483,7 @@ export default function App() {
       ) : null}
 
       {dialog === "wake" && wake ? (
-        <Modal dismissible={busy === null} onClose={() => setDialog(null)} t={t} title={t("wake.title")}>
+        <Modal dismissible={busy === null && wake.status !== "running"} onClose={() => { setDialog(null); setWake(null); }} t={t} title={t("wake.title")}>
           <div className="wake-panel">
             <div className="wake-status">
               {wake.status === "running" ? <LoaderCircle className="spin" size={21} /> : wake.status === "completed" ? <Info size={21} /> : <CircleAlert size={21} />}
@@ -2547,9 +2519,10 @@ export default function App() {
               {wake.status === "running" ? (
                 <button className="button button-secondary" disabled={busy !== null} onClick={() => void runVoidTask("cancel-wake", () => api.cancelWake(wake.id), false)} type="button">{t("wake.cancelRemaining")}</button>
               ) : null}
-              <button className="button button-primary" disabled={busy !== null} onClick={() => {
+              {wake.status !== "running" ? <button className="button button-primary" disabled={busy !== null} onClick={() => {
                 setDialog(null);
-              }} type="button">{t(wake.status === "running" ? "wake.continueInBackground" : "common.done")}</button>
+                setWake(null);
+              }} type="button">{t("common.done")}</button> : null}
             </div>
           </div>
         </Modal>

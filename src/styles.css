@@ -1679,20 +1679,17 @@ textarea {
   background: var(--soft-muted);
 }
 
-.wake-started {
+.wake-reply_received {
   background: var(--success);
 }
 
-.wake-five_hour_exhausted,
-.wake-weekly_exhausted,
-.wake-no_ordinary_capacity,
+.wake-rate_limited,
 .wake-needs_sign_in,
 .wake-cancelled,
 .wake-sent_not_confirmed {
   background: var(--warning);
 }
 
-.wake-quota_unavailable,
 .wake-request_rejected {
   background: var(--warning);
 }

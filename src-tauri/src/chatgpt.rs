@@ -1,4 +1,8 @@
-use std::{sync::OnceLock, time::Duration};
+use std::{
+    io::{BufRead, BufReader, Read},
+    sync::OnceLock,
+    time::Duration,
+};
 
 use reqwest::{
     blocking::Client,
@@ -9,7 +13,7 @@ use serde_json::{json, Value};
 
 use crate::{
     identity::derive_identity,
-    types::{AccountIdentity, AccountKind},
+    types::{AccountIdentity, AccountKind, WakeRequestState},
 };
 
 const CHATGPT_BACKEND_URL: &str = "https://chatgpt.com/backend-api";
@@ -34,6 +38,12 @@ impl RequestFailure {
     pub(crate) fn can_fallback_to_managed_refresh(self) -> bool {
         matches!(self.kind, RequestFailureKind::Authentication)
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct WakeFailure {
+    pub(crate) kind: RequestFailureKind,
+    pub(crate) request_state: WakeRequestState,
 }
 
 #[derive(Debug, Clone)]
@@ -125,15 +135,20 @@ impl ChatGptClient {
     /// This is intentionally not a general Responses client. The request has
     /// no tools, file context, retained state, or retry policy; callers must
     /// treat a transport failure as potentially delivered.
-    pub(crate) fn wake(&self, credential: &Value, model: &str) -> Result<(), RequestFailure> {
-        let snapshot = credential_snapshot(credential).map_err(|_| RequestFailure {
+    pub(crate) fn wake(&self, credential: &Value, model: &str) -> Result<(), WakeFailure> {
+        let snapshot = credential_snapshot(credential).map_err(|_| WakeFailure {
             kind: RequestFailureKind::Authentication,
-            status: Some(401),
+            request_state: WakeRequestState::NotSent,
+        })?;
+        let request_headers = headers(&snapshot).map_err(|error| WakeFailure {
+            kind: error.kind,
+            request_state: WakeRequestState::NotSent,
         })?;
         let response = self
             .client
             .post(format!("{}/codex/responses", self.base_url))
-            .headers(headers(&snapshot)?)
+            .headers(request_headers)
+            .header(ACCEPT, "text/event-stream")
             .json(&json!({
                 "model": model,
                 "instructions": "Reply with exactly OK. Do not use tools or inspect files.",
@@ -147,23 +162,28 @@ impl ChatGptClient {
                 "parallel_tool_calls": false,
                 "reasoning": {"effort": "none"},
                 "store": false,
-                "stream": false,
+                "stream": true,
                 "include": [],
                 "service_tier": "standard"
             }))
             .send()
-            .map_err(|_error| RequestFailure {
+            .map_err(|_error| WakeFailure {
                 kind: RequestFailureKind::Transport,
-                status: None,
+                request_state: WakeRequestState::MayHaveSent,
             })?;
         let status = response.status();
         if !status.is_success() {
-            return Err(RequestFailure {
+            return Err(WakeFailure {
                 kind: request_failure_kind(status),
-                status: Some(status.as_u16()),
+                request_state: WakeRequestState::Sent,
             });
         }
-        Ok(())
+        // HTTP success only opens the response stream. A completed turn with
+        // assistant text is the proof that this account answered the request.
+        parse_wake_stream(BufReader::new(response.take(1_048_576))).map_err(|kind| WakeFailure {
+            kind,
+            request_state: WakeRequestState::Sent,
+        })
     }
 
     #[cfg(test)]
@@ -201,6 +221,83 @@ impl ChatGptClient {
             status: Some(status.as_u16()),
         })
     }
+}
+
+fn parse_wake_stream(reader: impl BufRead) -> Result<(), RequestFailureKind> {
+    let mut event_name = String::new();
+    let mut data = String::new();
+    let mut replied = false;
+    for line in reader.lines() {
+        let line = line.map_err(|_| RequestFailureKind::Transport)?;
+        let line = line.trim_end_matches('\r');
+        if let Some(value) = line.strip_prefix("event:") {
+            event_name = value.trim().to_string();
+        } else if let Some(value) = line.strip_prefix("data:") {
+            if !data.is_empty() {
+                data.push('\n');
+            }
+            data.push_str(value.trim_start());
+        } else if line.is_empty() {
+            if data.is_empty() {
+                event_name.clear();
+                continue;
+            }
+            let event: Value =
+                serde_json::from_str(&data).map_err(|_| RequestFailureKind::InvalidJson)?;
+            let kind = event
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or(&event_name);
+            match kind {
+                "response.output_item.done" => {
+                    replied |= assistant_text(event.get("item"));
+                }
+                "response.output_text.done" => {
+                    replied |= event
+                        .get("text")
+                        .and_then(Value::as_str)
+                        .is_some_and(|text| !text.trim().is_empty());
+                }
+                "response.completed" => {
+                    let final_output = event
+                        .get("response")
+                        .and_then(|response| response.get("output"))
+                        .and_then(Value::as_array)
+                        .is_some_and(|items| items.iter().any(|item| assistant_text(Some(item))));
+                    return if replied || final_output {
+                        Ok(())
+                    } else {
+                        Err(RequestFailureKind::InvalidJson)
+                    };
+                }
+                "response.failed" | "error" => return Err(RequestFailureKind::Http),
+                "response.incomplete" => return Err(RequestFailureKind::InvalidJson),
+                _ => {}
+            }
+            data.clear();
+            event_name.clear();
+        }
+    }
+    Err(RequestFailureKind::InvalidJson)
+}
+
+fn assistant_text(item: Option<&Value>) -> bool {
+    item.is_some_and(|item| {
+        item.get("type").and_then(Value::as_str) == Some("message")
+            && item.get("role").and_then(Value::as_str) == Some("assistant")
+            && item
+                .get("content")
+                .and_then(Value::as_array)
+                .is_some_and(|parts| {
+                    parts.iter().any(|part| {
+                        part.get("type").and_then(Value::as_str) == Some("output_text")
+                            && part
+                                .get("text")
+                                .and_then(Value::as_str)
+                                .is_some_and(|text| !text.trim().is_empty())
+                    })
+                })
+    })
 }
 
 fn install_crypto_provider() {
@@ -498,7 +595,13 @@ mod tests {
 
     #[test]
     fn sends_one_minimal_codex_responses_wake_request() {
-        let (base_url, handle) = fixture(200, "{}");
+        let response = concat!(
+            "event: response.output_item.done\n",
+            "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"OK\"}]}}\n\n",
+            "event: response.completed\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\"}}\n\n"
+        );
+        let (base_url, handle) = fixture(200, response);
         let client = ChatGptClient::with_base_url(&base_url).expect("client");
         client
             .wake(&credential(), "gpt-5.6-luna")
@@ -520,7 +623,36 @@ mod tests {
         assert_eq!(payload["reasoning"]["effort"], "none");
         assert_eq!(payload["service_tier"], "standard");
         assert_eq!(payload["store"], false);
-        assert_eq!(payload["stream"], false);
+        assert_eq!(payload["stream"], true);
+    }
+
+    #[test]
+    fn wake_requires_a_completed_turn_and_assistant_reply() {
+        for body in [
+            "{}",
+            "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\",\"output\":[]}}\n\n",
+            "event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"OK\"}]}}\n\n",
+        ] {
+            let (base_url, handle) = fixture(200, body);
+            let client = ChatGptClient::with_base_url(&base_url).expect("client");
+            let failure = client.wake(&credential(), "gpt-5.6-luna").expect_err("not confirmed");
+            assert_eq!(failure.kind, RequestFailureKind::InvalidJson);
+            assert_eq!(failure.request_state, WakeRequestState::Sent);
+            handle.join().expect("server");
+        }
+    }
+
+    #[test]
+    fn wake_keeps_provider_rejection_distinct_from_an_unconfirmed_reply() {
+        let (base_url, handle) = fixture(200,
+            "event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"id\":\"resp-1\"}}\n\n");
+        let failure = ChatGptClient::with_base_url(&base_url)
+            .expect("client")
+            .wake(&credential(), "gpt-5.6-luna")
+            .expect_err("rejected");
+        assert_eq!(failure.kind, RequestFailureKind::Http);
+        assert_eq!(failure.request_state, WakeRequestState::Sent);
+        handle.join().expect("server");
     }
 
     #[test]
