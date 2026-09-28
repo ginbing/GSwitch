@@ -300,8 +300,8 @@ enters this fallback. GSwitch reads the live token once immediately before the
 request. It does not retry after uncertain delivery.
 
 The request is one direct streaming `POST /codex/responses` call through the
-current ChatGPT Codex route: `gpt-6-luna`, low reasoning effort, standard tier,
-a single `hi` text input, no tools, files, or project context, and
+current ChatGPT Codex route: `gpt-6-luna`, low reasoning effort, the provider's
+default service tier, a single `hi` text input, no tools, files, or project context, and
 `store: false`. HTTP success alone is insufficient: the response stream must contain
 nonempty assistant output and `response.completed`. A rejected, incomplete,
 malformed, or interrupted stream is never labeled successful. If ChatGPT
@@ -317,11 +317,12 @@ Wake sent a request or received a reply.
 Wake all, one-account Wake, and selected-account Wake run sequentially and are
 cancellable between accounts. They return one result per ChatGPT account:
 Reply received, Rate limited, Needs sign-in, Sent but not confirmed, Model
-unavailable, Request rejected, Failed, or Cancelled. Rust records each
-account's request state as not sent, possibly sent, or sent. The focused result
-dialog resolves each result to the saved account's email and workspace, shows a localized status,
-and never exposes provider error text. The heading counts replies, uncertain
-requests, failures, and cancellations. If the WebView temporarily cannot read
+unavailable, Invalid request, Service unavailable, Request rejected, Failed,
+or Cancelled. Rust records each account's request state as not sent, possibly
+sent, or sent. It exposes the HTTP status when one exists, while provider bodies
+and credentials stay in Rust. The focused result dialog resolves each result to
+the saved account's email and workspace and shows a localized status. The
+heading counts replies, uncertain requests, failures, and cancellations. If the WebView temporarily cannot read
 progress, it retains the operation ID and retries status reads without
 restarting the request. The dialog remains open during the operation, then
 closes with Done; there is no persistent result entry or history dashboard.

@@ -210,6 +210,8 @@ export type WakeResultKind =
   | "needs_sign_in"
   | "sent_not_confirmed"
   | "model_unavailable"
+  | "invalid_request"
+  | "service_unavailable"
   | "request_rejected"
   | "failed"
   | "cancelled";
@@ -219,6 +221,7 @@ export interface WakeAccountResult {
   label: string;
   result: WakeResultKind;
   request_state: "not_sent" | "may_have_sent" | "sent";
+  http_status?: number;
 }
 
 export interface WakeOperationView {
