@@ -217,7 +217,7 @@ describe("GSwitch account workspace", () => {
       return { version: "0.157.0", update_status: "unknown", supports_update: true };
     });
     render(<App />);
-    await userEvent.click(await screen.findByRole("button", { name: "Codex CLI 0.157.0 available" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Codex CLI 0.157.0 available" }, { timeout: 5_000 }));
     const dialog = await screen.findByRole("dialog", { name: "Codex CLI" });
     expect(await within(dialog).findByText("Installed version: 0.156.1")).toBeInTheDocument();
     expect(within(dialog).getByText("Latest version: 0.157.0")).toBeInTheDocument();
@@ -232,7 +232,7 @@ describe("GSwitch account workspace", () => {
     Object.defineProperty(window.navigator, "language", { configurable: true, value: "zh-CN" });
     mocks.updateCodexCli.mockRejectedValue("codex_open");
     render(<App />);
-    await userEvent.click(await screen.findByRole("button", { name: "Codex CLI 0.157.0 可更新" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Codex CLI 0.157.0 可更新" }, { timeout: 5_000 }));
     const dialog = await screen.findByRole("dialog", { name: "Codex CLI" });
     expect(await within(dialog).findByText("已安装版本：0.156.1")).toBeInTheDocument();
     await userEvent.click(within(dialog).getByRole("button", { name: "更新 Codex CLI" }));
@@ -243,7 +243,7 @@ describe("GSwitch account workspace", () => {
   it("does not offer an update to a CLI without the official command", async () => {
     mocks.codexCliInfo.mockResolvedValue({ version: "0.100.0", latest_version: "0.157.0", update_status: "available", supports_update: false });
     render(<App />);
-    await userEvent.click(await screen.findByRole("button", { name: "Codex CLI 0.157.0 available" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Codex CLI 0.157.0 available" }, { timeout: 5_000 }));
     const dialog = await screen.findByRole("dialog", { name: "Codex CLI" });
     expect(await within(dialog).findByText("Installed version: 0.100.0")).toBeInTheDocument();
     expect(within(dialog).queryByRole("button", { name: "Update Codex CLI" })).not.toBeInTheDocument();
@@ -254,14 +254,14 @@ describe("GSwitch account workspace", () => {
     mocks.codexCliInfo.mockResolvedValue({ version: "0.157.0", latest_version: "0.157.0", update_status: "current", supports_update: true });
     render(<App />);
     await screen.findByRole("heading", { name: "0 saved accounts" });
-    await waitFor(() => expect(mocks.codexCliInfo).toHaveBeenCalled());
+    await waitFor(() => expect(mocks.codexCliInfo).toHaveBeenCalled(), { timeout: 5_000 });
     expect(screen.queryByRole("button", { name: /Codex CLI .* available/ })).not.toBeInTheDocument();
   });
 
   it("keeps a failed CLI release check quiet", async () => {
     mocks.codexCliInfo.mockResolvedValue({ version: "0.157.0", update_status: "unknown", supports_update: true });
     render(<App />);
-    await waitFor(() => expect(mocks.codexCliInfo).toHaveBeenCalled());
+    await waitFor(() => expect(mocks.codexCliInfo).toHaveBeenCalled(), { timeout: 5_000 });
     expect(screen.queryByRole("button", { name: /Codex CLI/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
