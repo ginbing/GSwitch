@@ -163,9 +163,11 @@ once before sending and never writes live `auth.json` or starts a second App
 Server. A safely inactive identity may use one isolated refresh only after an
 authentication failure; an unidentifiable running process is never a reason to
 skip Wake, but prevents that refresh fallback. The one standard-tier text
-request has no tools, project or file context, stored response, reset credit, or
-Reserve use. Once it may have reached the provider, GSwitch reports uncertainty
-instead of retrying.
+request has no tools, project or file context, locally saved conversation,
+reset credit, or Reserve use. It sets `store: false` and does not retain the
+prompt or model reply. Once it may have reached the provider, GSwitch reports
+uncertainty instead of retrying. Only an explicit model rejection can offer a
+separate user-initiated alternate-model request.
 
 ## Recovery invariants
 

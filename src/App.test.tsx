@@ -937,7 +937,7 @@ describe("GSwitch account workspace", () => {
     const otherWake = screen.getByRole("button", { name: "Wake other@example.com" });
     expect(otherWake).toBeEnabled();
     await userEvent.click(otherWake);
-    await waitFor(() => expect(mocks.startWake).toHaveBeenCalledWith("account-2"));
+    await waitFor(() => expect(mocks.startWake).toHaveBeenCalledWith("account-2", false));
 
     resolveRefresh?.(staleQuota);
   });
@@ -1204,6 +1204,33 @@ describe("GSwitch account workspace", () => {
     expect(within(dialog).getByText(/Delivery uncertain/)).toBeInTheDocument();
     expect(within(dialog).getByText("Codex replied to the request.")).toBeInTheDocument();
     expect(within(dialog).getByText(/rate or capacity limit/)).toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: /Retry Wake/ })).not.toBeInTheDocument();
+  });
+
+  it("offers a manual older-model retry only after a definite model rejection", async () => {
+    mocks.listAccounts.mockResolvedValue([chatAccount]);
+    mocks.accountQuota.mockResolvedValue({ ...staleQuota, status: "fresh" });
+    mocks.startWake.mockResolvedValue({ operation_id: "wake-alternate" });
+    mocks.wakeOperation.mockImplementation(async (operationId: string) => ({
+      id: operationId,
+      status: "completed",
+      alternate_model: operationId === "wake-alternate",
+      results: [{
+        account_id: "account-1",
+        label: "Personal",
+        result: "model_unavailable",
+        request_state: "sent",
+      }],
+    }));
+    render(<App />);
+    await screen.findByRole("heading", { name: "person@example.com" });
+    await userEvent.click(screen.getByRole("button", { name: "Wake all" }));
+    const dialog = await screen.findByRole("dialog", { name: "Wake" });
+    expect(await within(dialog).findByText("GPT-6 Luna is unavailable for this account. No model reply was received.")).toBeInTheDocument();
+    await userEvent.click(within(dialog).getByRole("button", { name: "Retry Wake for person@example.com with GPT-5.6 Luna" }));
+    expect(mocks.startWake).toHaveBeenCalledWith("account-1", true);
+    await within(dialog).findByText("GPT-5.6 Luna is also unavailable for this account. No model reply was received.");
+    await waitFor(() => expect(within(dialog).queryByRole("button", { name: /Retry Wake/ })).not.toBeInTheDocument());
   });
 
   it("retains a running Wake operation when a status read briefly fails", async () => {

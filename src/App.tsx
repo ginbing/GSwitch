@@ -336,12 +336,16 @@ function accountSecondaryName(account: AccountView, primary: string, t: Translat
   return undefined;
 }
 
-function wakeResultLabel(result: WakeOperationView["results"][number]["result"], t: Translator) {
+function wakeResultLabel(result: WakeOperationView["results"][number]["result"], alternateModel: boolean, t: Translator) {
+  if (result === "model_unavailable" && alternateModel) {
+    return t("wake.alternateModelUnavailable");
+  }
   const labels = {
     reply_received: "wake.replyReceived",
     rate_limited: "wake.rateLimited",
     needs_sign_in: "wake.needsSignIn",
     sent_not_confirmed: "wake.sentNotConfirmed",
+    model_unavailable: "wake.modelUnavailable",
     request_rejected: "wake.requestRejected",
     failed: "wake.failed",
     cancelled: "wake.cancelled",
@@ -1542,12 +1546,12 @@ export default function App() {
     }
   };
 
-  const startWake = async (accountId?: string) => {
+  const startWake = async (accountId?: string, alternateModel = false) => {
     const result = accountId
-      ? await runAccountTask(accountId, "wake", () => api.startWake(accountId))
+      ? await runAccountTask(accountId, "wake", () => api.startWake(accountId, alternateModel))
       : await runTask("wake-all", api.startWakeAll, false);
     if (result) {
-      setWake({ id: result.operation_id, status: "running", results: [] });
+      setWake({ id: result.operation_id, status: "running", alternate_model: alternateModel, results: [] });
       setWakeStatusUnavailable(false);
       setDialog("wake");
     }
@@ -1563,7 +1567,7 @@ export default function App() {
       false,
     );
     if (result) {
-      setWake({ id: result.operation_id, status: "running", results: [] });
+      setWake({ id: result.operation_id, status: "running", alternate_model: false, results: [] });
       setWakeStatusUnavailable(false);
       setDialog("wake");
     }
@@ -2508,7 +2512,18 @@ export default function App() {
                         not_sent: "wake.requestNotSent",
                         may_have_sent: "wake.requestMayHaveSent",
                         sent: "wake.requestSent",
-                      } as const)[result.request_state])} · </span><span>{wakeResultLabel(result.result, t)}</span></p>
+                      } as const)[result.request_state])} · </span><span>{wakeResultLabel(result.result, wake.alternate_model === true, t)}</span></p>
+                      {wake.status !== "running" && result.result === "model_unavailable" && !wake.alternate_model ? (
+                        <button
+                          className="wake-retry"
+                          disabled={busy !== null}
+                          onClick={() => void startWake(result.account_id, true)}
+                          aria-label={t("wake.retryAlternateFor", { name: primary })}
+                          type="button"
+                        >
+                          {t("wake.retryAlternate")}
+                        </button>
+                      ) : null}
                     </div>
                   </li>
                 );

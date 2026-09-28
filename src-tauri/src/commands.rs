@@ -346,8 +346,12 @@ pub async fn recover_pending_reset_credit(
 }
 
 #[tauri::command]
-pub fn start_wake(state: State<'_, AppState>, id: String) -> Result<WakeStart, String> {
-    wake::start_one(state.inner().clone(), id)
+pub fn start_wake(
+    state: State<'_, AppState>,
+    id: String,
+    alternate_model: bool,
+) -> Result<WakeStart, String> {
+    wake::start_one(state.inner().clone(), id, alternate_model)
 }
 
 #[tauri::command]

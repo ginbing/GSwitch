@@ -70,7 +70,8 @@ export const api = {
     invoke<ResetCreditOutcome>("redeem_earliest_reset_credit", { id }),
   recoverPendingResetCredit: () =>
     invoke<ResetCreditOutcome>("recover_pending_reset_credit"),
-  startWake: (id: string) => invoke<WakeStart>("start_wake", { id }),
+  startWake: (id: string, alternateModel = false) =>
+    invoke<WakeStart>("start_wake", { id, alternateModel }),
   startWakeAll: () => invoke<WakeStart>("start_wake_all"),
   startWakeSelected: (selectedIds: string[]) =>
     invoke<WakeStart>("start_wake_selected", { selectedIds }),
