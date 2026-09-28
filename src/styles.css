@@ -1690,7 +1690,9 @@ textarea {
   background: var(--warning);
 }
 
-.wake-request_rejected {
+.wake-request_rejected,
+.wake-invalid_request,
+.wake-service_unavailable {
   background: var(--warning);
 }
 

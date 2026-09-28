@@ -355,7 +355,9 @@ const en = {
   "plan.pro": "Pro",
   "plan.team": "Team",
   "plan.other": "Other plan",
-  "wake.requestRejected": "ChatGPT rejected the Wake request. Retry later.",
+  "wake.invalidRequest": "Codex did not accept this Wake request's parameters. No reply was received.",
+  "wake.serviceUnavailable": "The Codex service could not complete this request. Try again later.",
+  "wake.requestRejected": "Codex did not accept this Wake request. No reply was received.",
   "wake.failed": "Wake did not complete for this account.",
   "wake.cancelled": "Wake was cancelled for this account.",
 } as const;
@@ -705,7 +707,9 @@ const zhCN: Record<keyof typeof en, string> = {
   "plan.pro": "Pro",
   "plan.team": "团队",
   "plan.other": "其他套餐",
-  "wake.requestRejected": "ChatGPT 拒绝了唤醒请求。请稍后重试。",
+  "wake.invalidRequest": "Codex 未接受此次唤醒请求的参数，未收到回复。",
+  "wake.serviceUnavailable": "Codex 服务未能完成此次请求，请稍后重试。",
+  "wake.requestRejected": "Codex 未接受此次唤醒请求，未收到回复。",
   "wake.failed": "此账户的唤醒未完成。",
   "wake.cancelled": "此账户的唤醒已取消。",
 };

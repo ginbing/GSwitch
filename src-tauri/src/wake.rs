@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use crate::{
     accounts::{AppState, OperationGuard},
-    chatgpt::{ChatGptClient, WakeFailureKind},
+    chatgpt::{ChatGptClient, WakeFailure, WakeFailureKind},
     quota::{
         external_credential_state_for_identity, refresh_via_managed_profile_for_wake,
         verified_chatgpt_identity, ExternalCredentialState,
@@ -52,6 +52,7 @@ struct WakeTarget {
 struct WakeAccountOutcome {
     result: WakeResultKind,
     request_state: WakeRequestState,
+    http_status: Option<u16>,
     message: String,
 }
 
@@ -60,6 +61,7 @@ impl WakeAccountOutcome {
         Self {
             result,
             request_state: WakeRequestState::NotSent,
+            http_status: None,
             message: message.into(),
         }
     }
@@ -257,6 +259,7 @@ fn run_targets(
             label: target.label.clone(),
             result: outcome.result,
             request_state: outcome.request_state,
+            http_status: outcome.http_status,
             message: outcome.message,
         });
         state.update_wake_operation(view.clone())?;
@@ -280,6 +283,7 @@ fn append_cancelled_targets(view: &mut WakeOperationView, targets: &[WakeTarget]
             label: target.label.clone(),
             result: WakeResultKind::Cancelled,
             request_state: WakeRequestState::NotSent,
+            http_status: None,
             message: "Wake queue was cancelled before this account started".to_string(),
         });
     }
@@ -300,6 +304,7 @@ fn fail_operation(
             label: target.label.clone(),
             result: WakeResultKind::Failed,
             request_state: WakeRequestState::NotSent,
+            http_status: None,
             message: message.clone(),
         });
     }
@@ -374,12 +379,12 @@ fn wake_account(
             "Codex replied to the Wake request",
         )
         .request_state(WakeRequestState::Sent),
-        Err(error) => wake_failure(error.kind, error.request_state),
+        Err(error) => wake_failure(error),
     }
 }
 
-fn wake_failure(kind: WakeFailureKind, request_state: WakeRequestState) -> WakeAccountOutcome {
-    let (result, message) = match kind {
+fn wake_failure(failure: WakeFailure) -> WakeAccountOutcome {
+    let (result, message) = match failure.kind {
         WakeFailureKind::Transport | WakeFailureKind::InvalidResponse => (
             WakeResultKind::SentNotConfirmed,
             "A Wake request may have reached ChatGPT, but no complete model reply was confirmed",
@@ -396,12 +401,22 @@ fn wake_failure(kind: WakeFailureKind, request_state: WakeRequestState) -> WakeA
             WakeResultKind::ModelUnavailable,
             "The selected model is unavailable for this account",
         ),
+        WakeFailureKind::InvalidRequest => (
+            WakeResultKind::InvalidRequest,
+            "Codex did not accept the Wake request parameters",
+        ),
+        WakeFailureKind::ServiceUnavailable => (
+            WakeResultKind::ServiceUnavailable,
+            "The Codex service could not complete the Wake request",
+        ),
         WakeFailureKind::Rejected => (
             WakeResultKind::RequestRejected,
             "ChatGPT rejected the Wake request",
         ),
     };
-    WakeAccountOutcome::new(result, message).request_state(request_state)
+    let mut outcome = WakeAccountOutcome::new(result, message).request_state(failure.request_state);
+    outcome.http_status = failure.status;
+    outcome
 }
 
 fn wake_credential(account: &StoredAccount, identity: &AccountIdentity) -> WakeCredential {
@@ -517,15 +532,28 @@ mod tests {
 
     #[test]
     fn request_failures_preserve_whether_a_request_was_sent() {
-        let uncertain = wake_failure(WakeFailureKind::Transport, WakeRequestState::MayHaveSent);
+        let uncertain = wake_failure(WakeFailure {
+            kind: WakeFailureKind::Transport,
+            request_state: WakeRequestState::MayHaveSent,
+            status: None,
+        });
         assert_eq!(uncertain.result, WakeResultKind::SentNotConfirmed);
         assert_eq!(uncertain.request_state, WakeRequestState::MayHaveSent);
 
-        let rejected = wake_failure(WakeFailureKind::RateLimited, WakeRequestState::Sent);
+        let rejected = wake_failure(WakeFailure {
+            kind: WakeFailureKind::RateLimited,
+            request_state: WakeRequestState::Sent,
+            status: Some(429),
+        });
         assert_eq!(rejected.result, WakeResultKind::RateLimited);
         assert_eq!(rejected.request_state, WakeRequestState::Sent);
+        assert_eq!(rejected.http_status, Some(429));
 
-        let local = wake_failure(WakeFailureKind::Authentication, WakeRequestState::NotSent);
+        let local = wake_failure(WakeFailure {
+            kind: WakeFailureKind::Authentication,
+            request_state: WakeRequestState::NotSent,
+            status: None,
+        });
         assert_eq!(local.result, WakeResultKind::NeedsSignIn);
         assert_eq!(local.request_state, WakeRequestState::NotSent);
     }

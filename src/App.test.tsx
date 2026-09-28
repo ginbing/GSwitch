@@ -1207,6 +1207,37 @@ describe("GSwitch account workspace", () => {
     expect(within(dialog).queryByRole("button", { name: /Retry Wake/ })).not.toBeInTheDocument();
   });
 
+  it("shows a sanitized Wake request failure and its HTTP status", async () => {
+    mocks.listAccounts.mockResolvedValue([chatAccount]);
+    mocks.accountQuota.mockResolvedValue({ ...staleQuota, status: "fresh" });
+    mocks.wakeOperation.mockResolvedValue({
+      id: "wake-all",
+      status: "completed",
+      results: [{ account_id: "account-1", label: "Personal", result: "invalid_request", request_state: "sent", http_status: 400, message: "private provider details" }],
+    });
+    render(<App />);
+    await screen.findByRole("heading", { name: "person@example.com" });
+    await userEvent.click(screen.getByRole("button", { name: "Wake all" }));
+    const dialog = await screen.findByRole("dialog", { name: "Wake" });
+    expect(await within(dialog).findByText(/did not accept this Wake request's parameters.*HTTP 400/)).toBeInTheDocument();
+    expect(within(dialog).queryByText(/private provider details/)).not.toBeInTheDocument();
+  });
+
+  it("explains the same Wake request failure in Chinese", async () => {
+    Object.defineProperty(window.navigator, "language", { configurable: true, value: "zh-CN" });
+    mocks.listAccounts.mockResolvedValue([chatAccount]);
+    mocks.accountQuota.mockResolvedValue({ ...staleQuota, status: "fresh" });
+    mocks.wakeOperation.mockResolvedValue({
+      id: "wake-all",
+      status: "completed",
+      results: [{ account_id: "account-1", label: "Personal", result: "invalid_request", request_state: "sent", http_status: 400 }],
+    });
+    render(<App />);
+    await screen.findByRole("heading", { name: "person@example.com" });
+    await userEvent.click(screen.getByRole("button", { name: "全部唤醒" }));
+    expect(await screen.findByText(/未接受此次唤醒请求的参数.*HTTP 400/)).toBeInTheDocument();
+  });
+
   it("offers a manual older-model retry only after a definite model rejection", async () => {
     mocks.listAccounts.mockResolvedValue([chatAccount]);
     mocks.accountQuota.mockResolvedValue({ ...staleQuota, status: "fresh" });

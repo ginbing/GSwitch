@@ -405,6 +405,8 @@ pub enum WakeResultKind {
     NeedsSignIn,
     SentNotConfirmed,
     ModelUnavailable,
+    InvalidRequest,
+    ServiceUnavailable,
     RequestRejected,
     Failed,
     Cancelled,
@@ -424,6 +426,8 @@ pub struct WakeAccountResult {
     pub label: String,
     pub result: WakeResultKind,
     pub request_state: WakeRequestState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub http_status: Option<u16>,
     #[serde(default, skip_serializing)]
     pub message: String,
 }

@@ -336,8 +336,8 @@ function accountSecondaryName(account: AccountView, primary: string, t: Translat
   return undefined;
 }
 
-function wakeResultLabel(result: WakeOperationView["results"][number]["result"], alternateModel: boolean, t: Translator) {
-  if (result === "model_unavailable" && alternateModel) {
+function wakeResultLabel(result: WakeOperationView["results"][number], alternateModel: boolean, t: Translator) {
+  if (result.result === "model_unavailable" && alternateModel) {
     return t("wake.alternateModelUnavailable");
   }
   const labels = {
@@ -346,11 +346,14 @@ function wakeResultLabel(result: WakeOperationView["results"][number]["result"],
     needs_sign_in: "wake.needsSignIn",
     sent_not_confirmed: "wake.sentNotConfirmed",
     model_unavailable: "wake.modelUnavailable",
+    invalid_request: "wake.invalidRequest",
+    service_unavailable: "wake.serviceUnavailable",
     request_rejected: "wake.requestRejected",
     failed: "wake.failed",
     cancelled: "wake.cancelled",
   } as const;
-  return t(labels[result]);
+  const label = t(labels[result.result]);
+  return result.http_status ? `${label} (HTTP ${result.http_status})` : label;
 }
 
 function wakeSummary(wake: WakeOperationView, t: Translator) {
@@ -2512,7 +2515,7 @@ export default function App() {
                         not_sent: "wake.requestNotSent",
                         may_have_sent: "wake.requestMayHaveSent",
                         sent: "wake.requestSent",
-                      } as const)[result.request_state])} · </span><span>{wakeResultLabel(result.result, wake.alternate_model === true, t)}</span></p>
+                      } as const)[result.request_state])} · </span><span>{wakeResultLabel(result, wake.alternate_model === true, t)}</span></p>
                       {wake.status !== "running" && result.result === "model_unavailable" && !wake.alternate_model ? (
                         <button
                           className="wake-retry"
