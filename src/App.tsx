@@ -134,7 +134,7 @@ function friendlyError(t: Translator, error: unknown, fallback = t("error.action
   if (/No supported|not valid JSON|Invalid auth/i.test(message)) {
     return t("error.importUnsupported");
   }
-  return `${fallback} ${t("error.currentUnchanged")}`;
+  return fallback;
 }
 
 const switchFailureCodes = new Set<SwitchFailureCode>([
@@ -289,7 +289,17 @@ function quotaWindowLabel(window: QuotaWindow, t: Translator): string {
 }
 
 function accountPlan(account: AccountView, t: Translator) {
-  return account.kind === "api_key" ? t("account.apiKey") : account.plan_type || t("account.chatGpt");
+  return account.kind === "api_key" ? t("account.apiKey") : account.plan_type ? planLabel(account.plan_type, t) : t("account.chatGpt");
+}
+
+function planLabel(plan: string, t: Translator) {
+  const key = ({
+    free: "plan.free",
+    plus: "plan.plus",
+    pro: "plan.pro",
+    team: "plan.team",
+  } as const)[plan.trim().toLowerCase() as "free" | "plus" | "pro" | "team"];
+  return key ? t(key) : t("plan.other");
 }
 
 function migrationSourceLabel(candidate: MigrationCandidate, t: Translator) {
@@ -346,7 +356,7 @@ function wakeResultLabel(result: WakeOperationView["results"][number]["result"],
 
 function wakeSummary(wake: WakeOperationView, t: Translator) {
   if (wake.status === "completed" && wake.results.length > 0 && wake.results.every(({ result }) => result === "already_active")) {
-    return t("wake.summaryAllActive", { count: wake.results.length });
+    return wake.results.length === 1 ? t("wake.summaryOneActive") : t("wake.summaryAllActive", { count: wake.results.length });
   }
   const counts = { started: 0, skipped: 0, unconfirmed: 0, failed: 0, cancelled: 0 };
   for (const { result, request_state } of wake.results) {
@@ -357,7 +367,7 @@ function wakeSummary(wake: WakeOperationView, t: Translator) {
     else counts.failed++;
   }
   return ([
-    ["wake.summaryStarted", counts.started],
+    [counts.started === 1 ? "wake.summaryOneStarted" : "wake.summaryStarted", counts.started],
     ["wake.summarySkipped", counts.skipped],
     ["wake.summaryUnconfirmed", counts.unconfirmed],
     ["wake.summaryFailed", counts.failed],
@@ -486,6 +496,7 @@ function QuotaResetTime({ timestamp, t, formatLocale }: {
 }
 
 function QuotaMeter({
+  accountName,
   label,
   window,
   status,
@@ -495,6 +506,7 @@ function QuotaMeter({
   t,
   formatLocale,
 }: {
+  accountName: string;
   label: string;
   window?: QuotaWindow;
   status?: QuotaView["status"];
@@ -515,7 +527,7 @@ function QuotaMeter({
           <span className="quota-alert">
             <button
               aria-describedby={failureId}
-              aria-label={t("quota.refreshErrorLabel")}
+              aria-label={t("quota.refreshErrorFor", { name: accountName })}
               className="quota-alert-button"
               type="button"
             ><CircleAlert size={15} /></button>
@@ -681,6 +693,7 @@ function AccountCard({
           <div className={"quota-pair" + (codexQuotaWindows(quota).length === 1 ? " quota-pair-single" : "")}>
             {codexQuotaWindows(quota).length ? codexQuotaWindows(quota).map((window, index) => (
               <QuotaMeter
+                accountName={primaryName}
                 failure={index === 0 ? quotaFailure : undefined}
                 failureId={"quota-error-" + account.id}
                 lastSuccess={quota?.snapshot?.fetched_at_unix_ms}
@@ -691,7 +704,7 @@ function AccountCard({
                 t={t}
                 window={window}
               />
-            )) : <QuotaMeter failure={quotaFailure} failureId={"quota-error-" + account.id} lastSuccess={quota?.snapshot?.fetched_at_unix_ms} formatLocale={formatLocale} label={t("quota.otherWindow")} status={quota?.status} t={t} />}
+            )) : <QuotaMeter accountName={primaryName} failure={quotaFailure} failureId={"quota-error-" + account.id} lastSuccess={quota?.snapshot?.fetched_at_unix_ms} formatLocale={formatLocale} label={t("quota.otherWindow")} status={quota?.status} t={t} />}
           </div>
           <div className="credit-row">
             <span className="credit-count">
@@ -710,7 +723,7 @@ function AccountCard({
       )}
 
       {!selectionMode ? <div className="card-footer">
-        <button
+        {(!isApiKey && !noFiveHour && !knownFiveHour) ? null : <button
           aria-label={t("account.refresh", { name: primaryName })}
           className="icon-button"
           disabled={controlsBusy || isApiKey}
@@ -718,15 +731,25 @@ function AccountCard({
           type="button"
         >
           <RefreshCw className={busyAction === "refresh" ? "spin" : ""} size={17} />
-        </button>
+        </button>}
         <div className="card-footer-actions">
-          {!isApiKey && !noFiveHour && !fiveHourAvailable ? (
+          {!isApiKey && !noFiveHour && !knownFiveHour ? (
+            <button
+              aria-label={t("account.refresh", { name: primaryName })}
+              className="button button-secondary"
+              disabled={controlsBusy}
+              onClick={onRefresh}
+              type="button"
+            >
+              <RefreshCw size={15} />{t("wake.refreshQuota")}
+            </button>
+          ) : null}
+          {!isApiKey && knownFiveHour && !fiveHourAvailable ? (
             <button
               aria-label={t("account.wake", { name: primaryName })}
               className="button button-secondary"
-              disabled={controlsBusy || !knownFiveHour}
+              disabled={controlsBusy}
               onClick={onWake}
-              title={!knownFiveHour ? t("wake.refreshFirst") : undefined}
               type="button"
             >
               {busyAction === "wake" ? <LoaderCircle className="spin" size={15} /> : <Zap size={15} />}
@@ -797,31 +820,34 @@ function UpdateNotice({
 }) {
   const downloading = phase === "downloading" || phase === "installing";
   const isReleaseDownload = pending.delivery === "release_download";
+  const title = t(({
+    available: "update.available",
+    downloading: "update.downloadTitle",
+    installing: "update.installTitle",
+    ready: "update.readyTitle",
+    error: "update.failedTitle",
+  } as const)[phase], { version: pending.update.version });
   const primaryLabel = isReleaseDownload
     ? t("update.download")
     : phase === "ready"
       ? t("update.restart")
-        : phase === "error"
-          ? t("update.retry")
-          : phase === "installing"
-            ? t("update.installing")
+      : phase === "error"
+        ? t("update.retry")
+        : phase === "installing"
+          ? t("update.installing")
           : downloading
-          ? t("update.downloading", { progress: progress ?? "…" })
-          : t("update.install");
+            ? t("update.downloading", { progress: progress ?? "…" })
+            : t("update.install");
 
   return (
-    <section aria-label={t("update.available", { version: pending.update.version })} className="update-notice">
+    <section aria-label={title} className="update-notice">
       <div>
-        <strong>{t("update.available", { version: pending.update.version })}</strong>
-        <p>
-          {isReleaseDownload
-            ? t("update.debianFallback")
-            : phase === "ready"
-              ? t("update.restartRequired")
-              : phase === "error"
-                ? t("update.failed")
-                : t("update.safe")}
-        </p>
+        <strong role="status">{title}</strong>
+        {isReleaseDownload ? <p>{t("update.debianFallback")}</p>
+          : phase === "downloading" ? <p>{t("update.downloading", { progress: progress ?? "…" })}</p>
+          : phase === "ready" ? <p>{t("update.restartRequired")}</p>
+          : phase === "error" ? <p>{t("update.failed")}</p>
+          : null}
       </div>
       <div className="update-actions">
         {phase !== "ready" && !downloading ? (
@@ -864,8 +890,10 @@ export default function App() {
   const [migrationScanned, setMigrationScanned] = useState(false);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [oauth, setOauth] = useState<OAuthFlow | null>(null);
+  const [oauthStatusUnavailable, setOauthStatusUnavailable] = useState(false);
   const [oauthTarget, setOauthTarget] = useState<AccountView | null>(null);
   const [wake, setWake] = useState<WakeOperationView | null>(null);
+  const [wakeStatusUnavailable, setWakeStatusUnavailable] = useState(false);
   const [resetAccount, setResetAccount] = useState<AccountView | null>(null);
   const [removeAccount, setRemoveAccount] = useState<AccountView | null>(null);
   const [removeError, setRemoveError] = useState<string | null>(null);
@@ -1247,6 +1275,7 @@ export default function App() {
         if (closed) {
           return;
         }
+        setOauthStatusUnavailable(false);
         setOauth((current) =>
           current?.login_id === oauth.login_id ? { ...current, status } : current,
         );
@@ -1254,7 +1283,7 @@ export default function App() {
           if (oauthTarget) {
             setAccountSignInNeeded((current) => ({ ...current, [oauthTarget.id]: false }));
           }
-          setNotice({ kind: "success", text: t(oauthTarget ? "notice.reauthenticatedAccount" : "notice.importedAccount", { name: status.account.label }) });
+          setNotice({ kind: "success", text: t(oauthTarget ? "notice.reauthenticatedAccount" : "notice.importedAccount", { name: accountPrimaryName(status.account) }) });
           setDialog(null);
           void loadSnapshot();
         } else if (status.status === "pending") {
@@ -1262,11 +1291,8 @@ export default function App() {
         }
       } catch {
         if (!closed) {
-          setOauth((current) =>
-            current?.login_id === oauth.login_id
-              ? { ...current, status: { status: "failed", code: "unavailable" } }
-              : current,
-          );
+          setOauthStatusUnavailable(true);
+          timer = window.setTimeout(poll, 2500);
         }
       }
     };
@@ -1291,6 +1317,7 @@ export default function App() {
         if (closed) {
           return;
         }
+        setWakeStatusUnavailable(false);
         setWake(next);
         if (next.status === "running") {
           timer = window.setTimeout(poll, 850);
@@ -1299,7 +1326,8 @@ export default function App() {
         }
       } catch {
         if (!closed) {
-          setNotice({ kind: "error", text: t("error.wakeStatus") });
+          setWakeStatusUnavailable(true);
+          timer = window.setTimeout(poll, 2500);
         }
       }
     };
@@ -1318,6 +1346,7 @@ export default function App() {
       return;
     }
     setOauth({ ...result, status: { status: "pending" } });
+    setOauthStatusUnavailable(false);
     setOauthTarget(target ?? null);
     setDialog("add");
     setAddMethod("oauth");
@@ -1380,6 +1409,7 @@ export default function App() {
     }
     const completed = await runVoidTask("oauth-cancel", () => api.cancelOAuth(oauth.login_id), false);
     if (completed) {
+      setOauthStatusUnavailable(false);
       setOauth((current) => current ? { ...current, status: { status: "cancelled" } } : current);
     }
   };
@@ -1393,6 +1423,7 @@ export default function App() {
 
   const openAddDialog = () => {
     setOauth(null);
+    setOauthStatusUnavailable(false);
     setOauthTarget(null);
     setAddMethod("start");
     setMigrationPreview(null);
@@ -1464,7 +1495,7 @@ export default function App() {
     if (result) {
       setLabel("");
       setDialog(null);
-      setNotice({ kind: "success", text: t("notice.importedAccount", { name: result.label }) });
+      setNotice({ kind: "success", text: t("notice.importedAccount", { name: accountPrimaryName(result) }) });
     }
   };
 
@@ -1534,7 +1565,7 @@ export default function App() {
   const refreshAccount = async (account: AccountView) => {
     const result = await runAccountTask(account.id, "refresh", () => requestQuotaRefresh(account.id));
     if (result) {
-      setNotice({ kind: "success", text: t("notice.quotaRefreshed", { name: account.label }) });
+      setNotice({ kind: "success", text: t("notice.quotaRefreshed", { name: accountPrimaryName(account) }) });
     }
   };
 
@@ -1544,6 +1575,7 @@ export default function App() {
       : await runTask("wake-all", api.startWakeAll, false);
     if (result) {
       setWake({ id: result.operation_id, status: "running", results: [] });
+      setWakeStatusUnavailable(false);
       setDialog("wake");
     }
   };
@@ -1559,6 +1591,7 @@ export default function App() {
     );
     if (result) {
       setWake({ id: result.operation_id, status: "running", results: [] });
+      setWakeStatusUnavailable(false);
       setDialog("wake");
     }
   };
@@ -1666,7 +1699,7 @@ export default function App() {
   };
 
   const currentActiveId = live?.account?.id;
-  const liveAccountLabel = live?.account?.label || t("toolbar.currentAccount");
+  const liveAccountLabel = live?.account ? accountPrimaryName(live.account) : t("toolbar.currentAccount");
   const liveStatusLabel = !live ? t("toolbar.statusChecking") : t(({
     ready: "toolbar.statusReady",
     not_signed_in: "toolbar.statusSignedOut",
@@ -1716,7 +1749,7 @@ export default function App() {
         onAction: () =>
           void runTask("save-current", api.saveCurrentAccount).then((account) => {
             if (account) {
-              setNotice({ kind: "success", text: t("notice.savedCurrent", { name: account.label }) });
+              setNotice({ kind: "success", text: t("notice.savedCurrent", { name: accountPrimaryName(account) }) });
             }
           }),
       };
@@ -2083,7 +2116,6 @@ export default function App() {
                   </button>
                 </div>
               </details>
-              <p className="dialog-footnote">{t("add.privateStorage")}</p>
             </div>
           ) : null}
 
@@ -2132,7 +2164,7 @@ export default function App() {
                                 {candidate.workspace_name && candidate.workspace_name !== primary
                                   ? ` · ${t("migration.workspace", { name: candidate.workspace_name })}`
                                   : ""}
-                                {candidate.plan_type ? ` · ${t("migration.plan", { plan: candidate.plan_type })}` : ""}
+                                {candidate.plan_type ? ` · ${t("migration.plan", { plan: planLabel(candidate.plan_type, t) })}` : ""}
                               </small>
                             </span>
                           </label>
@@ -2172,6 +2204,7 @@ export default function App() {
                     <LoaderCircle className="spin" size={26} />
                     <div><h3>{t("oauth.finishTitle")}</h3><p>{t(oauthTarget ? "oauth.reauthenticateBody" : "oauth.finishBody")}</p></div>
                   </div>
+                  {oauthStatusUnavailable ? <p className="inline-warning" role="status">{t("error.oauthStatus")}</p> : null}
                   <label className="field-label" htmlFor="oauth-link">{t("oauth.link")}</label>
                   <div className="copy-field">
                     <input id="oauth-link" readOnly value={oauth.auth_url} />
@@ -2185,7 +2218,7 @@ export default function App() {
               ) : oauth.status.status === "complete" ? (
                 <div className="outcome-panel">
                   <CircleCheck size={26} />
-                  <h3>{t(oauthTarget ? "oauth.reauthenticated" : "oauth.added", { name: oauth.status.account.label })}</h3>
+                  <h3>{t(oauthTarget ? "oauth.reauthenticated" : "oauth.added", { name: accountPrimaryName(oauth.status.account) })}</h3>
                   <button className="button button-primary" onClick={closeAddDialog} type="button">{t("common.done")}</button>
                 </div>
               ) : (
@@ -2251,8 +2284,9 @@ export default function App() {
         >
           <div className="confirm-panel">
             <ShieldAlert size={26} />
-            <h3>{t("export.heading")}</h3>
+            <h3>{t(selectedAccountIds.length === 1 ? "export.headingOne" : "export.headingMany", { count: formatNumber(selectedAccountIds.length, locale.formatLocale) })}</h3>
             <p>{t("export.body")}</p>
+            {!exportConfirmation ? <p className="inline-warning"><CircleAlert size={17} />{t("export.warning")}</p> : null}
             {exportConfirmation ? (
               <div className="confirm-copy">
                 <strong>{t("export.question", { count: formatNumber(selectedAccountIds.length, locale.formatLocale) })}</strong>
@@ -2414,9 +2448,10 @@ export default function App() {
             setDialog(null);
           }}
           t={t}
-          title={t("reset.title", { name: resetAccount.label })}
+          title={t("reset.title", { name: accountPrimaryName(resetAccount) })}
         >
           <div className="reset-details">
+            {accountSecondaryName(resetAccount, accountPrimaryName(resetAccount), t) ? <p className="reset-account-workspace">{accountSecondaryName(resetAccount, accountPrimaryName(resetAccount), t)}</p> : null}
             <p>
               {t("reset.available", { count: formatNumber(resetCredits?.available_count ?? 0, locale.formatLocale) })}
             </p>
@@ -2433,7 +2468,7 @@ export default function App() {
               <div className="inline-warning"><CircleAlert size={17} />{t("reset.detailsUnavailable")}</div>
             )}
             {resetConfirmation ? (
-              <div className="confirm-copy"><strong>{t("reset.question")}</strong><p>{t("reset.warning")}</p></div>
+              <div className="confirm-copy"><strong>{t("reset.question", { name: accountPrimaryName(resetAccount) })}</strong><p>{t("reset.warning")}</p></div>
             ) : null}
             <div className="modal-actions">
               <button className="button button-secondary" disabled={busy !== null} onClick={() => setDialog(null)} type="button">{t("common.cancel")}</button>
@@ -2483,6 +2518,7 @@ export default function App() {
               <div>
                 <strong>{wake.status === "running" ? t("wake.running") : wake.status === "completed" ? t("wake.resultsTitle") : t("wake.stopped")}</strong>
                 <p>{wakeSummary(wake, t) || (wake.status === "running" ? t("wake.oneProcessing") : "")}</p>
+                {wake.status === "running" && wakeStatusUnavailable ? <p role="status">{t("error.wakeStatus")}</p> : null}
               </div>
             </div>
             <ul className="wake-results">

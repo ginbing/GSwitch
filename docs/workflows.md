@@ -25,6 +25,9 @@ the user's live Codex identity.
 
 Cancellation and timeout end the isolated login. OAuth is the default login
 experience; GSwitch does not implement a parallel OAuth protocol.
+A failed status query in the WebView does not end the isolated login. Keep the
+login ID and retry the read; only a terminal status from the login operation
+may be presented as completed, failed, cancelled, or timed out.
 For **Sign in again** on a saved account, retain the selected account ID and
 compare the newly verified user and workspace identity, plus an available
 email, before replacing that account's saved credential. A different login,
@@ -329,6 +332,9 @@ surface.
 The result heading summarizes started, skipped, unconfirmed, failed, and
 cancelled accounts. Rust records each account's request state as not sent,
 possibly sent, or sent; per-account copy shows that state before the reason.
+If the WebView temporarily cannot read a running Wake operation, it retains
+the operation ID, shows that the outcome is unknown, and retries status reads.
+It does not mark the operation stopped or start a replacement request.
 "Already active" is a neutral skip, not a successful new Wake. When every
 account already has usable quota, the summary says no requests were sent and
 names how many accounts were already ready.
