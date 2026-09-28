@@ -263,10 +263,6 @@ pub(crate) enum ReadOnlyRefreshFailure {
 }
 
 impl ReadOnlyRefreshFailure {
-    pub(crate) fn can_fallback_to_managed_refresh(&self) -> bool {
-        matches!(self, Self::Provider(error) if error.can_fallback_to_managed_refresh())
-    }
-
     pub(crate) fn message(self) -> String {
         match self {
             Self::Message(message) => message,

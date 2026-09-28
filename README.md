@@ -22,7 +22,7 @@ accounts and fixed sample quota data. It contains no saved user accounts.
 - Show quota, reset times, and available reset credits
 - Change accounts safely
 - Use the eligible reset credit that expires first, after confirmation
-- Send a Wake request only when an account needs a new 5-hour window, with a per-account result
+- Send one short Codex request to each selected account and show which accounts replied
 
 ## Install
 

@@ -21,7 +21,7 @@ wide desktop with enough card width, then collapse to two and one card without i
 Focused dialogs may handle add-account, explicit confirmation, progress/results,
 or recovery; they do not create a second navigation system.
 
-The toolbar contains the current Codex account, Refresh, Wake if needed, Add account,
+The toolbar contains the current Codex account, Refresh, Wake all, Add account,
 and a compact language menu. It is a command bar, not a dashboard header
 or a custom window chrome. Its status dot always remains visible; only a long
 account label may truncate. The status is also written in text so ready, unknown,
@@ -45,7 +45,7 @@ readers and keyboard users.
 
 The active account must be obvious at a glance through a clear border and
 status badge. Actions stay next to the account they affect. Global actions such
-as **Add account** and **Wake if needed** stay near the cards rather than behind a
+as **Add account** and **Wake all** stay near the cards rather than behind a
 sidebar.
 
 The account section has one heading: the saved-account count. A persistent,
@@ -96,14 +96,12 @@ without a click. Codex CLI and the Codex desktop app update separately.
 - Disable conflicting credential actions while one is in progress.
 - Show progress on the affected row or in the focused operation dialog.
 - Keep Wake results per account; identify each result by email and workspace,
-  localize its status, and distinguish a sent request from a skip, an
-  unconfirmed request, and a failure. An already usable five-hour window or a
-  plan with no five-hour window causes no Wake request. Fresh quota confirming
-  usable five-hour capacity hides that card's Wake button. An all-skipped batch
-  says explicitly that no requests were sent. Keep the batch command repeatable
-  and its session's last result accessible from a separate compact entry. When quota is unknown,
-  the card asks for a refresh first. A running Wake can continue in the background and reopen
-  from the toolbar, including completed results after the dialog closes.
+  localize its status, and distinguish a confirmed model reply from an
+  unconfirmed request or failure. Each selected ChatGPT account receives one
+  request regardless of its displayed quota or plan window. The result dialog
+  stays in front until the operation finishes or the remaining queue is
+  cancelled. Done dismisses its one-time results. There is no permanent Last
+  result control. Quota reset times never imply Wake success.
 - Account removal confirms the email and workspace. It explains that removing a
   non-current saved copy does not change a running Codex identity, while the
   current identity stays protected. Operation-lock failures remain visible in
