@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use crate::{
     accounts::{AppState, OperationGuard},
-    chatgpt::{ChatGptClient, RequestFailureKind},
+    chatgpt::{ChatGptClient, WakeFailureKind},
     quota::{
         external_credential_state_for_identity, refresh_via_managed_profile_for_wake,
         verified_chatgpt_identity, ExternalCredentialState,
@@ -22,9 +22,26 @@ use crate::{
     },
 };
 
-/// Use one short text turn on the standard tier. No model fallback is allowed
-/// after a request may have reached the provider.
-const WAKE_MODEL: &str = "gpt-5.6-luna";
+/// Each explicit Wake sends one short text turn. A rejected default model may
+/// be retried with the older model only after another user action.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WakeModel {
+    Default,
+    Alternate,
+}
+
+impl WakeModel {
+    fn id(self) -> &'static str {
+        match self {
+            Self::Default => "gpt-6-luna",
+            Self::Alternate => "gpt-5.6-luna",
+        }
+    }
+
+    fn reasoning_effort(self) -> &'static str {
+        "low"
+    }
+}
 
 #[derive(Clone)]
 struct WakeTarget {
@@ -73,7 +90,11 @@ struct WakeCredential {
 
 /// Starts a user-triggered one-account Wake operation. The returned ID refers
 /// only to in-memory progress for this GSwitch process.
-pub fn start_one(state: AppState, account_id: String) -> Result<WakeStart, String> {
+pub fn start_one(
+    state: AppState,
+    account_id: String,
+    alternate_model: bool,
+) -> Result<WakeStart, String> {
     state.ensure_store_ready()?;
     let account = state.account_by_id(&account_id)?;
     start(
@@ -82,6 +103,11 @@ pub fn start_one(state: AppState, account_id: String) -> Result<WakeStart, Strin
             id: account.id,
             label: account.label,
         }],
+        if alternate_model {
+            WakeModel::Alternate
+        } else {
+            WakeModel::Default
+        },
     )
 }
 
@@ -98,7 +124,7 @@ pub fn start_all(state: AppState) -> Result<WakeStart, String> {
             label: account.label,
         })
         .collect::<Vec<_>>();
-    start(state, targets)
+    start(state, targets, WakeModel::Default)
 }
 
 /// Starts Wake for the current selection. The WebView supplies only saved
@@ -131,7 +157,7 @@ pub fn start_selected(state: AppState, selected_ids: Vec<String>) -> Result<Wake
             label: account.label.clone(),
         })
         .collect();
-    start(state, targets)
+    start(state, targets, WakeModel::Default)
 }
 
 pub fn operation(state: &AppState, operation_id: &str) -> Result<WakeOperationView, String> {
@@ -142,7 +168,7 @@ pub fn cancel(state: &AppState, operation_id: &str) -> Result<(), String> {
     state.cancel_wake(operation_id)
 }
 
-fn start(state: AppState, targets: Vec<WakeTarget>) -> Result<WakeStart, String> {
+fn start(state: AppState, targets: Vec<WakeTarget>, model: WakeModel) -> Result<WakeStart, String> {
     if targets.is_empty() {
         return Err("There are no ChatGPT accounts to wake".to_string());
     }
@@ -153,6 +179,7 @@ fn start(state: AppState, targets: Vec<WakeTarget>) -> Result<WakeStart, String>
         WakeOperationView {
             id: operation_id.clone(),
             status: WakeOperationStatus::Running,
+            alternate_model: model == WakeModel::Alternate,
             current_account_id: None,
             results: Vec::new(),
         },
@@ -163,12 +190,13 @@ fn start(state: AppState, targets: Vec<WakeTarget>) -> Result<WakeStart, String>
     let worker_id = operation_id.clone();
     if thread::Builder::new()
         .name("gswitch-wake".to_string())
-        .spawn(move || run_queue(worker_state, worker_id, targets, cancelled))
+        .spawn(move || run_queue(worker_state, worker_id, targets, cancelled, model))
         .is_err()
     {
         let _ = state.update_wake_operation(WakeOperationView {
             id: operation_id.clone(),
             status: WakeOperationStatus::Failed,
+            alternate_model: model == WakeModel::Alternate,
             current_account_id: None,
             results: Vec::new(),
         });
@@ -183,10 +211,18 @@ fn run_queue(
     operation_id: String,
     targets: Vec<WakeTarget>,
     cancelled: Arc<AtomicBool>,
+    model: WakeModel,
 ) {
-    let result = state
-        .acquire_operation()
-        .and_then(|operation| run_targets(&state, &operation, &operation_id, &targets, &cancelled));
+    let result = state.acquire_operation().and_then(|operation| {
+        run_targets(
+            &state,
+            &operation,
+            &operation_id,
+            &targets,
+            &cancelled,
+            model,
+        )
+    });
 
     if let Err(message) = result {
         let _ = fail_operation(&state, &operation_id, &targets, message);
@@ -199,6 +235,7 @@ fn run_targets(
     operation_id: &str,
     targets: &[WakeTarget],
     cancelled: &AtomicBool,
+    model: WakeModel,
 ) -> Result<(), String> {
     let mut view = state.wake_operation(operation_id)?;
 
@@ -212,7 +249,7 @@ fn run_targets(
         view.current_account_id = Some(target.id.clone());
         state.update_wake_operation(view.clone())?;
         let outcome = match state.account_by_id_under_operation(operation, &target.id) {
-            Ok(account) => wake_account(state, operation, &account, cancelled),
+            Ok(account) => wake_account(state, operation, &account, cancelled, model),
             Err(error) => WakeAccountOutcome::new(WakeResultKind::Failed, error),
         };
         view.results.push(WakeAccountResult {
@@ -274,6 +311,7 @@ fn wake_account(
     operation: &OperationGuard<'_>,
     account: &StoredAccount,
     cancelled: &AtomicBool,
+    model: WakeModel,
 ) -> WakeAccountOutcome {
     if account.kind != AccountKind::ChatGpt {
         return WakeAccountOutcome::new(
@@ -304,12 +342,12 @@ fn wake_account(
         Ok(client) => client,
         Err(error) => return WakeAccountOutcome::new(WakeResultKind::Failed, error),
     };
-    let mut result = client.wake(&credential.value, WAKE_MODEL);
+    let mut result = client.wake(&credential.value, model.id(), model.reasoning_effort());
     // A definite authentication rejection cannot have completed a model turn.
     // Only a definitely inactive account may use one isolated official refresh;
     // an uncertain send or an externally owned token is never retried.
     if result.as_ref().is_err_and(|error| {
-        error.kind == RequestFailureKind::Authentication
+        error.kind == WakeFailureKind::Authentication
             && credential.ownership == CredentialOwnership::Inactive
     }) {
         let refreshed =
@@ -328,7 +366,7 @@ fn wake_account(
         if cancelled.load(Ordering::SeqCst) {
             return WakeAccountOutcome::new(WakeResultKind::Cancelled, "Wake was cancelled");
         }
-        result = client.wake(&credential.value, WAKE_MODEL);
+        result = client.wake(&credential.value, model.id(), model.reasoning_effort());
     }
     match result {
         Ok(()) => WakeAccountOutcome::new(
@@ -340,21 +378,25 @@ fn wake_account(
     }
 }
 
-fn wake_failure(kind: RequestFailureKind, request_state: WakeRequestState) -> WakeAccountOutcome {
+fn wake_failure(kind: WakeFailureKind, request_state: WakeRequestState) -> WakeAccountOutcome {
     let (result, message) = match kind {
-        RequestFailureKind::Transport | RequestFailureKind::InvalidJson => (
+        WakeFailureKind::Transport | WakeFailureKind::InvalidResponse => (
             WakeResultKind::SentNotConfirmed,
             "A Wake request may have reached ChatGPT, but no complete model reply was confirmed",
         ),
-        RequestFailureKind::Authentication => (
+        WakeFailureKind::Authentication => (
             WakeResultKind::NeedsSignIn,
             "ChatGPT rejected this account credential; sign in again",
         ),
-        RequestFailureKind::RateLimited => (
+        WakeFailureKind::RateLimited => (
             WakeResultKind::RateLimited,
             "ChatGPT rate-limited or declined capacity for this Wake request",
         ),
-        RequestFailureKind::Http => (
+        WakeFailureKind::ModelUnavailable => (
+            WakeResultKind::ModelUnavailable,
+            "The selected model is unavailable for this account",
+        ),
+        WakeFailureKind::Rejected => (
             WakeResultKind::RequestRejected,
             "ChatGPT rejected the Wake request",
         ),
@@ -475,18 +517,15 @@ mod tests {
 
     #[test]
     fn request_failures_preserve_whether_a_request_was_sent() {
-        let uncertain = wake_failure(RequestFailureKind::Transport, WakeRequestState::MayHaveSent);
+        let uncertain = wake_failure(WakeFailureKind::Transport, WakeRequestState::MayHaveSent);
         assert_eq!(uncertain.result, WakeResultKind::SentNotConfirmed);
         assert_eq!(uncertain.request_state, WakeRequestState::MayHaveSent);
 
-        let rejected = wake_failure(RequestFailureKind::RateLimited, WakeRequestState::Sent);
+        let rejected = wake_failure(WakeFailureKind::RateLimited, WakeRequestState::Sent);
         assert_eq!(rejected.result, WakeResultKind::RateLimited);
         assert_eq!(rejected.request_state, WakeRequestState::Sent);
 
-        let local = wake_failure(
-            RequestFailureKind::Authentication,
-            WakeRequestState::NotSent,
-        );
+        let local = wake_failure(WakeFailureKind::Authentication, WakeRequestState::NotSent);
         assert_eq!(local.result, WakeResultKind::NeedsSignIn);
         assert_eq!(local.request_state, WakeRequestState::NotSent);
     }

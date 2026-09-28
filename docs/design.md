@@ -101,7 +101,9 @@ without a click. Codex CLI and the Codex desktop app update separately.
   request regardless of its displayed quota or plan window. The result dialog
   stays in front until the operation finishes or the remaining queue is
   cancelled. Done dismisses its one-time results. There is no permanent Last
-  result control. Quota reset times never imply Wake success.
+  result control. Only an explicit default-model rejection offers a compact,
+  account-specific manual retry with the older model in this dialog; cards do
+  not carry a model selector. Quota reset times never imply Wake success.
 - Account removal confirms the email and workspace. It explains that removing a
   non-current saved copy does not change a running Codex identity, while the
   current identity stays protected. Operation-lock failures remain visible in

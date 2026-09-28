@@ -404,6 +404,7 @@ pub enum WakeResultKind {
     RateLimited,
     NeedsSignIn,
     SentNotConfirmed,
+    ModelUnavailable,
     RequestRejected,
     Failed,
     Cancelled,
@@ -440,6 +441,8 @@ pub enum WakeOperationStatus {
 pub struct WakeOperationView {
     pub id: String,
     pub status: WakeOperationStatus,
+    #[serde(default)]
+    pub alternate_model: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_account_id: Option<String>,
     #[serde(default)]

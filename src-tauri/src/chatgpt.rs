@@ -42,8 +42,18 @@ impl RequestFailure {
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct WakeFailure {
-    pub(crate) kind: RequestFailureKind,
+    pub(crate) kind: WakeFailureKind,
     pub(crate) request_state: WakeRequestState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WakeFailureKind {
+    Authentication,
+    RateLimited,
+    ModelUnavailable,
+    Rejected,
+    Transport,
+    InvalidResponse,
 }
 
 #[derive(Debug, Clone)]
@@ -135,13 +145,18 @@ impl ChatGptClient {
     /// This is intentionally not a general Responses client. The request has
     /// no tools, file context, retained state, or retry policy; callers must
     /// treat a transport failure as potentially delivered.
-    pub(crate) fn wake(&self, credential: &Value, model: &str) -> Result<(), WakeFailure> {
+    pub(crate) fn wake(
+        &self,
+        credential: &Value,
+        model: &str,
+        reasoning_effort: &str,
+    ) -> Result<(), WakeFailure> {
         let snapshot = credential_snapshot(credential).map_err(|_| WakeFailure {
-            kind: RequestFailureKind::Authentication,
+            kind: WakeFailureKind::Authentication,
             request_state: WakeRequestState::NotSent,
         })?;
-        let request_headers = headers(&snapshot).map_err(|error| WakeFailure {
-            kind: error.kind,
+        let request_headers = headers(&snapshot).map_err(|_| WakeFailure {
+            kind: WakeFailureKind::Authentication,
             request_state: WakeRequestState::NotSent,
         })?;
         let response = self
@@ -151,16 +166,16 @@ impl ChatGptClient {
             .header(ACCEPT, "text/event-stream")
             .json(&json!({
                 "model": model,
-                "instructions": "Reply with exactly OK. Do not use tools or inspect files.",
+                "instructions": "",
                 "input": [{
                     "type": "message",
                     "role": "user",
-                    "content": [{"type": "input_text", "text": "OK"}]
+                    "content": [{"type": "input_text", "text": "hi"}]
                 }],
                 "tools": [],
                 "tool_choice": "none",
                 "parallel_tool_calls": false,
-                "reasoning": {"effort": "none"},
+                "reasoning": {"effort": reasoning_effort},
                 "store": false,
                 "stream": true,
                 "include": [],
@@ -168,13 +183,29 @@ impl ChatGptClient {
             }))
             .send()
             .map_err(|_error| WakeFailure {
-                kind: RequestFailureKind::Transport,
+                kind: WakeFailureKind::Transport,
                 request_state: WakeRequestState::MayHaveSent,
             })?;
         let status = response.status();
         if !status.is_success() {
+            let kind = if matches!(
+                status,
+                StatusCode::BAD_REQUEST | StatusCode::FORBIDDEN | StatusCode::NOT_FOUND
+            ) {
+                let mut body = Vec::new();
+                let _ = response.take(8_192).read_to_end(&mut body);
+                if serde_json::from_slice::<Value>(&body)
+                    .is_ok_and(|value| model_unavailable_error(&value))
+                {
+                    WakeFailureKind::ModelUnavailable
+                } else {
+                    wake_http_failure_kind(status)
+                }
+            } else {
+                wake_http_failure_kind(status)
+            };
             return Err(WakeFailure {
-                kind: request_failure_kind(status),
+                kind,
                 request_state: WakeRequestState::Sent,
             });
         }
@@ -223,12 +254,12 @@ impl ChatGptClient {
     }
 }
 
-fn parse_wake_stream(reader: impl BufRead) -> Result<(), RequestFailureKind> {
+fn parse_wake_stream(reader: impl BufRead) -> Result<(), WakeFailureKind> {
     let mut event_name = String::new();
     let mut data = String::new();
     let mut replied = false;
     for line in reader.lines() {
-        let line = line.map_err(|_| RequestFailureKind::Transport)?;
+        let line = line.map_err(|_| WakeFailureKind::Transport)?;
         let line = line.trim_end_matches('\r');
         if let Some(value) = line.strip_prefix("event:") {
             event_name = value.trim().to_string();
@@ -243,7 +274,7 @@ fn parse_wake_stream(reader: impl BufRead) -> Result<(), RequestFailureKind> {
                 continue;
             }
             let event: Value =
-                serde_json::from_str(&data).map_err(|_| RequestFailureKind::InvalidJson)?;
+                serde_json::from_str(&data).map_err(|_| WakeFailureKind::InvalidResponse)?;
             let kind = event
                 .get("type")
                 .and_then(Value::as_str)
@@ -267,18 +298,70 @@ fn parse_wake_stream(reader: impl BufRead) -> Result<(), RequestFailureKind> {
                     return if replied || final_output {
                         Ok(())
                     } else {
-                        Err(RequestFailureKind::InvalidJson)
+                        Err(WakeFailureKind::InvalidResponse)
                     };
                 }
-                "response.failed" | "error" => return Err(RequestFailureKind::Http),
-                "response.incomplete" => return Err(RequestFailureKind::InvalidJson),
+                "response.failed" | "error" => {
+                    return Err(if model_unavailable_error(&event) {
+                        WakeFailureKind::ModelUnavailable
+                    } else {
+                        WakeFailureKind::Rejected
+                    });
+                }
+                "response.incomplete" => return Err(WakeFailureKind::InvalidResponse),
                 _ => {}
             }
             data.clear();
             event_name.clear();
         }
     }
-    Err(RequestFailureKind::InvalidJson)
+    Err(WakeFailureKind::InvalidResponse)
+}
+
+fn wake_http_failure_kind(status: StatusCode) -> WakeFailureKind {
+    match status {
+        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => WakeFailureKind::Authentication,
+        StatusCode::TOO_MANY_REQUESTS => WakeFailureKind::RateLimited,
+        _ => WakeFailureKind::Rejected,
+    }
+}
+
+fn model_unavailable_error(value: &Value) -> bool {
+    let error = value
+        .get("error")
+        .or_else(|| {
+            value
+                .get("response")
+                .and_then(|response| response.get("error"))
+        })
+        .unwrap_or(value);
+    if ["code", "type"].iter().any(|field| {
+        matches!(
+            error.get(*field).and_then(Value::as_str),
+            Some(
+                "model_not_found"
+                    | "model_unavailable"
+                    | "model_not_supported"
+                    | "unsupported_model"
+            )
+        )
+    }) {
+        return true;
+    }
+    let message = error
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    message.contains("model")
+        && [
+            "not supported",
+            "not available",
+            "not found",
+            "do not have access",
+        ]
+        .iter()
+        .any(|phrase| message.contains(phrase))
 }
 
 fn assistant_text(item: Option<&Value>) -> bool {
@@ -597,14 +680,14 @@ mod tests {
     fn sends_one_minimal_codex_responses_wake_request() {
         let response = concat!(
             "event: response.output_item.done\n",
-            "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"OK\"}]}}\n\n",
+            "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"Hi!\"}]}}\n\n",
             "event: response.completed\n",
             "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\"}}\n\n"
         );
         let (base_url, handle) = fixture(200, response);
         let client = ChatGptClient::with_base_url(&base_url).expect("client");
         client
-            .wake(&credential(), "gpt-5.6-luna")
+            .wake(&credential(), "gpt-6-luna", "low")
             .expect("wake request");
 
         let request = handle.join().expect("server");
@@ -613,14 +696,15 @@ mod tests {
         assert!(request.contains("chatgpt-account-id: workspace"));
         let body = request.split("\r\n\r\n").nth(1).expect("request body");
         let payload: Value = serde_json::from_str(body).expect("JSON payload");
-        assert_eq!(payload["model"], "gpt-5.6-luna");
+        assert_eq!(payload["model"], "gpt-6-luna");
         assert_eq!(payload["input"][0]["role"], "user");
         assert_eq!(payload["input"][0]["content"][0]["type"], "input_text");
-        assert_eq!(payload["input"][0]["content"][0]["text"], "OK");
+        assert_eq!(payload["input"][0]["content"][0]["text"], "hi");
+        assert_eq!(payload["instructions"], "");
         assert_eq!(payload["tools"], json!([]));
         assert_eq!(payload["tool_choice"], "none");
         assert_eq!(payload["parallel_tool_calls"], false);
-        assert_eq!(payload["reasoning"]["effort"], "none");
+        assert_eq!(payload["reasoning"]["effort"], "low");
         assert_eq!(payload["service_tier"], "standard");
         assert_eq!(payload["store"], false);
         assert_eq!(payload["stream"], true);
@@ -635,8 +719,8 @@ mod tests {
         ] {
             let (base_url, handle) = fixture(200, body);
             let client = ChatGptClient::with_base_url(&base_url).expect("client");
-            let failure = client.wake(&credential(), "gpt-5.6-luna").expect_err("not confirmed");
-            assert_eq!(failure.kind, RequestFailureKind::InvalidJson);
+            let failure = client.wake(&credential(), "gpt-6-luna", "low").expect_err("not confirmed");
+            assert_eq!(failure.kind, WakeFailureKind::InvalidResponse);
             assert_eq!(failure.request_state, WakeRequestState::Sent);
             handle.join().expect("server");
         }
@@ -648,11 +732,74 @@ mod tests {
             "event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"id\":\"resp-1\"}}\n\n");
         let failure = ChatGptClient::with_base_url(&base_url)
             .expect("client")
-            .wake(&credential(), "gpt-5.6-luna")
+            .wake(&credential(), "gpt-6-luna", "low")
             .expect_err("rejected");
-        assert_eq!(failure.kind, RequestFailureKind::Http);
+        assert_eq!(failure.kind, WakeFailureKind::Rejected);
         assert_eq!(failure.request_state, WakeRequestState::Sent);
         handle.join().expect("server");
+    }
+
+    #[test]
+    fn offers_a_model_retry_only_for_an_explicit_model_rejection() {
+        for (status, body, expected) in [
+            (
+                400,
+                r#"{"error":{"code":"model_not_found","message":"Unknown model"}}"#,
+                WakeFailureKind::ModelUnavailable,
+            ),
+            (
+                400,
+                r#"{"error":{"message":"The model is not supported for this account"}}"#,
+                WakeFailureKind::ModelUnavailable,
+            ),
+            (
+                400,
+                r#"{"error":{"code":"invalid_request_error","message":"Bad request"}}"#,
+                WakeFailureKind::Rejected,
+            ),
+            (
+                403,
+                r#"{"error":{"message":"Forbidden"}}"#,
+                WakeFailureKind::Authentication,
+            ),
+        ] {
+            let (base_url, handle) = fixture(status, body);
+            let failure = ChatGptClient::with_base_url(&base_url)
+                .expect("client")
+                .wake(&credential(), "gpt-6-luna", "low")
+                .expect_err("rejected");
+            assert_eq!(failure.kind, expected);
+            assert_eq!(failure.request_state, WakeRequestState::Sent);
+            handle.join().expect("server");
+        }
+    }
+
+    #[test]
+    fn recognizes_an_explicit_model_error_in_the_response_stream() {
+        let body = "event: error\ndata: {\"type\":\"error\",\"error\":{\"code\":\"model_not_found\",\"message\":\"Unavailable\"}}\n\n";
+        let (base_url, handle) = fixture(200, body);
+        let failure = ChatGptClient::with_base_url(&base_url)
+            .expect("client")
+            .wake(&credential(), "gpt-6-luna", "low")
+            .expect_err("model rejected");
+        assert_eq!(failure.kind, WakeFailureKind::ModelUnavailable);
+        assert_eq!(failure.request_state, WakeRequestState::Sent);
+        handle.join().expect("server");
+    }
+
+    #[test]
+    fn alternate_model_keeps_the_same_stateless_greeting() {
+        let (base_url, handle) = fixture(400, "{}");
+        let _ = ChatGptClient::with_base_url(&base_url)
+            .expect("client")
+            .wake(&credential(), "gpt-5.6-luna", "low");
+        let request = handle.join().expect("server");
+        let body = request.split("\r\n\r\n").nth(1).expect("request body");
+        let payload: Value = serde_json::from_str(body).expect("JSON payload");
+        assert_eq!(payload["model"], "gpt-5.6-luna");
+        assert_eq!(payload["reasoning"]["effort"], "low");
+        assert_eq!(payload["input"][0]["content"][0]["text"], "hi");
+        assert_eq!(payload["store"], false);
     }
 
     #[test]

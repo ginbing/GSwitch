@@ -2629,6 +2629,7 @@ mod tests {
         let first = WakeOperationView {
             id: "first".to_string(),
             status: WakeOperationStatus::Running,
+            alternate_model: false,
             current_account_id: None,
             results: Vec::new(),
         };
@@ -2639,6 +2640,7 @@ mod tests {
         let second = WakeOperationView {
             id: "second".to_string(),
             status: WakeOperationStatus::Running,
+            alternate_model: false,
             current_account_id: None,
             results: Vec::new(),
         };

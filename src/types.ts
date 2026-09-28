@@ -209,6 +209,7 @@ export type WakeResultKind =
   | "rate_limited"
   | "needs_sign_in"
   | "sent_not_confirmed"
+  | "model_unavailable"
   | "request_rejected"
   | "failed"
   | "cancelled";
@@ -223,6 +224,7 @@ export interface WakeAccountResult {
 export interface WakeOperationView {
   id: string;
   status: "running" | "completed" | "cancelled" | "failed";
+  alternate_model?: boolean;
   current_account_id?: string;
   results: WakeAccountResult[];
 }

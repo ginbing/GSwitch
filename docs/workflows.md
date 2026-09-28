@@ -300,21 +300,26 @@ enters this fallback. GSwitch reads the live token once immediately before the
 request. It does not retry after uncertain delivery.
 
 The request is one direct streaming `POST /codex/responses` call through the
-current ChatGPT Codex route: `gpt-5.6-luna`, standard tier, no reasoning, a
-single `OK` text input, no tools, no files or project context, and no stored
-response. HTTP success alone is insufficient: the response stream must contain
-assistant output and `response.completed`. A rejected, incomplete, malformed,
-or interrupted stream is never labeled successful. There is no generic
-Responses client, proxy, second App Server, or automatic retry after a request
-may have reached ChatGPT. A card's quota reset countdown is unrelated to
-whether Wake sent a request or received a reply.
+current ChatGPT Codex route: `gpt-6-luna`, low reasoning effort, standard tier,
+a single `hi` text input, no tools, files, or project context, and
+`store: false`. HTTP success alone is insufficient: the response stream must contain
+nonempty assistant output and `response.completed`. A rejected, incomplete,
+malformed, or interrupted stream is never labeled successful. If ChatGPT
+explicitly rejects the default model, the result offers a user-initiated retry
+of that account with `gpt-5.6-luna` at low effort. Other failures do not offer
+that model retry. There is no generic Responses client, proxy, second App
+Server, or automatic retry after a request may have reached ChatGPT. GSwitch
+does not create a local Codex conversation or persist the Wake prompt or reply.
+`store: false` is a request setting, not a claim that the provider retains no
+operational records. A card's quota reset countdown is unrelated to whether
+Wake sent a request or received a reply.
 
 Wake all, one-account Wake, and selected-account Wake run sequentially and are
 cancellable between accounts. They return one result per ChatGPT account:
-Reply received, Rate limited, Needs sign-in, Sent but not confirmed, Request
-rejected, Failed, or Cancelled. Rust records each account's request state as
-not sent, possibly sent, or sent. The focused result dialog resolves each
-result to the saved account's email and workspace, shows a localized status,
+Reply received, Rate limited, Needs sign-in, Sent but not confirmed, Model
+unavailable, Request rejected, Failed, or Cancelled. Rust records each
+account's request state as not sent, possibly sent, or sent. The focused result
+dialog resolves each result to the saved account's email and workspace, shows a localized status,
 and never exposes provider error text. The heading counts replies, uncertain
 requests, failures, and cancellations. If the WebView temporarily cannot read
 progress, it retains the operation ID and retries status reads without
