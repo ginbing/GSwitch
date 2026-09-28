@@ -127,10 +127,11 @@ generated, rotated, copied into source, or printed by repository tooling.
 
 ## Signed in-app updates
 
-GSwitch uses the official Tauri updater. It checks the signed `latest.json`
-release asset once after startup and then at most once every six hours. The
-native updater verifies every update signature before installation; it never
-reads, exports, or changes a Codex account.
+GSwitch uses the official Tauri updater. It checks the `latest.json` release
+manifest once after startup and then at most once every six hours. The native
+updater verifies the downloaded update artifact's signature before installation.
+This verifies the update source; it is not a guarantee about what an installed
+version may do with account data.
 
 After the main view appears, a separate background check reads the installed
 Codex CLI version and OpenAI's latest stable Codex release metadata from GitHub.

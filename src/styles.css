@@ -1178,10 +1178,12 @@ summary:focus-visible {
 
 .modal-header h2 {
   margin: 0;
+  min-width: 0;
   color: var(--text);
   font-size: 15px;
   font-weight: 720;
   letter-spacing: -0.015em;
+  overflow-wrap: anywhere;
 }
 
 .modal-header-actions {

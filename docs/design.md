@@ -142,6 +142,13 @@ without a click. Codex CLI and the Codex desktop app update separately.
 Errors should answer three questions: what did not happen, whether the current
 Codex state is safe, and what the user can do next. Raw Rust, HTTP, OAuth,
 filesystem, protocol, or token details do not belong in the primary UI.
+When completion is unknown, say so and keep checking the existing operation;
+do not call it failed or stopped solely because a status query failed. A
+reset-credit confirmation names the account email, and an unencrypted export
+warns about credential access before the first Continue action. Unknown quota
+shows an actionable Refresh control rather than a disabled Wake action whose
+only explanation is a tooltip. Update copy names the available version and
+each actual phase without promising that signing protects account data.
 
 ## Language
 
