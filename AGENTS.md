@@ -93,13 +93,22 @@ Keep secrets out of chat, logs, committed files, provider error bodies, and
 frontend state. Local code changes, inspection, and safe test doubles do not
 authorize an external provider action.
 
-Explicit maintainer confirmation naming the target and action is required for:
+A maintainer request to implement and publish a GSwitch change authorizes the
+normal release sequence for that change. Unless the maintainer specifies a
+version, choose the next unused patch version; after the required checks, tag
+the exact merged `main` commit, run the existing production updater-signing
+workflow, inspect the draft assets and notes, and publish the verified Release.
+An authorization in the current conversation persists across its turns. Do not
+ask again solely because the version has been chosen or the workflow reaches
+signing or publication. A review-only or stop request takes precedence and
+authorizes no release action.
 
-- redeeming a real reset credit or any other billable/irreversible provider
-  action;
-- deleting or overwriting user data outside GSwitch-owned storage;
-- production/release signing, notarization, publication, deployment, backup,
-  or restore actions.
+Obtain separate explicit maintainer confirmation for actions outside that
+normal release sequence: redeeming a real reset credit or another billable or
+irreversible provider action; deleting or overwriting user data outside
+GSwitch-owned storage; rotating signing keys or identities; adding notarization
+or a distribution destination; or backing up or restoring user data. Failed
+release gates stop publication rather than expanding the authorized scope.
 
 OAuth browser sign-in, a user-selected credential import, and a GitHub branch
 or PR action may proceed when the maintainer has directly requested that flow.

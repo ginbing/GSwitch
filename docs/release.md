@@ -1,7 +1,8 @@
 # Release
 
-This document owns the release policy and distribution procedure. It does not
-authorize a tag, draft, or publication.
+This document owns the release policy and distribution procedure. A maintainer
+request to publish a change supplies release authorization under `AGENTS.md`;
+this document supplies the checks and sequence, not another approval step.
 
 ## Current release policy
 
@@ -110,10 +111,9 @@ attestations bind each exact asset to the tagged source commit and attach the
 SBOM to the packages. The final workflow job downloads the draft assets and
 verifies their exact set, manifest, and provenance again.
 
-The draft uses GitHub-generated release notes. It remains a draft until a
-maintainer reviews the exact assets and user-facing notes, then explicitly
-publishes it. Missing Apple Developer credentials cannot block either macOS
-build.
+The draft uses GitHub-generated release notes. For an authorized release, the
+agent reviews the exact assets and user-facing notes before publishing the
+draft. Missing Apple Developer credentials cannot block either macOS build.
 
 See the repository's [Code signing policy](code-signing-policy.md) for the
 current roles, privacy statement, SignPath application facts, and future
@@ -157,8 +157,7 @@ gh attestation verify GSwitch_<version>_x64-setup.exe -R ginbing/GSwitch \
   --signer-workflow ginbing/GSwitch/.github/workflows/release.yml
 ```
 
-The draft remains unpublished until the maintainer reviews its complete assets
-and notes.
+The draft remains unpublished until its complete assets and notes pass review.
 
 When a trusted Windows signing path exists, the release order remains: build
 the Windows bundle from the release commit, Authenticode-sign the final
@@ -192,6 +191,6 @@ pnpm run version:sync
 pnpm run version:check
 ```
 
-After a version change is merged, a maintainer can tag the chosen `main`
-revision as the matching `v<version>`. The workflow creates a draft; publishing
-that draft is a separate maintainer decision.
+After an authorized version change is merged and the exact `main` commit passes
+the required remote checks, tag that commit as the matching `v<version>`. The
+workflow creates a draft; review its assets and notes before publishing it.
