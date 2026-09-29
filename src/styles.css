@@ -1679,7 +1679,6 @@ textarea {
 
 .wake-rate_limited,
 .wake-needs_sign_in,
-.wake-cancelled,
 .wake-sent_not_confirmed {
   background: var(--warning);
 }
