@@ -97,9 +97,14 @@ without a click. Codex CLI and the Codex desktop app update separately.
 - Show progress on the affected row or in the focused operation dialog.
 - Keep Wake results per account; identify each result by email and workspace,
   localize its status, and distinguish a confirmed model reply from an
-  unconfirmed request or failure. Each selected ChatGPT account receives one
-  request regardless of its displayed quota or plan window. The result dialog
-  stays in front until the operation finishes or the remaining queue is
+  unconfirmed request or failure. While running, show only "Waking" and the
+  processed count. A confirmed reply displays one short success label; failed
+  rows give one actionable reason, with "not sent" or "may have been sent"
+  only when that changes how a retry should be understood. HTTP status follows
+  the failed reason. The completed header summarizes actual outcomes rather
+  than repeating each request's transport steps. Each selected ChatGPT account
+  receives one request regardless of its displayed quota or plan window. The
+  result dialog stays in front until the operation finishes or the remaining queue is
   cancelled. Done dismisses its one-time results. There is no permanent Last
   result control. Only an explicit default-model rejection offers a compact,
   account-specific manual retry with the older model in this dialog; cards do

@@ -17,8 +17,8 @@ this document is not a promise that an application will be accepted.
   installer, macOS DMGs, and Linux AppImage/Debian packages.
 - Build source: tagged repository commits built by the repository's GitHub
   Actions release workflow.
-- Existing release: `v1.0.0` is published; the current synchronized product
-  version is `1.0.1`.
+- Current release and product version: use the live GitHub Releases page and
+  `src-tauri/tauri.conf.json`, respectively.
 
 The application is local-first. It has no analytics, telemetry, crash-reporting
 service, listening server, or remote-control surface. The repository does not

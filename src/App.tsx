@@ -337,9 +337,6 @@ function accountSecondaryName(account: AccountView, primary: string, t: Translat
 }
 
 function wakeResultLabel(result: WakeOperationView["results"][number], alternateModel: boolean, t: Translator) {
-  if (result.result === "model_unavailable" && alternateModel) {
-    return t("wake.alternateModelUnavailable");
-  }
   const labels = {
     reply_received: "wake.replyReceived",
     rate_limited: "wake.rateLimited",
@@ -352,8 +349,14 @@ function wakeResultLabel(result: WakeOperationView["results"][number], alternate
     failed: "wake.failed",
     cancelled: "wake.cancelled",
   } as const;
-  const label = t(labels[result.result]);
-  return result.http_status ? `${label} (HTTP ${result.http_status})` : label;
+  const label = t(result.result === "model_unavailable" && alternateModel
+    ? "wake.alternateModelUnavailable"
+    : labels[result.result]);
+  const requestState = result.request_state === "not_sent" && result.result !== "cancelled"
+    ? `${t("wake.requestNotSent")} · `
+    : "";
+  const status = result.http_status ? ` (HTTP ${result.http_status})` : "";
+  return `${requestState}${label}${status}`;
 }
 
 function wakeSummary(wake: WakeOperationView, t: Translator) {
@@ -379,6 +382,7 @@ function Modal({
   t,
   wide = false,
   dismissible = true,
+  showProgress = true,
 }: {
   title: string;
   children: ReactNode;
@@ -386,6 +390,7 @@ function Modal({
   t: Translator;
   wide?: boolean;
   dismissible?: boolean;
+  showProgress?: boolean;
 }) {
   const dialogRef = useRef<HTMLElement>(null);
 
@@ -451,7 +456,7 @@ function Modal({
         <div className="modal-header">
           <h2 id="modal-title">{title}</h2>
           <div className="modal-header-actions">
-            {!dismissible ? <span className="modal-progress" role="status">{t("common.working")}</span> : null}
+            {!dismissible && showProgress ? <span className="modal-progress" role="status">{t("common.working")}</span> : null}
             <button aria-label={t("common.closeDialog", { title })} className="icon-button" disabled={!dismissible} onClick={onClose} type="button">
               <X size={18} strokeWidth={2} />
             </button>
@@ -2490,17 +2495,17 @@ export default function App() {
       ) : null}
 
       {dialog === "wake" && wake ? (
-        <Modal dismissible={busy === null && wake.status !== "running"} onClose={() => { setDialog(null); setWake(null); }} t={t} title={t("wake.title")}>
+        <Modal dismissible={busy === null && wake.status !== "running"} onClose={() => { setDialog(null); setWake(null); }} showProgress={false} t={t} title={t("wake.title")}>
           <div className="wake-panel">
             <div className="wake-status">
               {wake.status === "running" ? <LoaderCircle className="spin" size={21} /> : wake.status === "completed" ? <Info size={21} /> : <CircleAlert size={21} />}
               <div>
                 <strong>{wake.status === "running" ? t("wake.running") : wake.status === "completed" ? t("wake.resultsTitle") : t("wake.stopped")}</strong>
-                <p>{wakeSummary(wake, t) || (wake.status === "running" ? t("wake.oneProcessing") : "")}</p>
+                <p>{wake.status === "running" ? t("wake.processed", { count: wake.results.length }) : wakeSummary(wake, t)}</p>
                 {wake.status === "running" && wakeStatusUnavailable ? <p role="status">{t("error.wakeStatus")}</p> : null}
               </div>
             </div>
-            <ul className="wake-results">
+            {wake.results.length > 0 ? <ul className="wake-results">
               {wake.results.map((result, index) => {
                 const account = accounts.find((saved) => saved.id === result.account_id);
                 const primary = account ? accountPrimaryName(account) : result.label;
@@ -2509,13 +2514,11 @@ export default function App() {
                   <li key={result.account_id + "-" + result.result + "-" + index}>
                     <span className={"wake-result-dot wake-" + result.result} />
                     <div>
-                      <strong>{primary}</strong>
-                      {secondary ? <p className="wake-result-workspace">{secondary}</p> : null}
-                      <p><span className="wake-result-request">{t(({
-                        not_sent: "wake.requestNotSent",
-                        may_have_sent: "wake.requestMayHaveSent",
-                        sent: "wake.requestSent",
-                      } as const)[result.request_state])} · </span><span>{wakeResultLabel(result, wake.alternate_model === true, t)}</span></p>
+                      <div className="wake-result-identity">
+                        <strong>{primary}</strong>
+                        {secondary ? <span>{secondary}</span> : null}
+                      </div>
+                      <p>{wakeResultLabel(result, wake.alternate_model === true, t)}</p>
                       {wake.status !== "running" && result.result === "model_unavailable" && !wake.alternate_model ? (
                         <button
                           className="wake-retry"
@@ -2531,8 +2534,7 @@ export default function App() {
                   </li>
                 );
               })}
-              {wake.status === "running" && wake.results.length === 0 ? <li className="wake-empty">{t("wake.preparing")}</li> : null}
-            </ul>
+            </ul> : null}
             <div className="modal-actions">
               {wake.status === "running" ? (
                 <button className="button button-secondary" disabled={busy !== null} onClick={() => void runVoidTask("cancel-wake", () => api.cancelWake(wake.id), false)} type="button">{t("wake.cancelRemaining")}</button>
