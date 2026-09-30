@@ -2,81 +2,80 @@
 
 [简体中文](./README.zh-CN.md) · English
 
-A simple and reliable Codex account switcher.
+Manage several Codex accounts on one computer: see how much quota each one has
+left, switch with one click, and keep using Codex.
 
-GSwitch is for people who use more than one Codex account and want an easy way
-to manage them.
+![GSwitch main window with six sample accounts](./assets/readme-demo.png)
 
-It gets the job done.
-
-![GSwitch main window with six fictional accounts](./assets/readme-demo.png)
-
-The screenshot uses fictional `example.com`, `example.org`, and `example.net`
-accounts and fixed sample quota data. It contains no saved user accounts.
-
-## What it does
-
-- Keep multiple Codex accounts on your computer
-- Import or export selected accounts as one portable file
-- Show the active account
-- Show quota, reset times, and available reset credits
-- Change accounts safely
-- Use the eligible reset credit that expires first, after confirmation
-- Send one short Codex request to each selected account and show which accounts replied
+- **Every account's quota at a glance.** Five-hour and weekly quota, reset
+  times, and available reset credits for each account.
+- **Switching you can trust.** Quit Codex and click Switch. GSwitch checks the
+  new account after writing it and puts your previous sign-in back if that
+  check fails.
+- **Bring your accounts from Cockpit Tools.** Scan the
+  [Cockpit Tools](https://github.com/jlcodes99/cockpit-tools) accounts on this
+  computer, or import its export files, and pick the ones you want.
+- **Sign in again in place.** When a saved sign-in stops working, sign in again
+  from its card instead of removing and re-adding the account.
+- **Wake.** Send one short Codex request to each selected account and see which
+  accounts replied.
+- **No analytics or telemetry.** Saved credentials stay encrypted on your
+  computer.
 
 ## Install
 
-Release builds are published on [GitHub Releases](https://github.com/ginbing/GSwitch/releases).
-When a release is available, choose the file for your computer:
+Download the [latest release](https://github.com/ginbing/GSwitch/releases/latest):
 
-- **Windows:** the NSIS `setup.exe` installer
-- **macOS:** the DMG for Apple Silicon or Intel, matching your Mac
-- **Linux:** the AppImage or Debian (`.deb`) package
+- **Windows:** `GSwitch_<version>_x64-setup.exe`. The installer is not
+  code-signed, so SmartScreen may warn before it runs. GSwitch needs the
+  WebView2 runtime, which comes with Windows 11 and up-to-date Windows 10. If
+  the installer stalls while downloading WebView2, install it from
+  [Microsoft](https://developer.microsoft.com/microsoft-edge/webview2/) and run
+  the installer again.
+- **macOS:** `aarch64.dmg` for Apple silicon, `x64.dmg` for Intel. The app is
+  not notarized by Apple; allow it once in System Settings → Privacy & Security.
+- **Linux:** the AppImage or the `.deb` package.
 
-On macOS, GSwitch is ad-hoc signed rather than Apple-notarized. macOS may ask
-you to allow it manually in Privacy & Security.
+GSwitch checks for updates on its own.
 
-Codex must be installed before you use account actions in GSwitch.
+To uninstall, remove GSwitch in Settings → Apps → Installed apps on Windows,
+move it to the Trash on macOS, or delete the AppImage or remove the `.deb`
+package on Linux.
 
-For the current Windows trust status, signing roles, and release order, see the
-[Code signing policy](./docs/code-signing-policy.md).
+## Add accounts
 
-### Windows PowerShell helper
+- **Sign in:** use Codex's official browser sign-in.
+- **Find on this computer:** after you click Scan, GSwitch reads the account
+  Codex is signed in with and the local Cockpit Tools accounts
+  (`~/.antigravity_cockpit` by default; choose another folder if Cockpit Tools
+  keeps them elsewhere). You see a preview and import only the accounts you
+  select. Accounts already in GSwitch are never replaced.
+- **Choose files:** Cockpit Tools export files, Codex `auth.json`, and Sub2API
+  or CPA exports. You can select several at once.
 
-Downloading the installer is the normal Windows path. If you prefer PowerShell,
-download [install.ps1](./install.ps1) and run it from a normal,
-non-administrator PowerShell window:
+GSwitch never changes Cockpit Tools' files and imports only the credentials
+needed to sign in. Passwords, 2FA secrets, notes, and tags stay in Cockpit
+Tools.
 
-```powershell
-.\install.ps1
-```
+## Before you switch
 
-The helper downloads and starts the same `setup.exe` from the latest public
-release. It does not build GSwitch or install development tools.
+- Install Codex.
+- Quit Codex, including the desktop app, the CLI, and editor extensions.
+  GSwitch tells you when Codex is still running; it never closes Codex for you.
+- Codex must keep its sign-in in a file. If it does not, GSwitch asks you to
+  turn that on.
 
-## Uninstall
+## Data and network
 
-- **Windows:** open Settings → Apps → Installed apps, find GSwitch, and choose
-  Uninstall.
-- **macOS:** move GSwitch to the Trash.
-- **Linux:** delete the AppImage, or remove the Debian package with your
-  distribution's package manager.
-
-## Updates
-
-After installation, GSwitch checks GitHub Releases for signed updates and can
-install supported updates from inside the app.
-
-GSwitch has no analytics or telemetry. It contacts Codex/OpenAI for account
-operations you request and GitHub Releases for signed update checks and
-downloads.
-It also checks OpenAI's stable Codex CLI release metadata after the main window
-appears and shows an update option only when a newer CLI version is confirmed.
-CLI updates require your click; the Codex desktop app updates separately.
+- Saved credentials are encrypted on your computer. The key is held by your
+  system's credential manager.
+- GSwitch connects only to OpenAI, for quota and account actions, and to
+  GitHub, to check for GSwitch updates and new Codex CLI versions.
 
 ## Build from source
 
-To develop GSwitch, install the Tauri prerequisites for your platform, then:
+Install the [Tauri prerequisites](https://tauri.app/start/prerequisites/) for
+your platform, then:
 
 ```bash
 git clone https://github.com/ginbing/GSwitch.git
@@ -85,10 +84,8 @@ pnpm install
 pnpm tauri dev
 ```
 
-Development details are in [docs/README.md](./docs/README.md).
-
-GSwitch is an independent project and is not affiliated with OpenAI.
+Development documentation starts at [docs/README.md](./docs/README.md).
 
 ## License
 
-AGPL-3.0.
+[AGPL-3.0](./LICENSE)

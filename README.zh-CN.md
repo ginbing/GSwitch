@@ -2,61 +2,59 @@
 
 简体中文 · [English](./README.md)
 
-简洁可靠的 Codex 账户切换工具。
+在一台电脑上管理多个 Codex 账户：看每个账户还剩多少额度，一键切换，接着用 Codex。
 
-GSwitch 适合使用多个 Codex 账户、希望在一处查看和切换账户的人。打开后即可看到当前账户、额度与可用操作。
+![使用六个示例账户的 GSwitch 中文主界面](./assets/readme-demo-zh-CN.png)
 
-![使用六个虚拟账户的 GSwitch 中文主界面](./assets/readme-demo-zh-CN.png)
-
-图片使用 `example.com`、`example.org` 和 `example.net` 的虚拟邮箱及固定演示额度，不包含用户账户。
-
-## 功能
-
-- 在本机保存多个 Codex 账户
-- 将选中的账户导入或导出为一个便携文件
-- 查看当前账户
-- 查看额度、重置时间与可用的重置额度
-- 安全切换账户
-- 经确认后使用最早到期的合适重置额度
-- 对选中的每个账户发送一次简短的 Codex 请求，并查看哪些账户收到了回复
+- **额度一眼看全。** 每个账户的 5 小时和每周额度、重置时间、可用的重置额度。
+- **切换可靠。** 退出 Codex 后点“切换”。GSwitch 写入后会核对新账户，核对失败就恢复原来的登录。
+- **从 Cockpit Tools 搬过来。** 扫描本机的 [Cockpit Tools](https://github.com/jlcodes99/cockpit-tools)
+  账户，或导入它导出的文件，勾选后导入。
+- **登录失效就地重新登录。** 在账户卡片上重新登录，不用删掉重加。
+- **唤醒。** 给选中的账户各发一条很短的 Codex 请求，看哪些账户有回复。
+- **没有统计和遥测。** 保存的凭据加密存放在本机。
 
 ## 安装
 
-正式版本发布在 [GitHub Releases](https://github.com/ginbing/GSwitch/releases)。按设备下载：
+从[最新版本](https://github.com/ginbing/GSwitch/releases/latest)下载：
 
-- **Windows：** NSIS `setup.exe` 安装包
-- **macOS：** 对应 Apple Silicon 或 Intel 的 DMG
-- **Linux：** AppImage 或 Debian (`.deb`) 安装包
+- **Windows：** `GSwitch_<版本>_x64-setup.exe`。安装包没有代码签名，SmartScreen 可能会提示。
+  GSwitch 需要 WebView2 运行时，Windows 11 和较新的 Windows 10 自带。如果安装时卡在下载
+  WebView2，先从[微软官网](https://developer.microsoft.com/microsoft-edge/webview2/)安装，再运行安装包。
+- **macOS：** Apple 芯片选 `aarch64.dmg`，Intel 选 `x64.dmg`。没有经过 Apple 公证，首次打开需要在
+  “系统设置 → 隐私与安全性”里允许。
+- **Linux：** AppImage 或 `.deb` 安装包。
 
-macOS 版本采用临时签名，没有 Apple 公证；系统可能要求在“隐私与安全性”中手动允许打开。
+GSwitch 会自己检查更新。
 
-使用 GSwitch 的账户操作前，需要先安装 Codex。Windows 安装包的信任状态、签名职责及发布顺序见[代码签名政策](./docs/code-signing-policy.md)。
+卸载：Windows 在“设置 → 应用 → 已安装的应用”中卸载；macOS 把 GSwitch 移到废纸篓；Linux 删除
+AppImage，或用包管理器卸载 `.deb` 安装包。
 
-### Windows PowerShell 辅助安装
+## 添加账户
 
-通常直接下载安装包即可。如需使用 PowerShell，可下载 [install.ps1](./install.ps1)，在普通的非管理员 PowerShell 窗口中运行：
+- **登录：** 使用 Codex 官方的浏览器登录。
+- **在此电脑上查找：** 点击扫描后，GSwitch 读取 Codex 当前登录的账户，以及 Cockpit Tools 的本地账户
+  （默认在 `~/.antigravity_cockpit`，装在别处可以选择文件夹）。先预览，勾选后才导入；已在 GSwitch
+  中的账户不会被覆盖。
+- **选择文件：** Cockpit Tools 导出的文件、Codex 的 `auth.json`、Sub2API 或 CPA 的导出，可以一次选多个。
 
-```powershell
-.\install.ps1
-```
+GSwitch 不会修改 Cockpit Tools 的任何文件，只带走登录所需的凭据；密码、2FA 密钥、备注和标签留在
+Cockpit Tools 里。
 
-脚本下载并启动最新公开版本的同一个 `setup.exe`，不会构建 GSwitch 或安装开发工具。
+## 切换之前
 
-## 卸载
+- 先安装 Codex。
+- 退出 Codex，包括桌面版、CLI 和编辑器插件。Codex 还在运行时 GSwitch 会提示你，但不会替你关掉它。
+- Codex 需要把登录保存在文件里。如果不是，GSwitch 会提示你开启。
 
-- **Windows：** 打开“设置 → 应用 → 已安装的应用”，找到 GSwitch 并卸载。
-- **macOS：** 将 GSwitch 移到废纸篓。
-- **Linux：** 删除 AppImage，或用发行版包管理器卸载 Debian 包。
+## 数据和联网
 
-## 更新
-
-安装后，GSwitch 会检查 GitHub Releases 上经过签名的应用更新，并可在支持的平台从应用内安装。
-
-GSwitch 不收集分析数据，也不发送遥测。它会为你主动执行的账户操作连接 Codex/OpenAI，并通过 GitHub Releases 检查和下载经过签名的应用更新。主窗口显示后，它还会检查 OpenAI 的稳定版 Codex CLI 发布信息；只有确认有新版本时才显示更新入口。CLI 更新必须由你点击启动，Codex 桌面应用则单独更新。
+- 保存的凭据加密存放在本机，密钥由系统的凭据管理器保管。
+- GSwitch 只连接 OpenAI（额度和账户操作）和 GitHub（检查 GSwitch 更新和 Codex CLI 新版本）。
 
 ## 从源码构建
 
-先安装对应平台的 Tauri 前置依赖，然后运行：
+先安装对应平台的 [Tauri 前置依赖](https://tauri.app/start/prerequisites/)，然后运行：
 
 ```bash
 git clone https://github.com/ginbing/GSwitch.git
@@ -65,10 +63,8 @@ pnpm install
 pnpm tauri dev
 ```
 
-开发说明见 [docs/README.md](./docs/README.md)。
-
-GSwitch 是独立项目，与 OpenAI 没有关联。
+开发文档从 [docs/README.md](./docs/README.md) 开始。
 
 ## 许可证
 
-AGPL-3.0。
+[AGPL-3.0](./LICENSE)
