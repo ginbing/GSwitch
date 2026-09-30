@@ -93,6 +93,10 @@ without a click. Codex CLI and the Codex desktop app update separately.
 - Opening a dialog moves keyboard focus inside it. Tab stays inside, and closing
   restores focus to the launching control. A dialog cannot be dismissed while
   its non-cancellable action is in progress.
+- The account and language menus are small popovers, and only one is open at a
+  time. Pressing outside, Escape, moving keyboard focus away, opening another
+  menu, or choosing an action closes the menu. Escape and a chosen action
+  return focus to the menu button.
 - Disable conflicting credential actions while one is in progress.
 - Show progress on the affected row or in the focused operation dialog.
 - Keep Wake results per account; identify each result by email and workspace,
@@ -121,8 +125,10 @@ without a click. Codex CLI and the Codex desktop app update separately.
   Old percentages say "Last" and use muted meters; an unavailable result stays
   unknown. Actions stay in the account menu, not in the warning tooltip. Batch
   feedback describes quota results only.
-- A saved email can be copied from its card menu. After a confirmed
-  authentication failure, the card shows **Sign in required** and makes
+- A saved email can be copied from its card menu. Every saved ChatGPT account
+  also keeps **Sign in again** in that menu, so recovery never depends on
+  GSwitch diagnosing a failure correctly. After a confirmed authentication
+  failure, the card additionally shows **Sign in required** and makes
   **Sign in again** its primary action. The focused dialog shows the saved
   email and workspace, offers Copy email, and updates the original record only
   after verifying the returning identity. A saved login for the current account

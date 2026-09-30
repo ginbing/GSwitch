@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { open } from "@tauri-apps/plugin-dialog";
 
 import App from "./App";
-import type { AccountView, QuotaView, SwitchFailureCode } from "./types";
+import type { AccountView, QuotaRefreshFailureCode, QuotaView, SwitchFailureCode } from "./types";
 
 const mocks = vi.hoisted(() => ({
   runtimeInfo: vi.fn(),
@@ -862,7 +862,7 @@ describe("GSwitch account workspace", () => {
     expect(mocks.appSnapshot).toHaveBeenCalledOnce();
   });
 
-  it("keeps failed quota values visibly historical and offers account recovery only for a rejected sign-in", async () => {
+  it("keeps failed quota values visibly historical and makes sign-in the primary action for a rejected sign-in", async () => {
     const copyEmail = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(window.navigator, "clipboard", { configurable: true, value: { writeText: copyEmail } });
     mocks.listAccounts.mockResolvedValue([chatAccount]);
@@ -1022,6 +1022,88 @@ describe("GSwitch account workspace", () => {
     );
   });
 
+  // Whether each failure makes Sign in again the card's primary action. The
+  // account menu must offer it after every failure, so recovery never depends
+  // on GSwitch having diagnosed the failure correctly.
+  const switchFailurePromotesSignIn = {
+    operation_busy: false,
+    codex_open: false,
+    account_needs_sign_in: true,
+    file_store_required: false,
+    credentials_changed: false,
+    recovery_required: false,
+    local_verification_failed: false,
+    codex_app_server_unavailable: false,
+    codex_config_unavailable: false,
+    codex_config_cleanup_failed: false,
+    current_credential_unreadable: false,
+    current_account_not_saved: false,
+    target_check_unavailable: false,
+    target_workspace_mismatch: false,
+    post_write_verification_failed: false,
+    verification_failed: false,
+  } satisfies Record<SwitchFailureCode, boolean>;
+
+  const quotaFailurePromotesSignIn = {
+    operation_busy: false,
+    codex_account_unknown: false,
+    authentication: true,
+    manual_refresh_needed: false,
+    rate_limited: false,
+    network: false,
+    service: false,
+    invalid_response: false,
+    identity_mismatch: false,
+    unavailable: false,
+  } satisfies Record<QuotaRefreshFailureCode, boolean>;
+
+  async function expectSignInAgainReachable(promoted: boolean) {
+    const card = screen.getByRole("heading", { name: "person@example.com" }).closest("article") as HTMLElement;
+    expect(within(card).queryAllByRole("button", { name: "Sign in again" })).toHaveLength(promoted ? 1 : 0);
+    expect(within(card).queryAllByRole("button", { name: "Switch to person@example.com" })).toHaveLength(promoted ? 0 : 1);
+
+    await userEvent.click(within(card).getByRole("button", { name: "More actions for person@example.com" }));
+    const menu = card.querySelector<HTMLElement>(".card-menu-popover")!;
+    await userEvent.click(within(menu).getByRole("button", { name: "Sign in again" }));
+    await waitFor(() => expect(mocks.startOAuth).toHaveBeenCalledWith("account-1"));
+    expect(await screen.findByRole("dialog", { name: "Sign in again · person@example.com" })).toBeInTheDocument();
+  }
+
+  it.each(Object.entries(switchFailurePromotesSignIn) as Array<[SwitchFailureCode, boolean]>)(
+    "keeps Sign in again reachable after a %s switch failure",
+    async (code, promoted) => {
+      mocks.listAccounts.mockResolvedValue([chatAccount]);
+      mocks.switchAccount.mockRejectedValue({ code });
+      render(<App />);
+
+      await userEvent.click(await screen.findByRole("button", { name: "Switch to person@example.com" }));
+      await screen.findByRole("alert");
+      await expectSignInAgainReachable(promoted);
+    },
+  );
+
+  it.each(Object.entries(quotaFailurePromotesSignIn) as Array<[QuotaRefreshFailureCode, boolean]>)(
+    "keeps Sign in again reachable after a %s quota failure",
+    async (code, promoted) => {
+      mocks.listAccounts.mockResolvedValue([chatAccount]);
+      mocks.accountQuota.mockResolvedValue(staleQuota);
+      mocks.refreshAccountQuota.mockRejectedValue({ code });
+      render(<App />);
+
+      await screen.findByRole("button", { name: "Quota update failed for person@example.com" });
+      await expectSignInAgainReachable(promoted);
+    },
+  );
+
+  it("does not offer browser sign-in for an API-key account", async () => {
+    mocks.listAccounts.mockResolvedValue([{ id: "api-1", label: "Key", kind: "api_key", active: false }]);
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "More actions for Key" }));
+    expect(screen.getByRole("button", { name: "Remove Key" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Sign in again" })).not.toBeInTheDocument();
+  });
+
   it("updates the active account without reloading the workspace or adding a banner", async () => {
     const currentAccount: AccountView = {
       id: "account-2",
@@ -1159,6 +1241,80 @@ describe("GSwitch account workspace", () => {
     await userEvent.click(screen.getByLabelText("More actions for person@example.com"));
     expect(screen.getByRole("button", { name: "Remove person@example.com" })).toBeDisabled();
     expect(mocks.removeSavedAccount).not.toHaveBeenCalled();
+  });
+
+  it("closes an account menu on an outside press, Escape, or another menu", async () => {
+    const otherAccount = { ...chatAccount, id: "account-2", email: "other@example.com" };
+    mocks.listAccounts.mockResolvedValue([chatAccount, otherAccount]);
+    const user = userEvent.setup();
+    render(<App />);
+    const trigger = await screen.findByRole("button", { name: "More actions for person@example.com" });
+    const menuItem = () => screen.queryByRole("button", { name: "Remove person@example.com" });
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    expect(menuItem()).not.toBeInTheDocument();
+
+    await user.click(trigger);
+    expect(trigger).toHaveAttribute("aria-expanded", "true");
+    expect(menuItem()).toBeInTheDocument();
+    await user.click(screen.getByRole("heading", { name: "2 saved accounts" }));
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    expect(menuItem()).not.toBeInTheDocument();
+
+    await user.click(trigger);
+    await user.keyboard("{Escape}");
+    expect(menuItem()).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+
+    await user.click(trigger);
+    await user.click(screen.getByRole("button", { name: "More actions for other@example.com" }));
+    expect(menuItem()).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Remove other@example.com" })).toBeInTheDocument();
+  });
+
+  it("closes an account menu when keyboard focus leaves it or an action is chosen", async () => {
+    mocks.listAccounts.mockResolvedValue([chatAccount]);
+    // userEvent.setup() installs its own clipboard, so stub it afterwards.
+    const user = userEvent.setup();
+    const copyEmail = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(window.navigator, "clipboard", { configurable: true, value: { writeText: copyEmail } });
+    render(<App />);
+    const trigger = await screen.findByRole("button", { name: "More actions for person@example.com" });
+
+    trigger.focus();
+    await user.keyboard("{Enter}");
+    await user.tab();
+    expect(screen.getByRole("button", { name: "Copy email" })).toHaveFocus();
+    await user.tab();
+    expect(screen.getByRole("button", { name: "Sign in again" })).toHaveFocus();
+    await user.tab();
+    expect(screen.getByRole("button", { name: "Remove person@example.com" })).toHaveFocus();
+    await user.tab();
+    expect(screen.queryByRole("button", { name: "Copy email" })).not.toBeInTheDocument();
+
+    await user.click(trigger);
+    await user.click(screen.getByRole("button", { name: "Copy email" }));
+    expect(copyEmail).toHaveBeenCalledWith("person@example.com");
+    expect(screen.queryByRole("button", { name: "Copy email" })).not.toBeInTheDocument();
+
+    await user.click(trigger);
+    await user.click(screen.getByRole("button", { name: "Remove person@example.com" }));
+    const dialog = await screen.findByRole("dialog", { name: "Remove person@example.com?" });
+    expect(screen.queryByRole("button", { name: "Copy email" })).not.toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(trigger).toHaveFocus();
+  });
+
+  it("closes the language menu on an outside press", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    const heading = await screen.findByRole("heading", { name: "0 saved accounts" });
+    const trigger = screen.getByRole("button", { name: "Language" });
+
+    await user.click(trigger);
+    expect(screen.getByRole("button", { name: "English" })).toBeInTheDocument();
+    await user.click(heading);
+    expect(screen.queryByRole("button", { name: "English" })).not.toBeInTheDocument();
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
   });
 
   it("localizes the remove-operation retry prompt in Simplified Chinese", async () => {
