@@ -5,8 +5,6 @@ describes the roles and release facts used for a possible SignPath Foundation
 application. SignPath Foundation decides eligibility and approval externally;
 this document is not a promise that an application will be accepted.
 
-**Free code signing provided by SignPath.io, certificate by SignPath Foundation**
-
 ## Project facts
 
 - Project: GSwitch
