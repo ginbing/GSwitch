@@ -150,6 +150,10 @@ as applicable:
 - one 401/403 switch fallback through an isolated managed refresh, with all
   rate-limit, network, TLS, timeout, 5xx, and malformed-response failures
   refusing that fallback;
+- the shared managed refresh saving a rotated same-identity credential before
+  the repeated request, never saving another identity, reporting sign-in only
+  when ChatGPT rejects the credential again, and keeping an unavailable Codex
+  runtime or provider distinct from a rejected sign-in;
 - API-key switching performing local structure and stable-identity checks with
   no provider request;
 - target identity mismatch and live-fingerprint races preventing mutation;

@@ -178,8 +178,8 @@ The visible interaction is one **Switch** action. Rust owns the full transaction
    credential or its stable identity claim; API-key identity is checked locally
    without a network request;
 6. only when that ChatGPT check returns 401 or 403, check the external process
-   state again and allow one isolated managed refresh; identity-check the
-   refreshed complete document before saving it;
+   state again, allow one [managed refresh](#managed-refresh), and repeat the
+   account check once with the resulting credential;
 7. persist pending-switch metadata and protected rollback auth;
 8. check the external process state and live credential fingerprint again;
 9. atomically replace the live credential;
@@ -220,6 +220,31 @@ updates GSwitch's account library; it never edits live `auth.json` and is allowe
 while Codex runs. If another GSwitch operation owns the lock, the confirmation
 stays open and asks the user to retry after that operation finishes.
 
+## Managed refresh
+
+Switch, a manual quota refresh, and Wake share one isolated refresh for a saved
+ChatGPT sign-in that ChatGPT rejected with 401 or 403 and that no running Codex
+process owns. GSwitch copies the saved credential into a GSwitch-owned profile
+and asks the official App Server for one token refresh.
+
+Codex does not report that refresh's outcome in a supported form. The minimum
+supported version answers from its cached account after a failed refresh, and
+current versions reject the read without a typed reason. GSwitch therefore
+never takes the outcome from the App Server reply. It rereads the profile's
+complete credential and requires the saved identity. A rotated document is
+committed immediately, or to protected recovery if that commit fails, so a
+consumed refresh token never stays saved; a document for another identity is
+never saved.
+
+The caller then repeats its own provider request once with that credential. A
+second 401 or 403 is the confirmed rejection, and only then is the account
+marked as needing sign-in. A Codex runtime that cannot start or answer, an
+unreadable profile, and every non-authentication provider failure leave the
+sign-in unjudged and are reported as unavailable. A refresh that fails only
+transiently at the identity provider while ChatGPT stays reachable cannot be
+told apart from a rejected one and is also reported as needing sign-in; a
+later successful refresh or a new sign-in clears it.
+
 ## Quota
 
 Quota is read from ChatGPT's current read-only usage endpoint with the live
@@ -239,10 +264,9 @@ never treats a cached `account/read` result as proof that a credential can reach
 the provider.
 
 If the read-only endpoint rejects an inactive saved credential with an
-authentication response, GSwitch may fall back to the existing isolated App
-Server refresh path, verifies the returned document still belongs to the saved
-identity, and atomically stores it with the quota snapshot. A successful
-read-only result stores only the quota projection. A snapshot is fresh for five
+authentication response, a manual refresh may use the
+[managed refresh](#managed-refresh) and then repeats the read-only request
+once. A successful read-only result stores only the quota projection. A snapshot is fresh for five
 minutes and then visibly stale. API-key accounts show quota as not applicable.
 Quota is operational account state, not usage analytics.
 
@@ -316,8 +340,9 @@ snapshot, and an unidentifiable active process uses the saved snapshot without
 a managed refresh. GSwitch never writes live `auth.json`.
 
 An authentication failure for a definitely inactive account may use one
-isolated official Codex App Server refresh. That profile is identity-checked
-before its refreshed credential is stored. An active or uncertain account never
+[managed refresh](#managed-refresh), after which the Wake request is sent once
+more. Only a second authentication failure reports Needs sign-in; a refresh
+that could not run reports Failed. An active or uncertain account never
 enters this fallback. GSwitch reads the live token once immediately before the
 request. It does not retry after uncertain delivery.
 
