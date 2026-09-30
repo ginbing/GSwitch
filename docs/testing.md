@@ -230,6 +230,7 @@ Standard CI does not by itself prove:
 - the exact permissions of a packaged artifact;
 - public-release readiness.
 
-Those claims require the matching integration or release check. Never report a
-platform, provider, installer, or recovery path as validated unless that exact
-proof ran.
+Those claims require the matching integration or release check. Real-account
+behavior is accepted before a release through the procedure in
+[`release.md`](./release.md#real-account-acceptance). Never report a platform,
+provider, installer, or recovery path as validated unless that exact proof ran.

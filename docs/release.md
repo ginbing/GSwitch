@@ -60,13 +60,15 @@ Issue. If feedback leads to another change, commit it and increase the preview
 suffix before rebuilding.
 
 From the repository root in PowerShell 7, derive a unique preview version from
-the current product version, then build:
+the next patch version, then build. Product pull requests leave the version
+files at the last release, so a suffix on the current version would sort below
+the installed release and be offered that release as an update:
 
 ```powershell
 $dirty = git status --porcelain
 if ($dirty) { throw 'Build the preview from a clean, committed source revision.' }
-$baseVersion = node -p "require('./src-tauri/tauri.conf.json').version"
-$previewVersion = "$baseVersion-rc.1"
+$major, $minor, $patch = (node -p "require('./src-tauri/tauri.conf.json').version").Split('.')
+$previewVersion = "$major.$minor.$([int]$patch + 1)-rc.1"
 New-Item -ItemType Directory -Force -Path 'src-tauri/target' | Out-Null
 $previewConfig = Join-Path (Resolve-Path 'src-tauri/target').Path "tauri-$previewVersion.json"
 Set-Content -LiteralPath $previewConfig -Value "{`"version`":`"$previewVersion`"}" -NoNewline -Encoding utf8
@@ -92,12 +94,42 @@ official Codex installer's default `$HOME/.local/bin/codex` location. A custom
 Codex location must be in the graphical session's `PATH` or set with
 `GSWITCH_CODEX_BIN`.
 
+## Real-account acceptance
+
+Tests and fictional-data screenshots cannot show how the provider or an
+installed Codex treats a real account. A release that changes sign-in,
+switching, quota, Wake, credential storage, or recovery is therefore accepted
+with real accounts before its tag is pushed, not after the public installer
+exists.
+
+The agent builds the [maintainer Windows preview](#maintainer-windows-preview)
+from the merged `main` commit and hands it over; only the maintainer uses real
+accounts. With at least two saved ChatGPT accounts, the maintainer checks:
+
+1. launch shows the current account and loads each card's quota;
+2. Switch to another saved account with Codex closed, then switch back;
+3. Refresh one account, then Refresh all;
+4. Wake one account and read its result;
+5. **Sign in again** from a card menu replaces that saved login, and the
+   current account's renewed login is applied or offered as **Apply**;
+6. an account whose saved sign-in no longer works shows **Sign in required**
+   and recovers through **Sign in again**, when such an account is available.
+
+Reset-credit redemption is not part of this list; it keeps its own explicit
+confirmation. The maintainer may waive the acceptance for a release, including
+in the publish request itself. Record the preview commit and either the result
+or the waiver in the release pull request. The version commit that follows may
+differ from the accepted commit only in the version files. A failed or
+unanswered acceptance stops the release like any other failed gate; do not
+describe a waived or unperformed flow as validated.
+
 ## Release workflow
 
 Pushing a tag named `v<version>` starts the sole release workflow. The tag must
 point to the exact current merged `main` commit and match
 `src-tauri/tauri.conf.json`. Run the remote CI path against that commit before
-tagging it. The workflow runs version, frontend, and Rust checks, then builds
+tagging it, and complete the [real-account acceptance](#real-account-acceptance)
+when the release changes account behavior. The workflow runs version, frontend, and Rust checks, then builds
 all release bundles locally. It smoke checks the Windows install and uninstall,
 both macOS DMGs and updater archives, and both Linux package payloads before
 signing the final updater bytes. The workflow verifies signatures against the
@@ -190,6 +222,10 @@ Cargo package, and Cargo lock metadata synchronized:
 pnpm run version:sync
 pnpm run version:check
 ```
+
+Make the version change its own commit and pull request, after the product
+changes it releases have merged. A product pull request does not touch the
+version files.
 
 After an authorized version change is merged and the exact `main` commit passes
 the required remote checks, tag that commit as the matching `v<version>`. The

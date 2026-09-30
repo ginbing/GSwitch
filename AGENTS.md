@@ -61,6 +61,10 @@ path, account mirror, or parallel source of truth.
 - Never force-push, rewrite history, push a protected branch, or stage
   unrelated work. Use branch and PR metadata that describes the accepted
   product change.
+- Keep each pull request to one independently reviewable behavior, with its
+  tests and the documentation it changes. Change the version only in a
+  separate release commit; a product pull request leaves the version files
+  untouched.
 
 ## Documentation routing
 
@@ -98,6 +102,9 @@ normal release sequence for that change. Unless the maintainer specifies a
 version, choose the next unused patch version; after the required checks, tag
 the exact merged `main` commit, run the existing production updater-signing
 workflow, inspect the draft assets and notes, and publish the verified Release.
+For a release that changes account behavior, the required checks include the
+real-account acceptance in `docs/release.md`, which only the maintainer can
+perform or waive.
 An authorization in the current conversation persists across its turns. Do not
 ask again solely because the version has been chosen or the workflow reaches
 signing or publication. A review-only or stop request takes precedence and
