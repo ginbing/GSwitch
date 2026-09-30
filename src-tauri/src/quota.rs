@@ -70,9 +70,10 @@ pub fn cached_quota(state: &AppState, account_id: &str) -> Result<QuotaView, Str
     Ok(cached_view(&account, now_unix_ms()))
 }
 
-/// Reads capacity through an isolated official Codex App Server profile. A
-/// successful call proves the saved ChatGPT credential can reach this official
-/// account endpoint; `account/read` alone is deliberately not used as proof.
+/// Reads capacity from ChatGPT's read-only usage endpoint. Only a rejected,
+/// inactive saved sign-in may use one isolated official refresh, after which
+/// the same read is repeated; `account/read` alone is deliberately not used
+/// as proof that a credential reaches the provider.
 pub fn refresh_quota(state: &AppState, account_id: &str) -> Result<QuotaView, String> {
     let operation = state.acquire_operation()?;
     let account = state.account_by_id_under_operation(&operation, account_id)?;
@@ -96,7 +97,10 @@ pub fn refresh_quota(state: &AppState, account_id: &str) -> Result<QuotaView, St
     match refresh_read_only(state, &operation, &account, &identity, &account.credential) {
         Ok(view) => Ok(view),
         Err(ReadOnlyRefreshFailure::Provider(error)) if error.can_fallback_to_managed_refresh() => {
-            refresh_via_managed_profile(state, &operation, &account, &identity)
+            let refreshed = refresh_saved_sign_in(state, &operation, &account, &identity)
+                .map_err(ManagedRefreshFailure::message)?;
+            refresh_read_only(state, &operation, &account, &identity, &refreshed)
+                .map_err(ReadOnlyRefreshFailure::message)
         }
         Err(error) => Err(error.message()),
     }
@@ -285,58 +289,94 @@ impl ReadOnlyRefreshFailure {
     }
 }
 
-fn refresh_via_managed_profile(
-    state: &AppState,
-    operation: &OperationGuard<'_>,
-    account: &StoredAccount,
-    identity: &AccountIdentity,
-) -> Result<QuotaView, String> {
-    let refreshed = refresh_via_managed_profile_for_wake(state, operation, account, identity)?;
-    Ok(view_from_snapshot(
-        &account.id,
-        refreshed.snapshot,
-        now_unix_ms(),
-    ))
+/// Why one isolated official refresh of an inactive saved sign-in produced no
+/// credential to retry with. None of these says ChatGPT rejected the sign-in.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum ManagedRefreshFailure {
+    /// Codex could not run the refresh, or its result could not be read.
+    Unavailable(String),
+    /// Codex returned a credential for another account; nothing was saved.
+    IdentityChanged,
+    /// Codex rotated the credential but GSwitch could not commit it.
+    NotSaved { recovery_retained: bool },
 }
 
-pub(crate) struct ManagedQuotaRefresh {
-    pub(crate) credential: Value,
-    pub(crate) snapshot: QuotaSnapshot,
-}
-
-/// Refreshes an inactive credential only through an isolated profile. Callers
-/// must first establish that no external Codex process owns this identity.
-pub(crate) fn refresh_via_managed_profile_for_wake(
-    state: &AppState,
-    operation: &OperationGuard<'_>,
-    account: &StoredAccount,
-    identity: &AccountIdentity,
-) -> Result<ManagedQuotaRefresh, String> {
-    let temporary = TempCodexHome::create(&state.isolated_profile_root()?)?;
-    temporary.write_auth(&account.credential)?;
-    let mut server = AppServer::start(&temporary.path)?;
-    let result = server.rate_limits_read(1)?;
-    let refreshed_credential = temporary.read_auth()?;
-
-    if document_kind(&refreshed_credential)? != AccountKind::ChatGpt
-        || derive_identity(&AccountKind::ChatGpt, &refreshed_credential)? != *identity
-    {
-        return Err("Codex did not confirm the quota account identity".to_string());
+impl ManagedRefreshFailure {
+    pub(crate) fn message(self) -> String {
+        match self {
+            Self::Unavailable(message) => message,
+            Self::IdentityChanged => {
+                "Codex did not confirm the refreshed account identity".to_string()
+            }
+            Self::NotSaved {
+                recovery_retained: true,
+            } => "GSwitch could not save refreshed credentials. A protected recovery copy was retained."
+                .to_string(),
+            Self::NotSaved {
+                recovery_retained: false,
+            } => "GSwitch could not save refreshed credentials or write protected recovery. The temporary profile was removed."
+                .to_string(),
+        }
     }
+}
 
-    let normalized = normalize_rate_limits_data(&result, now_unix_ms());
-    let snapshot = normalized.snapshot;
-    persist_refreshed_credential_and_quota(
-        state,
-        operation,
-        &account.id,
-        &refreshed_credential,
-        snapshot.clone(),
-        normalized.reset_credits,
-    )?;
-    Ok(ManagedQuotaRefresh {
-        credential: refreshed_credential,
-        snapshot,
+/// Runs one official token refresh for a saved ChatGPT sign-in in an isolated
+/// profile and returns the credential to retry with. Callers must first
+/// establish that no external Codex process owns this identity.
+///
+/// Codex does not report whether the refresh was rejected, so this never
+/// decides that the account needs sign-in. The caller repeats its own provider
+/// request with the returned credential; an authentication failure there is
+/// the confirmed rejection.
+pub(crate) fn refresh_saved_sign_in(
+    state: &AppState,
+    operation: &OperationGuard<'_>,
+    account: &StoredAccount,
+    identity: &AccountIdentity,
+) -> Result<Value, ManagedRefreshFailure> {
+    let unavailable = ManagedRefreshFailure::Unavailable;
+    let temporary = TempCodexHome::create(&state.isolated_profile_root().map_err(unavailable)?)
+        .map_err(unavailable)?;
+    temporary
+        .write_auth(&account.credential)
+        .map_err(unavailable)?;
+    let mut server = AppServer::start(&temporary.path).map_err(unavailable)?;
+    let attempt = server.account_refresh(1);
+
+    // Codex may have rotated the token chain even when its reply never
+    // arrived, so keep a newer credential before reporting that failure.
+    let refreshed = temporary.read_auth().map_err(unavailable)?;
+    let credential = keep_refreshed_credential(state, operation, account, identity, refreshed)?;
+    attempt.map_err(unavailable)?;
+    Ok(credential)
+}
+
+/// Commits a credential Codex rotated for the same identity before anything
+/// else can fail, so a consumed refresh token never stays saved.
+pub(crate) fn keep_refreshed_credential(
+    state: &AppState,
+    operation: &OperationGuard<'_>,
+    account: &StoredAccount,
+    identity: &AccountIdentity,
+    refreshed: Value,
+) -> Result<Value, ManagedRefreshFailure> {
+    let same_identity = document_kind(&refreshed).is_ok_and(|kind| kind == AccountKind::ChatGpt)
+        && derive_identity(&AccountKind::ChatGpt, &refreshed)
+            .is_ok_and(|derived| &derived == identity);
+    if !same_identity {
+        return Err(ManagedRefreshFailure::IdentityChanged);
+    }
+    if refreshed == account.credential
+        || state
+            .update_refreshed_credential_under_operation(operation, &account.id, refreshed.clone())
+            .is_ok()
+    {
+        return Ok(refreshed);
+    }
+    Err(ManagedRefreshFailure::NotSaved {
+        recovery_retained: state
+            .record_pending_credential(operation, &refreshed)
+            .is_ok(),
     })
 }
 

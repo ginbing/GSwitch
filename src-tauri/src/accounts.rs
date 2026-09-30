@@ -1082,14 +1082,39 @@ impl AppState {
         Ok(())
     }
 
-    /// Commits a verified provider projection and, only when authentication
-    /// required it, a refreshed credential in one account-store replacement.
+    /// Replaces a saved credential with the same-identity document Codex
+    /// refreshed in an isolated profile. The caller has verified the identity;
+    /// account metadata and quota wait for the next provider read.
+    pub fn update_refreshed_credential_under_operation(
+        &self,
+        _operation: &OperationGuard<'_>,
+        id: &str,
+        credential: Value,
+    ) -> Result<(), String> {
+        let mut store = self
+            .store
+            .lock()
+            .map_err(|_| "Account store lock is unavailable".to_string())?;
+        let index = store
+            .accounts
+            .iter()
+            .position(|account| account.id == id)
+            .ok_or_else(|| "The selected account is no longer saved".to_string())?;
+        let mut candidate = store.clone();
+        candidate.accounts[index].needs_apply |= candidate.accounts[index].credential != credential;
+        candidate.accounts[index].sign_in_required = false;
+        candidate.accounts[index].credential = credential;
+        self.persist_candidate(&store, &mut candidate)?;
+        *store = candidate;
+        Ok(())
+    }
+
+    /// Commits the provider projection verified for a switch target.
     pub fn update_switch_validation_under_operation(
         &self,
         _operation: &OperationGuard<'_>,
         id: &str,
         metadata: &AccountMetadata,
-        credential: Option<Value>,
     ) -> Result<(), String> {
         let mut store = self
             .store
@@ -1101,8 +1126,7 @@ impl AppState {
             .position(|account| account.id == id)
             .ok_or_else(|| "The selected account is no longer saved".to_string())?;
         let saved = &store.accounts[index];
-        if credential.is_none()
-            && !saved.sign_in_required
+        if !saved.sign_in_required
             && saved.email == metadata.email
             && saved.plan_type == metadata.plan_type
             && metadata
@@ -1126,12 +1150,6 @@ impl AppState {
         }
         if metadata.account_structure.is_some() {
             account.account_structure = metadata.account_structure.clone();
-        }
-        if let Some(credential) = credential {
-            account.needs_apply |= account.credential != credential;
-            account.credential = credential;
-            account.quota = None;
-            account.reset_credits = None;
         }
         self.persist_candidate(&store, &mut candidate)?;
         *store = candidate;

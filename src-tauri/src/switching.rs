@@ -6,6 +6,7 @@ use crate::{
     chatgpt::{self, ChatGptClient, RequestFailureKind},
     codex,
     identity::{derive_identity, document_fingerprint, document_kind},
+    quota::{refresh_saved_sign_in, ManagedRefreshFailure},
     runtime,
     types::{
         AccountIdentity, AccountKind, AccountView, CredentialStoreMode, LiveAccountStatus,
@@ -550,13 +551,8 @@ fn validate_target_snapshot(
             runtime::ensure_no_external_codex(&[])
                 .map_err(|_| switch_failure(SwitchFailureCode::CodexOpen))
         },
-        || managed_refresh_target(state, target),
+        || refresh_saved_sign_in(state, operation, target, target_identity),
     )
-}
-
-struct ManagedRefresh {
-    credential: Value,
-    metadata: AccountMetadata,
 }
 
 fn validate_chatgpt_snapshot_with<P, F>(
@@ -570,92 +566,75 @@ fn validate_chatgpt_snapshot_with<P, F>(
 ) -> Result<Value, SwitchFailure>
 where
     P: FnOnce() -> Result<(), SwitchFailure>,
-    F: FnOnce() -> Result<ManagedRefresh, String>,
+    F: FnOnce() -> Result<Value, ManagedRefreshFailure>,
 {
-    match client.account_check(&target.credential) {
-        Ok(response) => {
-            chatgpt::validate_response_identity(&target.credential, target_identity, &response)
-                .map_err(|_| switch_failure(SwitchFailureCode::TargetWorkspaceMismatch))?;
-            let projection =
-                chatgpt::normalize_account_metadata(&target.credential, target_identity, &response)
-                    .map_err(|_| switch_failure(SwitchFailureCode::TargetWorkspaceMismatch))?;
-            let metadata = AccountMetadata {
-                kind: AccountKind::ChatGpt,
-                email: projection.email,
-                plan_type: projection.plan_type,
-                workspace_name: projection.workspace_name,
-                account_structure: projection.account_structure,
-            };
-            persist_switch_validation(state, operation, target, &metadata, None)?;
-            Ok(target.credential.clone())
-        }
-        Err(error) if error.kind == RequestFailureKind::Authentication => {
-            refresh_precondition()?;
-            let refreshed = managed_refresh()
-                .map_err(|_| switch_failure(SwitchFailureCode::TargetCheckUnavailable))?;
-            ensure_metadata_kind(&refreshed.metadata, &AccountKind::ChatGpt)
-                .map_err(|_| switch_failure(SwitchFailureCode::AccountNeedsSignIn))?;
-            ensure_credential_identity(
-                &refreshed.credential,
-                &AccountKind::ChatGpt,
-                target_identity,
-                "Codex refreshed a different account",
-            )
-            .map_err(|_| switch_failure(SwitchFailureCode::AccountNeedsSignIn))?;
-            persist_switch_validation(
-                state,
-                operation,
-                target,
-                &refreshed.metadata,
-                Some(refreshed.credential.clone()),
-            )?;
-            Ok(refreshed.credential)
-        }
-        Err(_) => Err(switch_failure(SwitchFailureCode::TargetCheckUnavailable)),
+    let check = |credential: &Value| {
+        target_snapshot_accepted(
+            state,
+            operation,
+            target,
+            target_identity,
+            client,
+            credential,
+        )
+    };
+    if check(&target.credential)? {
+        return Ok(target.credential.clone());
+    }
+
+    refresh_precondition()?;
+    let refreshed = managed_refresh().map_err(|failure| {
+        switch_failure(match failure {
+            ManagedRefreshFailure::Unavailable(_) => SwitchFailureCode::TargetCheckUnavailable,
+            ManagedRefreshFailure::NotSaved {
+                recovery_retained: true,
+            } => SwitchFailureCode::RecoveryRequired,
+            ManagedRefreshFailure::IdentityChanged
+            | ManagedRefreshFailure::NotSaved {
+                recovery_retained: false,
+            } => SwitchFailureCode::AccountNeedsSignIn,
+        })
+    })?;
+    // Codex does not say whether its refresh was rejected. ChatGPT rejecting
+    // the credential again after that attempt is the confirmed failure.
+    if check(&refreshed)? {
+        Ok(refreshed)
+    } else {
+        Err(switch_failure(SwitchFailureCode::AccountNeedsSignIn))
     }
 }
 
-fn managed_refresh_target(
-    state: &AppState,
-    target: &StoredAccount,
-) -> Result<ManagedRefresh, String> {
-    let profile = TempCodexHome::create(&state.isolated_profile_root()?)?;
-    profile.write_auth(&target.credential)?;
-    let mut server = AppServer::start(&profile.path)?;
-    let metadata = account_metadata(&server.account_read(1, true)?)?;
-    let credential = profile.read_auth()?;
-    Ok(ManagedRefresh {
-        credential,
-        metadata,
-    })
-}
-
-fn persist_switch_validation(
+/// Runs one read-only account check for a target credential and commits the
+/// verified provider metadata. `Ok(false)` means ChatGPT rejected the
+/// credential itself; every other provider failure is unavailability.
+fn target_snapshot_accepted(
     state: &AppState,
     operation: &OperationGuard<'_>,
     target: &StoredAccount,
-    metadata: &AccountMetadata,
-    credential: Option<Value>,
-) -> Result<(), SwitchFailure> {
-    if state
-        .update_switch_validation_under_operation(
-            operation,
-            &target.id,
-            metadata,
-            credential.clone(),
-        )
-        .is_ok()
-    {
-        return Ok(());
-    }
-
-    let Some(credential) = credential else {
-        return Err(switch_failure(SwitchFailureCode::LocalVerificationFailed));
+    target_identity: &AccountIdentity,
+    client: &ChatGptClient,
+    credential: &Value,
+) -> Result<bool, SwitchFailure> {
+    let response = match client.account_check(credential) {
+        Ok(response) => response,
+        Err(error) if error.kind == RequestFailureKind::Authentication => return Ok(false),
+        Err(_) => return Err(switch_failure(SwitchFailureCode::TargetCheckUnavailable)),
     };
-    match state.record_pending_credential(operation, &credential) {
-        Ok(()) => Err(switch_failure(SwitchFailureCode::RecoveryRequired)),
-        Err(_) => Err(switch_failure(SwitchFailureCode::AccountNeedsSignIn)),
-    }
+    chatgpt::validate_response_identity(credential, target_identity, &response)
+        .map_err(|_| switch_failure(SwitchFailureCode::TargetWorkspaceMismatch))?;
+    let projection = chatgpt::normalize_account_metadata(credential, target_identity, &response)
+        .map_err(|_| switch_failure(SwitchFailureCode::TargetWorkspaceMismatch))?;
+    let metadata = AccountMetadata {
+        kind: AccountKind::ChatGpt,
+        email: projection.email,
+        plan_type: projection.plan_type,
+        workspace_name: projection.workspace_name,
+        account_structure: projection.account_structure,
+    };
+    state
+        .update_switch_validation_under_operation(operation, &target.id, &metadata)
+        .map_err(|_| switch_failure(SwitchFailureCode::LocalVerificationFailed))?;
+    Ok(true)
 }
 
 fn confirm_already_active(
@@ -861,6 +840,7 @@ fn config_store_value(config: &Value) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::quota::keep_refreshed_credential;
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
     use std::{
         fs,
@@ -1231,10 +1211,26 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
+    const ACCEPTED_ACCOUNT_CHECK: &str = r#"{"accounts":[{"id":"workspace","name":"Updated","structure":"workspace","plan_type":"plus"}]}"#;
+
+    fn account_check_sequence(
+        steps: Vec<(u16, &'static str)>,
+    ) -> (String, std::thread::JoinHandle<Vec<String>>) {
+        // No step rotates a live credential here, so the Codex home is unused.
+        current_account_check_sequence(
+            std::path::PathBuf::new(),
+            steps
+                .into_iter()
+                .map(|(status, body)| (status, body, None))
+                .collect(),
+        )
+    }
+
     #[test]
     fn authentication_failure_allows_exactly_one_identity_checked_refresh() {
         let (state, target, root) = state_with_chatgpt_target();
-        let (base_url, server) = account_check_server(401, r#"{}"#);
+        let (base_url, server) =
+            account_check_sequence(vec![(401, "{}"), (200, ACCEPTED_ACCOUNT_CHECK)]);
         let client = ChatGptClient::with_base_url(&base_url).expect("client");
         let identity = target.identity.clone().expect("identity");
         let calls = Arc::new(Mutex::new(0_u8));
@@ -1251,34 +1247,233 @@ mod tests {
             || Ok(()),
             || {
                 *counted.lock().expect("counter") += 1;
-                Ok(ManagedRefresh {
-                    credential: refreshed_credential.clone(),
-                    metadata: AccountMetadata {
-                        kind: AccountKind::ChatGpt,
-                        email: Some("person@example.com".into()),
-                        plan_type: Some("plus".into()),
-                        workspace_name: Some("Personal".into()),
-                        account_structure: Some("workspace".into()),
-                    },
-                })
+                keep_refreshed_credential(
+                    &state,
+                    &operation,
+                    &target,
+                    &identity,
+                    refreshed_credential.clone(),
+                )
             },
         )
         .expect("refreshed");
 
         assert_eq!(*calls.lock().expect("counter"), 1);
         assert_eq!(validated, refreshed_credential);
+        let requests = server.join().expect("server");
+        assert_eq!(requests.len(), 2);
+        assert!(requests[0].contains("Bearer access-token"));
+        assert!(requests[1].contains("Bearer refreshed-token"));
         let saved = state
             .account_by_id_under_operation(&operation, &target.id)
             .expect("saved");
         assert_eq!(saved.credential, refreshed_credential);
-        server.join().expect("server");
+        assert_eq!(saved.workspace_name.as_deref(), Some("Updated"));
         drop(operation);
         let _ = fs::remove_dir_all(root);
     }
 
     #[test]
-    fn failed_protected_recovery_reports_sign_in_instead_of_claiming_recovery_exists() {
+    fn a_sign_in_rejected_again_after_the_refresh_attempt_needs_sign_in() {
+        for second_status in [401, 403] {
+            let (state, target, root) = state_with_chatgpt_target();
+            let (base_url, server) =
+                account_check_sequence(vec![(401, "{}"), (second_status, "{}")]);
+            let client = ChatGptClient::with_base_url(&base_url).expect("client");
+            let identity = target.identity.clone().expect("identity");
+            let operation = state.acquire_operation().expect("operation");
+
+            // Codex ran but produced no newer credential, as it does for a
+            // revoked or already-used refresh token.
+            let error = validate_chatgpt_snapshot_with(
+                &state,
+                &operation,
+                &target,
+                &identity,
+                &client,
+                || Ok(()),
+                || {
+                    keep_refreshed_credential(
+                        &state,
+                        &operation,
+                        &target,
+                        &identity,
+                        target.credential.clone(),
+                    )
+                },
+            )
+            .expect_err("rejected before and after the refresh attempt");
+
+            assert_eq!(error.code, SwitchFailureCode::AccountNeedsSignIn);
+            assert_eq!(server.join().expect("server").len(), 2);
+            let saved = state
+                .account_by_id_under_operation(&operation, &target.id)
+                .expect("saved");
+            assert_eq!(saved.credential, target.credential);
+            assert_eq!(saved.credential_generation, target.credential_generation);
+            drop(operation);
+            let _ = fs::remove_dir_all(root);
+        }
+    }
+
+    #[test]
+    fn an_unavailable_check_after_refresh_keeps_the_rotated_credential() {
+        for (status, body) in [(429, "{}"), (500, "{}"), (200, "not-json")] {
+            let (state, target, root) = state_with_chatgpt_target();
+            let (base_url, server) = account_check_sequence(vec![(401, "{}"), (status, body)]);
+            let client = ChatGptClient::with_base_url(&base_url).expect("client");
+            let identity = target.identity.clone().expect("identity");
+            let refreshed_credential = credential("user", "workspace", "refreshed-token");
+            let operation = state.acquire_operation().expect("operation");
+
+            let error = validate_chatgpt_snapshot_with(
+                &state,
+                &operation,
+                &target,
+                &identity,
+                &client,
+                || Ok(()),
+                || {
+                    keep_refreshed_credential(
+                        &state,
+                        &operation,
+                        &target,
+                        &identity,
+                        refreshed_credential.clone(),
+                    )
+                },
+            )
+            .expect_err("provider unavailable after refresh");
+
+            assert_eq!(error.code, SwitchFailureCode::TargetCheckUnavailable);
+            assert_eq!(server.join().expect("server").len(), 2);
+            let saved = state
+                .account_by_id_under_operation(&operation, &target.id)
+                .expect("saved");
+            assert_eq!(saved.credential, refreshed_credential);
+            assert!(saved.needs_apply);
+            drop(operation);
+            let _ = fs::remove_dir_all(root);
+        }
+    }
+
+    #[test]
+    fn managed_refresh_failures_keep_unavailable_distinct_from_sign_in() {
+        for (failure, expected) in [
+            (
+                ManagedRefreshFailure::Unavailable("Unable to start Codex App Server".into()),
+                SwitchFailureCode::TargetCheckUnavailable,
+            ),
+            (
+                ManagedRefreshFailure::IdentityChanged,
+                SwitchFailureCode::AccountNeedsSignIn,
+            ),
+            (
+                ManagedRefreshFailure::NotSaved {
+                    recovery_retained: true,
+                },
+                SwitchFailureCode::RecoveryRequired,
+            ),
+            (
+                ManagedRefreshFailure::NotSaved {
+                    recovery_retained: false,
+                },
+                SwitchFailureCode::AccountNeedsSignIn,
+            ),
+        ] {
+            let (state, target, root) = state_with_chatgpt_target();
+            let (base_url, server) = account_check_server(401, r#"{}"#);
+            let client = ChatGptClient::with_base_url(&base_url).expect("client");
+            let identity = target.identity.clone().expect("identity");
+            let operation = state.acquire_operation().expect("operation");
+
+            let error = validate_chatgpt_snapshot_with(
+                &state,
+                &operation,
+                &target,
+                &identity,
+                &client,
+                || Ok(()),
+                || Err(failure),
+            )
+            .expect_err("managed refresh failure");
+
+            assert_eq!(error.code, expected);
+            server.join().expect("server");
+            drop(operation);
+            let _ = fs::remove_dir_all(root);
+        }
+    }
+
+    #[test]
+    fn a_rotated_credential_is_saved_as_an_unapplied_login() {
         let (state, target, root) = state_with_chatgpt_target();
+        let identity = target.identity.clone().expect("identity");
+        let refreshed_credential = credential("user", "workspace", "refreshed-token");
+        let operation = state.acquire_operation().expect("operation");
+
+        let unchanged = keep_refreshed_credential(
+            &state,
+            &operation,
+            &target,
+            &identity,
+            target.credential.clone(),
+        )
+        .expect("unchanged credential");
+        assert_eq!(unchanged, target.credential);
+        let saved = state
+            .account_by_id_under_operation(&operation, &target.id)
+            .expect("saved");
+        assert_eq!(saved.credential_generation, target.credential_generation);
+        assert!(!saved.needs_apply);
+
+        let kept = keep_refreshed_credential(
+            &state,
+            &operation,
+            &target,
+            &identity,
+            refreshed_credential.clone(),
+        )
+        .expect("rotated credential");
+        assert_eq!(kept, refreshed_credential);
+        let saved = state
+            .account_by_id_under_operation(&operation, &target.id)
+            .expect("saved");
+        assert_eq!(saved.credential, refreshed_credential);
+        assert!(saved.credential_generation > target.credential_generation);
+        assert!(saved.needs_apply);
+        drop(operation);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_refresh_for_another_identity_is_never_saved() {
+        let (state, target, root) = state_with_chatgpt_target();
+        let identity = target.identity.clone().expect("identity");
+        let operation = state.acquire_operation().expect("operation");
+
+        for other in [
+            credential("other-user", "workspace", "refreshed-token"),
+            credential("user", "other-workspace", "refreshed-token"),
+            json!({"OPENAI_API_KEY": "sk-fixture"}),
+        ] {
+            assert_eq!(
+                keep_refreshed_credential(&state, &operation, &target, &identity, other),
+                Err(ManagedRefreshFailure::IdentityChanged)
+            );
+        }
+        let saved = state
+            .account_by_id_under_operation(&operation, &target.id)
+            .expect("saved");
+        assert_eq!(saved.credential, target.credential);
+        drop(operation);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn failed_protected_recovery_is_not_reported_as_retained() {
+        let (state, target, root) = state_with_chatgpt_target();
+        let identity = target.identity.clone().expect("identity");
         let operation = state.acquire_operation().expect("operation");
         let store_path = root.join("accounts.json");
         let vault_path = root.join("credentials.hold");
@@ -1288,23 +1483,18 @@ mod tests {
         fs::remove_file(&vault_path).expect("remove vault snapshot");
         fs::create_dir(&vault_path).expect("block protected recovery");
 
-        let metadata = AccountMetadata {
-            kind: AccountKind::ChatGpt,
-            email: Some("person@example.com".into()),
-            plan_type: Some("plus".into()),
-            workspace_name: Some("Updated workspace".into()),
-            account_structure: Some("workspace".into()),
-        };
-        let error = persist_switch_validation(
-            &state,
-            &operation,
-            &target,
-            &metadata,
-            Some(credential("user", "workspace", "rotated-token")),
-        )
-        .expect_err("metadata and protected recovery writes both fail");
-
-        assert_eq!(error.code, SwitchFailureCode::AccountNeedsSignIn);
+        assert_eq!(
+            keep_refreshed_credential(
+                &state,
+                &operation,
+                &target,
+                &identity,
+                credential("user", "workspace", "rotated-token"),
+            ),
+            Err(ManagedRefreshFailure::NotSaved {
+                recovery_retained: false,
+            })
+        );
         drop(operation);
         let _ = fs::remove_dir_all(root);
     }

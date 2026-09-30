@@ -13,8 +13,8 @@ use crate::{
     accounts::{AppState, OperationGuard},
     chatgpt::{ChatGptClient, WakeFailure, WakeFailureKind},
     quota::{
-        external_credential_state_for_identity, refresh_via_managed_profile_for_wake,
-        verified_chatgpt_identity, ExternalCredentialState,
+        external_credential_state_for_identity, refresh_saved_sign_in, verified_chatgpt_identity,
+        ExternalCredentialState, ManagedRefreshFailure,
     },
     types::{
         AccountIdentity, AccountKind, StoredAccount, WakeAccountResult, WakeOperationStatus,
@@ -359,24 +359,26 @@ fn wake_account(
     let mut result = client.wake(&credential.value, model.id(), model.reasoning_effort());
     // A definite authentication rejection cannot have completed a model turn.
     // Only a definitely inactive account may use one isolated official refresh;
-    // an uncertain send or an externally owned token is never retried.
+    // an uncertain send or an externally owned token is never retried. The
+    // repeated request, not the refresh, decides whether sign-in is needed.
     if result.as_ref().is_err_and(|error| {
         error.kind == WakeFailureKind::Authentication
             && credential.ownership == CredentialOwnership::Inactive
     }) {
-        let refreshed =
-            match refresh_via_managed_profile_for_wake(state, operation, account, &identity) {
-                Ok(refreshed) => refreshed,
-                Err(error) => {
-                    let request_state = result
-                        .as_ref()
-                        .err()
-                        .map_or(WakeRequestState::NotSent, |failure| failure.request_state);
-                    return WakeAccountOutcome::new(WakeResultKind::NeedsSignIn, error)
-                        .request_state(request_state);
-                }
-            };
-        credential.value = refreshed.credential;
+        credential.value = match refresh_saved_sign_in(state, operation, account, &identity) {
+            Ok(refreshed) => refreshed,
+            Err(failure) => {
+                let request_state = result
+                    .as_ref()
+                    .err()
+                    .map_or(WakeRequestState::NotSent, |failure| failure.request_state);
+                return WakeAccountOutcome::new(
+                    managed_refresh_result(&failure),
+                    failure.message(),
+                )
+                .request_state(request_state);
+            }
+        };
         if cancelled.load(Ordering::SeqCst) {
             return WakeAccountOutcome::new(WakeResultKind::Cancelled, "Wake was cancelled");
         }
@@ -389,6 +391,19 @@ fn wake_account(
         )
         .request_state(WakeRequestState::Sent),
         Err(error) => wake_failure(error),
+    }
+}
+
+fn managed_refresh_result(failure: &ManagedRefreshFailure) -> WakeResultKind {
+    match failure {
+        ManagedRefreshFailure::IdentityChanged
+        | ManagedRefreshFailure::NotSaved {
+            recovery_retained: false,
+        } => WakeResultKind::NeedsSignIn,
+        ManagedRefreshFailure::Unavailable(_)
+        | ManagedRefreshFailure::NotSaved {
+            recovery_retained: true,
+        } => WakeResultKind::Failed,
     }
 }
 
@@ -537,6 +552,32 @@ mod tests {
             Ok(ExternalCredentialState::Matching(newly_active)),
         ));
         assert_eq!(credential.ownership, CredentialOwnership::External);
+    }
+
+    #[test]
+    fn an_unavailable_refresh_is_not_reported_as_a_rejected_sign_in() {
+        assert_eq!(
+            managed_refresh_result(&ManagedRefreshFailure::Unavailable(
+                "Unable to start Codex App Server. Check that Codex is installed.".into(),
+            )),
+            WakeResultKind::Failed
+        );
+        assert_eq!(
+            managed_refresh_result(&ManagedRefreshFailure::NotSaved {
+                recovery_retained: true,
+            }),
+            WakeResultKind::Failed
+        );
+        assert_eq!(
+            managed_refresh_result(&ManagedRefreshFailure::IdentityChanged),
+            WakeResultKind::NeedsSignIn
+        );
+        assert_eq!(
+            managed_refresh_result(&ManagedRefreshFailure::NotSaved {
+                recovery_retained: false,
+            }),
+            WakeResultKind::NeedsSignIn
+        );
     }
 
     #[test]

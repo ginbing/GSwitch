@@ -127,7 +127,8 @@ Before replacing live credentials:
    external-process check, but rate limits, transport, TLS, timeout, 5xx, and
    parse failures must not enter that fallback;
 7. any refreshed credential must still match the saved identity before it is
-   persisted;
+   persisted, and must pass the read-only account check before it can become
+   the live credential;
 8. pending recovery intent must be durably stored;
 9. the external process state and live credential fingerprint must still match
    the preflight observations.

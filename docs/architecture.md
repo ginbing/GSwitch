@@ -75,8 +75,8 @@ Keep the backend flat and organized by concrete responsibility:
   `intake.rs`;
 - `switching.rs`: live-account reconciliation, file-store enablement, switching,
   removal, and interrupted-switch recovery;
-- `quota.rs`: quota normalization/cache, reset-credit selection, redemption,
-  and redemption recovery;
+- `quota.rs`: quota normalization/cache, the managed refresh shared by switch,
+  quota, and Wake, reset-credit selection, redemption, and redemption recovery;
 - `wake.rs`: Wake policy, narrow Responses transport, sequential Wake All,
   cancellation, and per-account outcomes;
 - `runtime.rs`: external Codex process detection;
