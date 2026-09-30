@@ -31,6 +31,7 @@ import {
   type ReactNode,
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -471,6 +472,90 @@ function Modal({
   );
 }
 
+function PopoverMenu({
+  className,
+  label,
+  title,
+  popoverLabel,
+  icon,
+  children,
+}: {
+  className: string;
+  label: string;
+  title?: string;
+  popoverLabel?: string;
+  icon: ReactNode;
+  children: ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const popoverId = useId();
+
+  useEffect(() => {
+    if (!open) return;
+    const close = () => setOpen(false);
+    const closeOnOutsidePress = (event: PointerEvent) => {
+      if (event.target instanceof Node && !rootRef.current?.contains(event.target)) close();
+    };
+    const closeOnEscape = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      close();
+      triggerRef.current?.focus();
+    };
+    document.addEventListener("pointerdown", closeOnOutsidePress);
+    document.addEventListener("keydown", closeOnEscape);
+    window.addEventListener("blur", close);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutsidePress);
+      document.removeEventListener("keydown", closeOnEscape);
+      window.removeEventListener("blur", close);
+    };
+  }, [open]);
+
+  return (
+    <div
+      className={className}
+      ref={rootRef}
+      onBlur={(event) => {
+        // WebKit does not focus a clicked button, so a missing target is not
+        // proof that focus left the menu; the pointer listener covers that.
+        if (event.relatedTarget instanceof Node && !event.currentTarget.contains(event.relatedTarget)) {
+          setOpen(false);
+        }
+      }}
+    >
+      <button
+        aria-controls={open ? popoverId : undefined}
+        aria-expanded={open}
+        aria-label={label}
+        onClick={() => setOpen((current) => !current)}
+        ref={triggerRef}
+        title={title}
+        type="button"
+      >
+        {icon}
+      </button>
+      {open ? (
+        <div
+          aria-label={popoverLabel}
+          className={className + "-popover"}
+          id={popoverId}
+          onClick={(event) => {
+            if (!(event.target instanceof Element) || !event.target.closest("button")) return;
+            // Return focus first so a dialog opened by this action restores it
+            // to the trigger rather than to a removed menu item.
+            triggerRef.current?.focus();
+            setOpen(false);
+          }}
+        >
+          {children}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function QuotaResetTime({ timestamp, t, formatLocale }: {
   timestamp: number;
   t: Translator;
@@ -648,27 +733,24 @@ function AccountCard({
           </div>
         </div>
         {!selectionMode ? (
-          <details className="card-menu">
-            <summary aria-label={t("account.moreActions", { name: primaryName })}>
-              <MoreHorizontal size={18} />
-            </summary>
-            <div className="card-menu-popover">
-              {account.email ? <button onClick={(event) => {
-                event.currentTarget.closest("details")?.removeAttribute("open");
-                onCopyEmail();
-              }} type="button"><Copy size={15} />{t("account.copyEmail")}</button> : null}
-              <button
-                className="card-menu-danger"
-                aria-label={t("account.remove", { name: primaryName })}
-                disabled={active || controlsBusy}
-                onClick={onRemove}
-                type="button"
-              >
-                <Trash2 size={15} />
-                {t("common.removeAccount")}
-              </button>
-            </div>
-          </details>
+          <PopoverMenu
+            className="card-menu"
+            icon={<MoreHorizontal size={18} />}
+            label={t("account.moreActions", { name: primaryName })}
+          >
+            {account.email ? <button onClick={onCopyEmail} type="button"><Copy size={15} />{t("account.copyEmail")}</button> : null}
+            {!isApiKey ? <button disabled={controlsBusy} onClick={onReauthenticate} type="button"><Globe2 size={15} />{t("account.signInAgain")}</button> : null}
+            <button
+              className="card-menu-danger"
+              aria-label={t("account.remove", { name: primaryName })}
+              disabled={active || controlsBusy}
+              onClick={onRemove}
+              type="button"
+            >
+              <Trash2 size={15} />
+              {t("common.removeAccount")}
+            </button>
+          </PopoverMenu>
         ) : null}
       </div>
 
@@ -1826,25 +1908,25 @@ export default function App() {
               {t("cli.available", { version: cliInfo.latest_version || "" })}
             </button>
           ) : null}
-          <details className="language-menu">
-            <summary aria-label={t("toolbar.language")} title={t("toolbar.language")}><Globe2 size={18} /></summary>
-            <div className="language-menu-popover" aria-label={t("settings.language")}>
-              {(["system", "zh-CN", "en"] as const).map((preference) => (
-                <button
-                  aria-pressed={languagePreference === preference}
-                  key={preference}
-                  onClick={(event) => {
-                    changeLanguage(preference);
-                    event.currentTarget.closest("details")?.removeAttribute("open");
-                  }}
-                  type="button"
-                >
-                  <span>{t(preference === "system" ? "settings.system" : preference === "en" ? "settings.english" : "settings.chinese")}</span>
-                  {languagePreference === preference ? <Check size={15} /> : null}
-                </button>
-              ))}
-            </div>
-          </details>
+          <PopoverMenu
+            className="language-menu"
+            icon={<Globe2 size={18} />}
+            label={t("toolbar.language")}
+            popoverLabel={t("settings.language")}
+            title={t("toolbar.language")}
+          >
+            {(["system", "zh-CN", "en"] as const).map((preference) => (
+              <button
+                aria-pressed={languagePreference === preference}
+                key={preference}
+                onClick={() => changeLanguage(preference)}
+                type="button"
+              >
+                <span>{t(preference === "system" ? "settings.system" : preference === "en" ? "settings.english" : "settings.chinese")}</span>
+                {languagePreference === preference ? <Check size={15} /> : null}
+              </button>
+            ))}
+          </PopoverMenu>
         </div>
       </header>
 

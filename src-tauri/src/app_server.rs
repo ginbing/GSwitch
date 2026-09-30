@@ -185,6 +185,21 @@ impl AppServer {
         )
     }
 
+    /// Asks Codex for one official token refresh of this profile's sign-in.
+    /// Codex does not report the outcome in a supported form: 0.144 answers
+    /// with the cached account after a failed refresh, and 0.159 rejects the
+    /// read without a typed reason. The caller must check the profile's
+    /// credential with the provider; only an App Server that could not answer
+    /// is an error here.
+    pub fn account_refresh(&mut self, id: i64) -> Result<(), String> {
+        refresh_attempt_completed(self.call_protocol(
+            id,
+            "account/read",
+            json!({"refreshToken": true}),
+            REQUEST_TIMEOUT,
+        ))
+    }
+
     pub fn account_login_cancel(&mut self, id: i64, login_id: &str) -> Result<Value, String> {
         self.call(
             id,
@@ -569,6 +584,13 @@ fn should_retry_rate_limits_with_empty_object(error: &CallError) -> bool {
     )
 }
 
+fn refresh_attempt_completed(result: Result<Value, CallError>) -> Result<(), String> {
+    match result {
+        Ok(_) | Err(CallError::Rejected { .. }) => Ok(()),
+        Err(error) => Err(error.sanitized()),
+    }
+}
+
 #[cfg(test)]
 fn response_result(message: Value) -> Result<Value, String> {
     response_result_protocol(message).map_err(CallError::sanitized)
@@ -805,6 +827,25 @@ mod tests {
         assert!(!should_retry_rate_limits_with_empty_object(
             &CallError::Transport("network".to_string(),)
         ));
+    }
+
+    #[test]
+    fn a_rejected_refresh_read_still_counts_as_an_attempt() {
+        assert_eq!(
+            refresh_attempt_completed(Ok(json!({"account": null}))),
+            Ok(())
+        );
+        assert_eq!(
+            refresh_attempt_completed(Err(CallError::Rejected { code: Some(-32603) })),
+            Ok(())
+        );
+        assert_eq!(
+            refresh_attempt_completed(Err(CallError::Transport(
+                "Codex App Server exited unexpectedly".to_string()
+            ))),
+            Err("Codex App Server exited unexpectedly".to_string())
+        );
+        assert!(refresh_attempt_completed(Err(CallError::MissingResult)).is_err());
     }
 
     #[test]
