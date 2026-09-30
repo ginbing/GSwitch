@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => ({
   liveAccount: vi.fn(),
   startOAuth: vi.fn(),
   oauthStatus: vi.fn(),
+  retryOAuth: vi.fn(),
   cancelOAuth: vi.fn(),
   openOAuth: vi.fn(),
   importAuthJson: vi.fn(),
@@ -143,6 +144,7 @@ function prepareDefaults() {
   });
   mocks.oauthStatus.mockResolvedValue({ status: "pending" });
   mocks.cancelOAuth.mockResolvedValue(undefined);
+  mocks.retryOAuth.mockResolvedValue(undefined);
   mocks.openOAuth.mockResolvedValue(undefined);
   mocks.importAuthJson.mockResolvedValue(chatAccount);
   mocks.importAuthFiles.mockResolvedValue({
@@ -353,7 +355,7 @@ describe("GSwitch account workspace", () => {
     await waitFor(() => expect(dialog).not.toBeInTheDocument());
   });
 
-  it("keeps the ready status halo outside the truncated toolbar label", async () => {
+  it("keeps the current account label visible without claiming sign-in readiness", async () => {
     mocks.liveAccount.mockResolvedValue({
       status: "ready",
       credential_store: "file",
@@ -362,7 +364,8 @@ describe("GSwitch account workspace", () => {
     const { container } = render(<App />);
 
     await screen.findByRole("heading", { name: "0 saved accounts" });
-    expect(container.querySelector(".brand-status > .status-ready")).toBeInTheDocument();
+    expect(container.querySelector(".brand-status > .status-dot")).toBeInTheDocument();
+    expect(container.querySelector(".brand-status > .status-ready")).not.toBeInTheDocument();
     expect(container.querySelector(".brand-status-label")).toHaveTextContent("a-very-long-account-name-that-must-truncate@example.com");
   });
 
@@ -877,11 +880,23 @@ describe("GSwitch account workspace", () => {
     await userEvent.click(screen.getByLabelText("More actions for person@example.com"));
     await userEvent.click(screen.getByRole("button", { name: "Copy email" }));
     expect(copyEmail).toHaveBeenCalledWith("person@example.com");
-    await userEvent.click(screen.getByLabelText("More actions for person@example.com"));
-    await userEvent.click(screen.getByRole("button", { name: "Sign in to this account again" }));
+    await userEvent.click(screen.getByRole("button", { name: "Sign in again" }));
     await waitFor(() => expect(mocks.startOAuth).toHaveBeenCalledWith("account-1"));
     expect(mocks.openOAuth).not.toHaveBeenCalled();
     expect(await screen.findByRole("dialog", { name: "Sign in again · person@example.com" })).toBeInTheDocument();
+  });
+
+  it("shows a direct recovery action with the saved email and workspace", async () => {
+    mocks.listAccounts.mockResolvedValue([{ ...chatAccount, sign_in_required: true }]);
+    mocks.accountQuota.mockResolvedValue(staleQuota);
+    render(<App />);
+    const card = (await screen.findByRole("heading", { name: "person@example.com" })).closest("article");
+    expect(card).toHaveTextContent("Sign in required");
+    await userEvent.click(within(card as HTMLElement).getByRole("button", { name: "Sign in again" }));
+    expect(mocks.startOAuth).toHaveBeenCalledWith("account-1");
+    const dialog = await screen.findByRole("dialog", { name: "Sign in again · person@example.com" });
+    expect(dialog).toHaveTextContent("Account: person@example.com");
+    expect(dialog).toHaveTextContent("Workspace: Personal");
   });
 
   it("updates one account quota without reloading the account workspace", async () => {
@@ -1057,6 +1072,9 @@ describe("GSwitch account workspace", () => {
   });
 
   it("lets the user cancel a browser OAuth flow", async () => {
+    mocks.cancelOAuth.mockImplementation(async () => {
+      mocks.oauthStatus.mockResolvedValue({ status: "cancelled" });
+    });
     render(<App />);
     await screen.findByRole("heading", { name: "0 saved accounts" });
 
@@ -1085,6 +1103,21 @@ describe("GSwitch account workspace", () => {
     expect(mocks.cancelOAuth).not.toHaveBeenCalled();
     expect(await screen.findByText("person@example.com was imported safely.", {}, { timeout: 5000 })).toBeInTheDocument();
     expect(mocks.oauthStatus).toHaveBeenCalledTimes(2);
+  });
+
+  it("finishes a completed browser sign-in and retries saving without a new authorization", async () => {
+    mocks.oauthStatus
+      .mockResolvedValueOnce({ status: "finishing" })
+      .mockResolvedValueOnce({ status: "failed", code: "save_failed", retryable: true })
+      .mockResolvedValue({ status: "complete", account: { ...chatAccount, needs_apply: true }, cleanup_warning: false });
+    render(<App />);
+    await userEvent.click(await screen.findByRole("button", { name: /^Add account$/ }));
+    await userEvent.click(screen.getByRole("button", { name: /Sign in to add an account/ }));
+    expect(await screen.findByText("Finishing sign-in…")).toBeInTheDocument();
+    await userEvent.click(await screen.findByRole("button", { name: "Retry saving" }));
+    expect(mocks.retryOAuth).toHaveBeenCalledWith("login-1");
+    expect(mocks.startOAuth).toHaveBeenCalledOnce();
+    expect(await screen.findByText(/Sign-in saved. Switch to this account/)).toBeInTheDocument();
   });
 
   it("removes a non-current saved account while keeping the identity and inline retry error clear", async () => {
@@ -1352,6 +1385,22 @@ describe("GSwitch account workspace", () => {
     expect(await within(dialog).findByText("5 succeeded")).toBeInTheDocument();
     expect(within(dialog).getAllByText("Succeeded")).toHaveLength(5);
     expect(screen.getByRole("button", { name: "Wake all" })).toBeEnabled();
+  });
+
+  it("opens the affected saved account from a Wake sign-in failure", async () => {
+    mocks.listAccounts.mockResolvedValue([chatAccount]);
+    mocks.accountQuota.mockResolvedValue({ ...staleQuota, status: "fresh" });
+    mocks.wakeOperation.mockResolvedValue({
+      id: "wake-all", status: "completed",
+      results: [{ account_id: chatAccount.id, label: chatAccount.label, result: "needs_sign_in", request_state: "sent" }],
+    });
+    render(<App />);
+    await screen.findByRole("heading", { name: "person@example.com" });
+    await userEvent.click(screen.getByRole("button", { name: "Wake all" }));
+    const dialog = await screen.findByRole("dialog", { name: "Wake" });
+    await userEvent.click(await within(dialog).findByRole("button", { name: "Sign in again" }));
+    expect(mocks.startOAuth).toHaveBeenCalledWith(chatAccount.id);
+    expect(await screen.findByRole("dialog", { name: "Sign in again · person@example.com" })).toBeInTheDocument();
   });
 
   it("shows a per-operation Wake surface instead of silently running in the background", async () => {

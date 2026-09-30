@@ -41,6 +41,7 @@ pub fn run() {
             commands::recover_pending_credentials,
             commands::start_oauth_login,
             commands::get_oauth_login_status,
+            commands::retry_oauth_login,
             commands::cancel_oauth_login,
             commands::open_oauth_login,
             commands::get_update_delivery,

@@ -117,6 +117,14 @@ as applicable:
 - isolated App Server profile cleanup through unconditional scope cleanup;
 - OAuth App Server-before-profile teardown and explicit cleanup errors,
   including a Windows-exclusive `auth.json` handle fixture;
+- accepted OAuth completion surviving browser closure, protected retry after
+  verification or save failure, target identity and generation checks, and
+  cleanup failure remaining distinct from a committed login;
+- re-sign-in of the selected account applying its new credential or leaving a
+  visible pending action when Codex is running, followed by switching away and
+  back without restoring the old login;
+- generation-scoped authentication flags and local token reconciliation so a
+  stale Wake, quota, or live-file result cannot overwrite a newer sign-in;
 - encrypted pending-credential replay after restart, generation mismatch
   refusal, intended-identity mismatch refusal, failed-commit retry, missing
   queue material fail-closed, and count-only IPC;

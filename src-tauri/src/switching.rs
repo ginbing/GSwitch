@@ -142,7 +142,7 @@ where
         });
     let recovery_credential = credential.clone();
 
-    let result = state.upsert_under_operation(
+    let result = state.upsert_verified_live_under_operation(
         &operation,
         crate::accounts::AccountDraft {
             label: None,
@@ -267,7 +267,13 @@ pub fn enable_file_store(state: &AppState) -> Result<bool, String> {
     if document_kind(&refreshed)? != kind || derive_identity(&kind, &refreshed)? != identity {
         return Err("Codex credentials changed while enabling account switching".to_string());
     }
-    update_credential_or_record(state, &operation, &saved.id, refreshed)?;
+    update_credential_or_record(
+        state,
+        &operation,
+        &saved.id,
+        refreshed,
+        saved.credential_generation,
+    )?;
     Ok(true)
 }
 
@@ -279,8 +285,16 @@ pub fn switch_account(state: &AppState, target_id: &str) -> Result<SwitchOutcome
         };
         switch_failure(code)
     })?;
+    switch_under_operation(state, &operation, target_id)
+}
+
+pub(crate) fn switch_under_operation(
+    state: &AppState,
+    operation: &OperationGuard<'_>,
+    target_id: &str,
+) -> Result<SwitchOutcome, SwitchFailure> {
     if state
-        .pending_switch_under_operation(&operation)
+        .pending_switch_under_operation(operation)
         .map_err(|_| switch_failure(SwitchFailureCode::RecoveryRequired))?
         .is_some()
     {
@@ -294,7 +308,7 @@ pub fn switch_account(state: &AppState, target_id: &str) -> Result<SwitchOutcome
         .map_err(|_| switch_failure(SwitchFailureCode::LocalVerificationFailed))?;
     check_effective_file_store(state, &codex_home).map_err(switch_failure)?;
     let target = state
-        .account_by_id_under_operation(&operation, target_id)
+        .account_by_id_under_operation(operation, target_id)
         .map_err(|_| switch_failure(SwitchFailureCode::LocalVerificationFailed))?;
     let (target_kind, target_identity) = stored_identity(&target)
         .map_err(|_| switch_failure(SwitchFailureCode::AccountNeedsSignIn))?;
@@ -310,25 +324,35 @@ pub fn switch_account(state: &AppState, target_id: &str) -> Result<SwitchOutcome
         let (_, current_identity) = credential_identity(current)
             .map_err(|_| switch_failure(SwitchFailureCode::CurrentCredentialUnreadable))?;
         let current_saved = state
-            .account_by_identity_under_operation(&operation, &current_identity)
+            .account_by_identity_under_operation(operation, &current_identity)
             .map_err(|_| switch_failure(SwitchFailureCode::LocalVerificationFailed))?
             .ok_or_else(|| switch_failure(SwitchFailureCode::CurrentAccountNotSaved))?;
-        if current_identity == target_identity {
-            validate_target_snapshot(state, &operation, &target, &target_kind, &target_identity)?;
-            return confirm_already_active(state, &operation, &target);
-        }
-        update_credential_or_record(state, &operation, &current_saved.id, current.clone())
-            .map_err(|_| switch_failure(SwitchFailureCode::RecoveryRequired))?;
+        update_credential_or_record(
+            state,
+            operation,
+            &current_saved.id,
+            current.clone(),
+            current_saved.credential_generation,
+        )
+        .map_err(|_| switch_failure(SwitchFailureCode::RecoveryRequired))?;
     }
 
+    // Live Codex may have legitimately rotated the saved credential above.
+    let target = state
+        .account_by_id_under_operation(operation, target_id)
+        .map_err(|_| switch_failure(SwitchFailureCode::LocalVerificationFailed))?;
     let validated_credential =
-        validate_target_snapshot(state, &operation, &target, &target_kind, &target_identity)?;
+        validate_target_snapshot(state, operation, &target, &target_kind, &target_identity)?;
+
+    if previous_auth.as_ref() == Some(&validated_credential) {
+        return confirm_already_active(state, operation, &target);
+    }
 
     let pending = PendingSwitch {
         target_id: target.id.clone(),
         target_identity: target_identity.clone(),
         previous_active_id: state
-            .active_account_id_under_operation(&operation)
+            .active_account_id_under_operation(operation)
             .map_err(|_| switch_failure(SwitchFailureCode::LocalVerificationFailed))?,
         secret_ref: None,
         secret_generation: 0,
@@ -336,7 +360,7 @@ pub fn switch_account(state: &AppState, target_id: &str) -> Result<SwitchOutcome
         stage: PendingSwitchStage::Prepared,
     };
     state
-        .prepare_switch_under_operation(&operation, pending)
+        .prepare_switch_under_operation(operation, pending)
         .map_err(|_| switch_failure(SwitchFailureCode::LocalVerificationFailed))?;
 
     // A process could start or a user could edit auth.json after validation.
@@ -357,11 +381,18 @@ pub fn switch_account(state: &AppState, target_id: &str) -> Result<SwitchOutcome
     codex::write_auth_document(&codex_home, &validated_credential)
         .map_err(|_| switch_failure(SwitchFailureCode::RecoveryRequired))?;
 
-    match verify_written_target(state, &operation, &codex_home, &target, &target_identity) {
+    match verify_written_target(
+        state,
+        operation,
+        &codex_home,
+        &target,
+        &target_identity,
+        &validated_credential,
+    ) {
         Ok(account) => Ok(SwitchOutcome { account }),
         Err(_) => match restore_previous_if_unchanged(
             state,
-            &operation,
+            operation,
             &codex_home,
             &validated_credential,
             previous_auth,
@@ -399,6 +430,7 @@ pub fn recover_pending_switch(state: &AppState) -> Result<(), String> {
                 &codex_home,
                 &target,
                 &target_identity,
+                &target.credential,
             )
             .map(|_| ());
         }
@@ -560,7 +592,7 @@ where
         Err(error) if error.kind == RequestFailureKind::Authentication => {
             refresh_precondition()?;
             let refreshed = managed_refresh()
-                .map_err(|_| switch_failure(SwitchFailureCode::AccountNeedsSignIn))?;
+                .map_err(|_| switch_failure(SwitchFailureCode::TargetCheckUnavailable))?;
             ensure_metadata_kind(&refreshed.metadata, &AccountKind::ChatGpt)
                 .map_err(|_| switch_failure(SwitchFailureCode::AccountNeedsSignIn))?;
             ensure_credential_identity(
@@ -643,11 +675,15 @@ fn verify_written_target(
     codex_home: &std::path::Path,
     target: &StoredAccount,
     target_identity: &AccountIdentity,
+    expected_credential: &Value,
 ) -> Result<AccountView, String> {
     let verified = codex::read_auth_document(codex_home)?;
     let verified_kind = document_kind(&verified)?;
     if derive_identity(&verified_kind, &verified)? != *target_identity {
         return Err("Codex did not confirm the selected account identity".to_string());
+    }
+    if verified != *expected_credential {
+        return Err("Codex credentials changed during the switch confirmation".to_string());
     }
     state.mark_switch_verified_under_operation(operation)?;
     state.complete_switch_under_operation(operation, &target.id)
@@ -708,9 +744,10 @@ fn update_credential_or_record(
     operation: &OperationGuard<'_>,
     id: &str,
     credential: Value,
+    expected_generation: u64,
 ) -> Result<(), String> {
     if state
-        .update_credential_under_operation(operation, id, credential.clone())
+        .update_credential_under_operation(operation, id, credential.clone(), expected_generation)
         .is_ok()
     {
         return Ok(());
@@ -1391,10 +1428,29 @@ mod tests {
                 },
             )
             .expect("pending");
+        let mut different_same_identity = target.credential.clone();
+        different_same_identity["unrelated"] = serde_json::json!("changed");
+        codex::write_auth_document(&codex_home, &different_same_identity).expect("write changed");
+        assert!(verify_written_target(
+            &state,
+            &operation,
+            &codex_home,
+            &target,
+            &identity,
+            &target.credential,
+        )
+        .is_err());
         codex::write_auth_document(&codex_home, &target.credential).expect("write");
 
-        let account = verify_written_target(&state, &operation, &codex_home, &target, &identity)
-            .expect("verify");
+        let account = verify_written_target(
+            &state,
+            &operation,
+            &codex_home,
+            &target,
+            &identity,
+            &target.credential,
+        )
+        .expect("verify");
 
         assert!(account.active);
         assert!(state

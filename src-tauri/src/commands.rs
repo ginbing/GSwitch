@@ -132,6 +132,12 @@ pub fn get_oauth_login_status(
 }
 
 #[tauri::command]
+pub async fn retry_oauth_login(state: State<'_, AppState>, login_id: String) -> Result<(), String> {
+    let state = state.inner().clone();
+    run_blocking(move || intake::retry_oauth(state, login_id)).await
+}
+
+#[tauri::command]
 pub fn cancel_oauth_login(state: State<'_, AppState>, login_id: String) -> Result<(), String> {
     intake::cancel_oauth(state.inner(), &login_id)
 }
@@ -279,11 +285,28 @@ pub async fn switch_account(
     target_id: String,
 ) -> Result<SwitchOutcome, SwitchFailure> {
     let state = state.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || switching::switch_account(&state, &target_id))
-        .await
-        .map_err(|_| SwitchFailure {
-            code: SwitchFailureCode::VerificationFailed,
-        })?
+    tauri::async_runtime::spawn_blocking(move || {
+        let attempted_generation = state
+            .account_by_id(&target_id)
+            .ok()
+            .map(|account| account.credential_generation);
+        let result = switching::switch_account(&state, &target_id);
+        if result
+            .as_ref()
+            .is_err_and(|failure| failure.code == SwitchFailureCode::AccountNeedsSignIn)
+        {
+            if let (Some(generation), Ok(operation)) =
+                (attempted_generation, state.acquire_quota_commit_operation())
+            {
+                let _ = state.mark_sign_in_required(&operation, &target_id, generation);
+            }
+        }
+        result
+    })
+    .await
+    .map_err(|_| SwitchFailure {
+        code: SwitchFailureCode::VerificationFailed,
+    })?
 }
 
 #[tauri::command]
@@ -315,11 +338,25 @@ pub async fn refresh_account_quota(
 ) -> Result<QuotaView, QuotaRefreshFailure> {
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        if background {
+        let attempted_generation = state
+            .account_by_id(&id)
+            .ok()
+            .map(|account| account.credential_generation);
+        let result = if background {
             quota::refresh_quota_background(&state, &id)
         } else {
             quota::refresh_quota(&state, &id)
+        };
+        if result.as_ref().is_err_and(|error| {
+            quota::refresh_failure(error).code == QuotaRefreshFailureCode::Authentication
+        }) {
+            if let (Some(generation), Ok(operation)) =
+                (attempted_generation, state.acquire_quota_commit_operation())
+            {
+                let _ = state.mark_sign_in_required(&operation, &id, generation);
+            }
         }
+        result
     })
     .await
     .map_err(|_| QuotaRefreshFailure {

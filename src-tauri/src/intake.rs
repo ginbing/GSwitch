@@ -17,7 +17,7 @@ use crate::{
     accounts::{AccountDraft, AppState, OperationGuard},
     app_server::{account_metadata, AccountMetadata, AppServer, TempCodexHome},
     chatgpt::{self, ChatGptClient, RequestFailure, RequestFailureKind},
-    identity, storage,
+    codex, identity, runtime, storage, switching,
     types::{
         AccountIdentity, AccountKind, AccountView, ExportResult, ImportResult, OAuthFailureCode,
         OAuthLoginStart, OAuthLoginStatus,
@@ -132,12 +132,22 @@ pub(crate) fn complete_accounts_export(
     })
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 struct OAuthTarget {
     id: String,
     identity: AccountIdentity,
     email: Option<String>,
     label: String,
+    generation: u64,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub(crate) struct OAuthRecovery {
+    target: Option<OAuthTarget>,
+    baseline: Vec<AccountView>,
+    live_fingerprint: Option<String>,
+    #[serde(default)]
+    live_identity: Option<AccountIdentity>,
 }
 
 fn oauth_target(
@@ -157,6 +167,7 @@ fn oauth_target(
         identity,
         email: account.email,
         label: account.label,
+        generation: account.credential_generation,
     }))
 }
 
@@ -165,6 +176,12 @@ fn oauth_failure_code(message: &str) -> OAuthFailureCode {
         OAuthFailureCode::TimedOut
     } else if message.contains("OAuth identity mismatch") {
         OAuthFailureCode::IdentityMismatch
+    } else if message == "OAuth account authentication failed" {
+        OAuthFailureCode::Authentication
+    } else if message == "OAuth account service is unavailable" {
+        OAuthFailureCode::Network
+    } else if message == "OAuth local credential unavailable" {
+        OAuthFailureCode::LocalCodex
     } else if message.contains("could not save validated credentials") {
         OAuthFailureCode::SaveFailed
     } else if message == "OAuth account verification failed" {
@@ -191,6 +208,7 @@ fn ensure_oauth_target_identity(
         || current.identity.as_ref() != Some(&target.identity)
         || signed_in_identity != &target.identity
         || current.email != target.email
+        || current.credential_generation != target.generation
     {
         return Err("OAuth identity mismatch: the selected saved account changed".to_string());
     }
@@ -215,6 +233,24 @@ fn ensure_oauth_target_email(
 pub fn start_oauth(state: AppState, target_id: Option<String>) -> Result<OAuthLoginStart, String> {
     state.ensure_store_ready()?;
     let target = oauth_target(&state, target_id)?;
+    // A broken or unavailable local Codex login must not prevent a fresh
+    // browser sign-in. It only disables automatic application afterwards.
+    let live = codex::codex_home()
+        .ok()
+        .and_then(|home| codex::read_optional_auth_document(&home).ok())
+        .flatten();
+    let context = OAuthRecovery {
+        target,
+        baseline: state.list()?,
+        live_fingerprint: live
+            .as_ref()
+            .map(identity::document_fingerprint)
+            .transpose()?,
+        live_identity: live.as_ref().and_then(|document| {
+            let kind = identity::document_kind(document).ok()?;
+            identity::derive_identity(&kind, document).ok()
+        }),
+    };
     let profile = TempCodexHome::create(&state.isolated_profile_root()?)?;
     let mut server = AppServer::start(&profile.path)?;
 
@@ -253,20 +289,20 @@ pub fn start_oauth(state: AppState, target_id: Option<String>) -> Result<OAuthLo
     let monitor_id = login_id.clone();
     thread::spawn(move || {
         let result = with_oauth_profile(server, profile, |server, profile| {
-            monitor_oauth(
-                server,
-                profile,
-                &state,
-                &monitor_id,
-                &cancelled,
-                target.as_ref(),
-            )
+            monitor_oauth(server, profile, &state, &monitor_id, &cancelled, &context)
         });
         let status = match result {
-            Ok(Some(account)) => OAuthLoginStatus::Complete { account },
-            Ok(None) => OAuthLoginStatus::Cancelled,
+            Ok((Some(()), cleanup_warning)) => {
+                completion_status(&state, &monitor_id, cleanup_warning)
+            }
+            Ok((None, _)) => OAuthLoginStatus::Cancelled,
             Err(message) => OAuthLoginStatus::Failed {
                 code: oauth_failure_code(&message),
+                retryable: state.oauth_is_retryable(&monitor_id)
+                    && !matches!(
+                        oauth_failure_code(&message),
+                        OAuthFailureCode::IdentityMismatch | OAuthFailureCode::Authentication
+                    ),
             },
         };
         let _ = state.set_oauth_status(monitor_id, status);
@@ -279,13 +315,39 @@ fn with_oauth_profile<S, T>(
     mut server: S,
     profile: TempCodexHome,
     monitor: impl FnOnce(&mut S, &TempCodexHome) -> Result<T, String>,
-) -> Result<T, String> {
+) -> Result<(T, bool), String> {
     let result = monitor(&mut server, &profile);
     // On Windows, the App Server can still hold auth.json open. Its child
     // process must exit before removing the GSwitch-owned plaintext profile.
     drop(server);
-    profile.cleanup()?;
-    result
+    let cleanup_warning = profile.cleanup().is_err();
+    result.map(|completed| (completed, cleanup_warning))
+}
+
+fn completion_status(state: &AppState, login_id: &str, cleanup_warning: bool) -> OAuthLoginStatus {
+    match state.finish_staged_oauth(login_id) {
+        Ok((account, retirement_warning)) => OAuthLoginStatus::Complete {
+            account,
+            cleanup_warning: cleanup_warning || retirement_warning,
+        },
+        Err(message) => OAuthLoginStatus::Failed {
+            code: oauth_failure_code(&message),
+            retryable: state.oauth_is_retryable(login_id)
+                && !matches!(
+                    oauth_failure_code(&message),
+                    OAuthFailureCode::IdentityMismatch | OAuthFailureCode::Authentication
+                ),
+        },
+    }
+}
+
+pub fn retry_oauth(state: AppState, login_id: String) -> Result<(), String> {
+    state.retry_oauth_completion(&login_id)?;
+    thread::spawn(move || {
+        let status = completion_status(&state, &login_id, false);
+        let _ = state.set_oauth_status(login_id, status);
+    });
+    Ok(())
 }
 
 pub fn cancel_oauth(state: &AppState, login_id: &str) -> Result<(), String> {
@@ -298,8 +360,8 @@ fn monitor_oauth(
     state: &AppState,
     login_id: &str,
     cancelled: &AtomicBool,
-    target: Option<&OAuthTarget>,
-) -> Result<Option<AccountView>, String> {
+    context: &OAuthRecovery,
+) -> Result<Option<()>, String> {
     let notification = match server.wait_for_notification_cancelled(
         OAUTH_COMPLETION_TIMEOUT,
         |message| {
@@ -315,10 +377,9 @@ fn monitor_oauth(
         }
         Err(error) => return Err(error),
     };
-    // A completion notification can race the cancellation flag after the
-    // transport delivers it. Cancellation wins: do not persist credentials
-    // after the user has closed or cancelled the sign-in flow.
-    if cancelled.load(Ordering::SeqCst) {
+    // Cancellation can win until the completion event is accepted. After that,
+    // closing the browser or dialog cannot discard a successful login.
+    if !state.accept_oauth_completion(login_id)? {
         let _ = server.account_login_cancel(2, login_id);
         return Ok(None);
     }
@@ -330,27 +391,156 @@ fn monitor_oauth(
         return Err("OAuth sign-in did not complete".to_string());
     }
 
-    let operation = state.acquire_operation()?;
-    let credential = profile.read_auth()?;
+    let credential = profile
+        .read_auth()
+        .map_err(|_| "OAuth local credential unavailable".to_string())?;
     let expected_identity = identity::derive_identity(&AccountKind::ChatGpt, &credential)?;
-    if let Some(target) = target {
-        ensure_oauth_target_identity(state, &operation, target, &expected_identity)?;
+    if let Some(target) = context.target.as_ref() {
+        if target.identity != expected_identity {
+            return Err("OAuth identity mismatch: this login belongs to another account".into());
+        }
     }
-    let metadata = read_chatgpt_metadata(&credential, &expected_identity)
-        .map_err(|_| "OAuth account verification failed".to_string())?;
-    if let Some(target) = target {
+    state.stage_oauth_recovery(login_id, &credential, context.clone())?;
+    Ok(Some(()))
+}
+
+/// Rechecks provider identity before a short serialized save. The protected
+/// credential remains available when verification, saving, or applying fails.
+pub(crate) fn finish_oauth_recovery(
+    state: &AppState,
+    credential: &Value,
+    context: &OAuthRecovery,
+) -> Result<AccountView, String> {
+    let client = ChatGptClient::new()?;
+    finish_oauth_recovery_with_client(state, credential, context, &client)
+}
+
+fn finish_oauth_recovery_with_client(
+    state: &AppState,
+    credential: &Value,
+    context: &OAuthRecovery,
+    client: &ChatGptClient,
+) -> Result<AccountView, String> {
+    let identity = identity::derive_identity(&AccountKind::ChatGpt, credential)?;
+    let was_live = context.live_identity.as_ref() == Some(&identity);
+    if let Some(target) = context.target.as_ref() {
+        if identity != target.identity {
+            return Err("OAuth identity mismatch: this login belongs to another account".into());
+        }
+    }
+    let metadata =
+        read_chatgpt_metadata_with_client(client, credential, &identity).map_err(|failure| {
+            match failure {
+                SnapshotMetadataFailure::Provider(error) => match error.kind {
+                    RequestFailureKind::Authentication => {
+                        "OAuth account authentication failed".to_string()
+                    }
+                    RequestFailureKind::RateLimited
+                    | RequestFailureKind::Http
+                    | RequestFailureKind::Transport => {
+                        "OAuth account service is unavailable".to_string()
+                    }
+                    RequestFailureKind::InvalidJson => {
+                        "OAuth account verification failed".to_string()
+                    }
+                },
+                SnapshotMetadataFailure::Message(_) => {
+                    "OAuth account verification failed".to_string()
+                }
+            }
+        })?;
+    if let Some(target) = context.target.as_ref() {
         ensure_oauth_target_email(target, metadata.email.as_deref())?;
     }
-    persist_validated(
-        state,
-        &operation,
-        profile,
-        metadata,
-        target.map(|target| target.identity.clone()),
-        target.map(|target| target.label.clone()),
-        "ChatGPT account".to_string(),
-    )
-    .map(Some)
+    let operation = state.acquire_quota_commit_operation()?;
+    let previous = state.account_by_identity_under_operation(&operation, &identity)?;
+    let already_saved = previous
+        .as_ref()
+        .is_some_and(|account| &account.credential == credential);
+    if let Some(target) = context.target.as_ref() {
+        if already_saved {
+            if previous.as_ref().is_none_or(|saved| saved.id != target.id) {
+                return Err("OAuth identity mismatch: the selected saved account changed".into());
+            }
+        } else {
+            ensure_oauth_target_identity(state, &operation, target, &identity)?;
+        }
+    }
+    if !already_saved && context.target.is_none() {
+        match (
+            previous.as_ref(),
+            context.baseline.iter().find(|view| {
+                previous
+                    .as_ref()
+                    .is_some_and(|account| account.id == view.id)
+            }),
+        ) {
+            (Some(account), Some(baseline))
+                if account.credential_generation == baseline.revision => {}
+            (None, None) => {}
+            _ => {
+                return Err(
+                    "OAuth identity mismatch: the saved account changed during sign-in".into(),
+                )
+            }
+        }
+    }
+    let new_login_differs_from_live = was_live
+        && context.live_fingerprint.as_ref() != Some(&identity::document_fingerprint(credential)?);
+    let mut account = if already_saved {
+        state
+            .list()?
+            .into_iter()
+            .find(|view| previous.as_ref().is_some_and(|saved| saved.id == view.id))
+            .ok_or("The signed-in account is no longer saved")?
+    } else {
+        let draft = AccountDraft {
+            label: context.target.as_ref().map(|target| target.label.clone()),
+            default_label: metadata
+                .email
+                .clone()
+                .or_else(|| metadata.workspace_name.clone())
+                .unwrap_or_else(|| "ChatGPT account".to_string()),
+            kind: AccountKind::ChatGpt,
+            email: metadata.email,
+            plan_type: metadata.plan_type,
+            workspace_name: metadata.workspace_name,
+            account_structure: metadata.account_structure,
+            identity,
+            credential: credential.clone(),
+        };
+        let result = if new_login_differs_from_live {
+            state.upsert_pending_live_under_operation(&operation, draft)
+        } else {
+            state.upsert_under_operation(&operation, draft)
+        };
+        result.map_err(|_| "GSwitch could not save validated credentials".to_string())?
+    };
+
+    let still_selected = state
+        .active_account_id_under_operation(&operation)
+        .ok()
+        .is_some_and(|selected| selected.as_deref().is_none_or(|id| id == account.id));
+    if was_live && still_selected {
+        let live_unchanged = codex::codex_home()
+            .and_then(|home| codex::read_optional_auth_document(&home))
+            .and_then(|document| {
+                document
+                    .as_ref()
+                    .map(identity::document_fingerprint)
+                    .transpose()
+            })
+            .is_ok_and(|fingerprint| fingerprint == context.live_fingerprint);
+        if live_unchanged {
+            account.active = true;
+        }
+        if live_unchanged && runtime::ensure_no_external_codex(&[]).is_ok() {
+            if let Ok(outcome) = switching::switch_under_operation(state, &operation, &account.id) {
+                return Ok(outcome.account);
+            }
+        }
+    }
+    Ok(account)
 }
 
 pub fn import_json(
@@ -682,14 +872,6 @@ fn import_chatgpt_snapshot_with_client(
         }
         Err(error) => Err(error.message()),
     }
-}
-
-fn read_chatgpt_metadata(
-    credential: &Value,
-    expected_identity: &AccountIdentity,
-) -> Result<AccountMetadata, SnapshotMetadataFailure> {
-    let client = ChatGptClient::new().map_err(SnapshotMetadataFailure::Message)?;
-    read_chatgpt_metadata_with_client(&client, credential, expected_identity)
 }
 
 fn read_chatgpt_metadata_with_client(
@@ -1266,6 +1448,59 @@ mod tests {
     }
 
     #[test]
+    fn completed_oauth_replaces_the_matching_saved_account_without_a_duplicate() {
+        let path = test_path("oauth-upsert", "json");
+        let state = AppState::new(path.clone()).expect("state");
+        let old = official_credential("user", "workspace", "old");
+        let fresh = official_credential("user", "workspace", "fresh");
+        let identity = identity::derive_identity(&AccountKind::ChatGpt, &old).expect("identity");
+        let operation = state.acquire_operation().expect("operation");
+        let saved = state
+            .upsert_under_operation(
+                &operation,
+                AccountDraft {
+                    label: Some("Saved".into()),
+                    default_label: "Saved".into(),
+                    kind: AccountKind::ChatGpt,
+                    email: Some("person@example.com".into()),
+                    plan_type: Some("plus".into()),
+                    workspace_name: Some("Personal".into()),
+                    account_structure: Some("workspace".into()),
+                    identity: identity.clone(),
+                    credential: old,
+                },
+            )
+            .expect("saved");
+        drop(operation);
+        let context = OAuthRecovery {
+            target: Some(OAuthTarget {
+                id: saved.id.clone(),
+                identity,
+                email: saved.email.clone(),
+                label: saved.label.clone(),
+                generation: saved.revision,
+            }),
+            baseline: state.list().expect("baseline"),
+            live_fingerprint: None,
+            live_identity: None,
+        };
+        let (base_url, server) = account_check_fixture();
+        let client = ChatGptClient::with_base_url(&base_url).expect("client");
+        let result =
+            finish_oauth_recovery_with_client(&state, &fresh, &context, &client).expect("finish");
+        assert_eq!(result.id, saved.id);
+        assert_eq!(result.email, saved.email);
+        assert!(result.needs_apply);
+        assert_eq!(state.list().expect("list").len(), 1);
+        assert_eq!(
+            state.account_by_id(&saved.id).expect("stored").credential,
+            fresh
+        );
+        server.join().expect("server");
+        let _ = fs::remove_dir_all(path.parent().expect("parent"));
+    }
+
+    #[test]
     fn oauth_profile_is_removed_only_after_its_user_exits_even_on_failure() {
         struct ProfileUser(std::path::PathBuf);
         impl Drop for ProfileUser {
@@ -1281,7 +1516,7 @@ mod tests {
         profile
             .write_auth(&json!({"auth_mode":"chatgpt","tokens":{"access_token":"fixture"}}))
             .expect("write fixture auth");
-        let result: Result<(), String> =
+        let result: Result<((), bool), String> =
             with_oauth_profile(ProfileUser(path.clone()), profile, |_, profile| {
                 assert!(profile.path.join("auth.json").exists());
                 Err("login failed".to_string())

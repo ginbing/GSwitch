@@ -8,6 +8,9 @@ export interface AccountView {
   plan_type?: string;
   workspace_name?: string;
   active: boolean;
+  needs_apply?: boolean;
+  sign_in_required?: boolean;
+  revision?: number;
 }
 
 export type CredentialStoreMode =
@@ -100,12 +103,14 @@ export interface OAuthLoginStart {
 
 export type OAuthLoginStatus =
   | { status: "pending" }
-  | { status: "complete"; account: AccountView }
+  | { status: "finishing" }
+  | { status: "complete"; account: AccountView; cleanup_warning: boolean }
   | { status: "cancelled" }
-  | { status: "failed"; code: OAuthFailureCode };
+  | { status: "failed"; code: OAuthFailureCode; retryable: boolean };
 
 export type OAuthFailureCode =
   | "not_completed" | "timed_out" | "identity_mismatch"
+  | "authentication" | "network" | "local_codex"
   | "verification_failed" | "save_failed" | "unavailable";
 
 export interface ImportResult {

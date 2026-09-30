@@ -43,6 +43,7 @@ struct OAuthLoginControl {
     status: OAuthLoginStatus,
     auth_url: String,
     cancelled: Arc<AtomicBool>,
+    recovery_ref: Option<String>,
 }
 
 #[derive(Clone)]
@@ -98,6 +99,8 @@ struct PendingCredentialSecret {
     expected_account_id: Option<String>,
     #[serde(default)]
     expected_generation: Option<u64>,
+    #[serde(default)]
+    oauth: Option<crate::intake::OAuthRecovery>,
 }
 
 impl AppState {
@@ -249,6 +252,7 @@ impl AppState {
                 expected_identity: None,
                 expected_account_id: None,
                 expected_generation: None,
+                oauth: None,
             };
             vault.put_pending_credential(&reference, &secret)?;
             let stored: PendingCredentialSecret = vault.get(&reference)?;
@@ -873,8 +877,34 @@ impl AppState {
 
     pub fn upsert_under_operation(
         &self,
+        operation: &OperationGuard<'_>,
+        draft: AccountDraft,
+    ) -> Result<AccountView, String> {
+        self.upsert_with_live_state_under_operation(operation, draft, false, false)
+    }
+
+    pub(crate) fn upsert_verified_live_under_operation(
+        &self,
+        operation: &OperationGuard<'_>,
+        draft: AccountDraft,
+    ) -> Result<AccountView, String> {
+        self.upsert_with_live_state_under_operation(operation, draft, true, false)
+    }
+
+    pub(crate) fn upsert_pending_live_under_operation(
+        &self,
+        operation: &OperationGuard<'_>,
+        draft: AccountDraft,
+    ) -> Result<AccountView, String> {
+        self.upsert_with_live_state_under_operation(operation, draft, false, true)
+    }
+
+    fn upsert_with_live_state_under_operation(
+        &self,
         _operation: &OperationGuard<'_>,
         draft: AccountDraft,
+        verified_live: bool,
+        pending_new: bool,
     ) -> Result<AccountView, String> {
         let mut store = self
             .store
@@ -889,11 +919,15 @@ impl AppState {
 
         let account = if let Some(index) = existing_index {
             let existing = &store.accounts[index];
+            if verified_live && existing.needs_apply {
+                return Err("A newer saved sign-in is waiting to be applied".into());
+            }
+            let credential_changed = existing.credential != draft.credential;
             StoredAccount {
                 id: existing.id.clone(),
                 label: draft.label.unwrap_or_else(|| existing.label.clone()),
                 kind: draft.kind,
-                email: draft.email,
+                email: draft.email.or_else(|| existing.email.clone()),
                 plan_type: draft.plan_type,
                 workspace_name: draft
                     .workspace_name
@@ -902,11 +936,23 @@ impl AppState {
                     .account_structure
                     .or_else(|| existing.account_structure.clone()),
                 identity: Some(draft.identity),
-                // Reauthentication invalidates a prior capacity snapshot.
-                quota: None,
-                reset_credits: None,
+                // A new login invalidates the live projection without erasing
+                // the last visible values. An unchanged credential does not.
+                quota: existing.quota.clone().map(|mut quota| {
+                    if credential_changed {
+                        quota.fetched_at_unix_ms = 0;
+                    }
+                    quota
+                }),
+                reset_credits: if credential_changed {
+                    None
+                } else {
+                    existing.reset_credits.clone()
+                },
                 credential_ref: existing.credential_ref.clone(),
                 credential_generation: existing.credential_generation,
+                needs_apply: !verified_live && (existing.needs_apply || credential_changed),
+                sign_in_required: false,
                 credential: draft.credential,
             }
         } else {
@@ -923,6 +969,8 @@ impl AppState {
                 reset_credits: None,
                 credential_ref: String::new(),
                 credential_generation: 0,
+                needs_apply: pending_new,
+                sign_in_required: false,
                 credential: draft.credential,
             }
         };
@@ -935,8 +983,14 @@ impl AppState {
         }
         self.persist_candidate(&store, &mut candidate)?;
         let active_account_id = candidate.active_account_id.clone();
+        let account = candidate
+            .accounts
+            .iter()
+            .find(|saved| saved.id == account.id)
+            .unwrap();
+        let view = Self::view(account, active_account_id.as_deref());
         *store = candidate;
-        Ok(Self::view(&account, active_account_id.as_deref()))
+        Ok(view)
     }
 
     pub fn account_by_id_under_operation(
@@ -972,11 +1026,39 @@ impl AppState {
             .cloned())
     }
 
+    pub(crate) fn mark_sign_in_required(
+        &self,
+        _operation: &OperationGuard<'_>,
+        id: &str,
+        generation: u64,
+    ) -> Result<(), String> {
+        let mut store = self
+            .store
+            .lock()
+            .map_err(|_| "Account store lock is unavailable")?;
+        let Some(index) = store.accounts.iter().position(|account| account.id == id) else {
+            return Ok(());
+        };
+        let account = &store.accounts[index];
+        if account.credential_generation != generation
+            || account.needs_apply
+            || account.sign_in_required
+        {
+            return Ok(());
+        }
+        let mut candidate = store.clone();
+        candidate.accounts[index].sign_in_required = true;
+        self.persist_candidate(&store, &mut candidate)?;
+        *store = candidate;
+        Ok(())
+    }
+
     pub fn update_credential_under_operation(
         &self,
         _operation: &OperationGuard<'_>,
         id: &str,
         credential: Value,
+        expected_generation: u64,
     ) -> Result<(), String> {
         let mut store = self
             .store
@@ -987,7 +1069,10 @@ impl AppState {
             .iter()
             .position(|account| account.id == id)
             .ok_or_else(|| "The selected account is no longer saved".to_string())?;
-        if store.accounts[index].credential == credential {
+        if store.accounts[index].credential_generation != expected_generation {
+            return Err("The saved sign-in changed before live reconciliation".into());
+        }
+        if store.accounts[index].needs_apply || store.accounts[index].credential == credential {
             return Ok(());
         }
         let mut candidate = store.clone();
@@ -1017,6 +1102,7 @@ impl AppState {
             .ok_or_else(|| "The selected account is no longer saved".to_string())?;
         let saved = &store.accounts[index];
         if credential.is_none()
+            && !saved.sign_in_required
             && saved.email == metadata.email
             && saved.plan_type == metadata.plan_type
             && metadata
@@ -1032,6 +1118,7 @@ impl AppState {
         }
         let mut candidate = store.clone();
         let account = &mut candidate.accounts[index];
+        account.sign_in_required = false;
         account.email = metadata.email.clone();
         account.plan_type = metadata.plan_type.clone();
         if metadata.workspace_name.is_some() {
@@ -1041,6 +1128,7 @@ impl AppState {
             account.account_structure = metadata.account_structure.clone();
         }
         if let Some(credential) = credential {
+            account.needs_apply |= account.credential != credential;
             account.credential = credential;
             account.quota = None;
             account.reset_credits = None;
@@ -1071,6 +1159,8 @@ impl AppState {
             .position(|account| account.id == id)
             .ok_or_else(|| "The selected account is no longer saved".to_string())?;
         let mut candidate = store.clone();
+        candidate.accounts[index].needs_apply |= candidate.accounts[index].credential != credential;
+        candidate.accounts[index].sign_in_required = false;
         candidate.accounts[index].credential = credential;
         candidate.accounts[index].quota = Some(quota);
         candidate.accounts[index].reset_credits = reset_credits;
@@ -1099,6 +1189,7 @@ impl AppState {
             .position(|account| account.id == id)
             .ok_or_else(|| "The selected account is no longer saved".to_string())?;
         let mut candidate = store.clone();
+        candidate.accounts[index].sign_in_required = false;
         candidate.accounts[index].quota = Some(quota);
         candidate.accounts[index].reset_credits = reset_credits;
         self.persist_candidate(&store, &mut candidate)?;
@@ -1225,15 +1316,20 @@ impl AppState {
             .store
             .lock()
             .map_err(|_| "Account store lock is unavailable".to_string())?;
-        let account = store
-            .accounts
-            .iter()
-            .find(|account| account.id == id)
-            .cloned()
-            .ok_or_else(|| "The selected account is no longer saved".to_string())?;
+        if !store.accounts.iter().any(|account| account.id == id) {
+            return Err("The selected account is no longer saved".to_string());
+        }
         let mut candidate = store.clone();
         candidate.active_account_id = Some(id.to_string());
         candidate.pending_switch = None;
+        let applied = candidate
+            .accounts
+            .iter_mut()
+            .find(|account| account.id == id)
+            .unwrap();
+        applied.needs_apply = false;
+        applied.sign_in_required = false;
+        let account = applied.clone();
         self.persist_candidate(&store, &mut candidate)?;
         *store = candidate;
         Ok(Self::view(&account, Some(id)))
@@ -1311,6 +1407,7 @@ impl AppState {
             expected_identity: expected_identity.cloned(),
             expected_account_id: existing.map(|account| account.id.clone()),
             expected_generation: existing.map(|account| account.credential_generation),
+            oauth: None,
         };
         drop(store);
         self.vault.put_pending_credential(&reference, &secret)?;
@@ -1330,7 +1427,6 @@ impl AppState {
     /// A changed account generation is never overwritten by an older queue
     /// entry; retirement follows a successful metadata commit.
     pub fn recover_pending_credentials(&self) -> Result<u32, String> {
-        let operation = self.acquire_operation()?;
         let pending = self
             .vault
             .pending_credentials::<PendingCredentialSecret>()?;
@@ -1338,6 +1434,11 @@ impl AppState {
         let mut first_error = None;
         for (reference, secret) in pending {
             let result: Result<(), String> = (|| {
+                if let Some(context) = &secret.oauth {
+                    crate::intake::finish_oauth_recovery(self, &secret.credential, context)?;
+                    return self.vault.retire_pending_credential(&reference);
+                }
+                let operation = self.acquire_operation()?;
                 let kind = document_kind(&secret.credential)?;
                 let identity = derive_identity(&kind, &secret.credential)?;
                 if secret
@@ -1373,6 +1474,8 @@ impl AppState {
                                         .to_string());
                                 }
                                 let mut candidate = store.clone();
+                                candidate.accounts[index].needs_apply = true;
+                                candidate.accounts[index].sign_in_required = false;
                                 candidate.accounts[index].credential = secret.credential.clone();
                                 candidate.accounts[index].quota = None;
                                 candidate.accounts[index].reset_credits = None;
@@ -1446,10 +1549,12 @@ impl AppState {
             .oauth_logins
             .lock()
             .map_err(|_| "OAuth state lock is unavailable".to_string())?;
-        if sessions
-            .values()
-            .any(|session| matches!(session.status, OAuthLoginStatus::Pending))
-        {
+        if sessions.values().any(|session| {
+            matches!(
+                session.status,
+                OAuthLoginStatus::Pending | OAuthLoginStatus::Finishing
+            )
+        }) {
             return Err("Another OAuth sign-in is already waiting for completion".to_string());
         }
         sessions.insert(
@@ -1458,9 +1563,116 @@ impl AppState {
                 status: OAuthLoginStatus::Pending,
                 auth_url,
                 cancelled,
+                recovery_ref: None,
             },
         );
         Ok(())
+    }
+
+    /// Acceptance and cancellation are serialized. A browser tab closing after
+    /// completion has no effect on the protected local commit.
+    pub(crate) fn accept_oauth_completion(&self, login_id: &str) -> Result<bool, String> {
+        let mut sessions = self
+            .oauth_logins
+            .lock()
+            .map_err(|_| "OAuth state lock is unavailable")?;
+        let session = sessions
+            .get_mut(login_id)
+            .ok_or("Unknown OAuth login session")?;
+        if session.cancelled.load(Ordering::SeqCst)
+            || !matches!(session.status, OAuthLoginStatus::Pending)
+        {
+            return Ok(false);
+        }
+        session.status = OAuthLoginStatus::Finishing;
+        Ok(true)
+    }
+
+    pub(crate) fn stage_oauth_recovery(
+        &self,
+        login_id: &str,
+        credential: &Value,
+        context: crate::intake::OAuthRecovery,
+    ) -> Result<(), String> {
+        let reference = format!("pending-credential-{}", Uuid::new_v4());
+        let secret = PendingCredentialSecret {
+            credential: credential.clone(),
+            expected_identity: None,
+            expected_account_id: None,
+            expected_generation: None,
+            oauth: Some(context),
+        };
+        self.vault.put_pending_credential(&reference, &secret)?;
+        self.oauth_logins
+            .lock()
+            .map_err(|_| "OAuth state lock is unavailable")?
+            .get_mut(login_id)
+            .ok_or("Unknown OAuth login session")?
+            .recovery_ref = Some(reference);
+        Ok(())
+    }
+
+    pub(crate) fn retry_oauth_completion(&self, login_id: &str) -> Result<(), String> {
+        let mut sessions = self
+            .oauth_logins
+            .lock()
+            .map_err(|_| "OAuth state lock is unavailable")?;
+        let session = sessions
+            .get_mut(login_id)
+            .ok_or("Unknown OAuth login session")?;
+        if !matches!(
+            session.status,
+            OAuthLoginStatus::Failed {
+                retryable: true,
+                ..
+            }
+        ) {
+            return Err("This sign-in cannot be retried".into());
+        }
+        session.status = OAuthLoginStatus::Finishing;
+        Ok(())
+    }
+
+    pub(crate) fn finish_staged_oauth(
+        &self,
+        login_id: &str,
+    ) -> Result<(AccountView, bool), String> {
+        let reference = self
+            .oauth_logins
+            .lock()
+            .map_err(|_| "OAuth state lock is unavailable")?
+            .get(login_id)
+            .and_then(|session| session.recovery_ref.clone())
+            .ok_or("No completed sign-in is available to retry")?;
+        let secret: PendingCredentialSecret = self.vault.get(&reference)?;
+        let account = crate::intake::finish_oauth_recovery(
+            self,
+            &secret.credential,
+            secret
+                .oauth
+                .as_ref()
+                .ok_or("No completed sign-in is available to retry")?,
+        )?;
+        let retirement_warning = self.vault.retire_pending_credential(&reference).is_err();
+        self.oauth_logins
+            .lock()
+            .map_err(|_| "OAuth state lock is unavailable")?
+            .get_mut(login_id)
+            .ok_or("Unknown OAuth login session")?
+            .recovery_ref = None;
+        Ok((account, retirement_warning))
+    }
+
+    pub(crate) fn oauth_is_retryable(&self, login_id: &str) -> bool {
+        self.oauth_logins
+            .lock()
+            .ok()
+            .and_then(|sessions| {
+                sessions
+                    .get(login_id)
+                    .map(|session| session.recovery_ref.is_some())
+            })
+            .unwrap_or(false)
     }
 
     pub fn set_oauth_status(
@@ -1582,6 +1794,9 @@ impl AppState {
             plan_type: account.plan_type.clone(),
             workspace_name: account.workspace_name.clone(),
             active: active_account_id == Some(account.id.as_str()),
+            needs_apply: account.needs_apply,
+            sign_in_required: account.sign_in_required,
+            revision: account.credential_generation,
         }
     }
 }
@@ -1687,6 +1902,123 @@ mod tests {
 
         assert_eq!(first.id, second.id);
         assert_eq!(state.list().expect("list").len(), 1);
+        let _ = fs::remove_dir_all(path.parent().expect("parent"));
+    }
+
+    #[test]
+    fn new_sign_in_survives_old_live_reconciliation_and_requires_application() {
+        let path = temp_path("new-sign-in-wins");
+        let state = AppState::new(path.clone()).expect("state");
+        let old = stable_credential("workspace", "old");
+        let fresh = stable_credential("workspace", "fresh");
+        let first = save(&state, draft("workspace", old.clone()));
+        let operation = state.acquire_operation().expect("operation");
+        state
+            .complete_switch_under_operation(&operation, &first.id)
+            .expect("active");
+        drop(operation);
+
+        let replacement = save(&state, draft("workspace", fresh.clone()));
+        assert_eq!(replacement.id, first.id);
+        assert!(replacement.needs_apply);
+        assert!(replacement.active);
+        let operation = state.acquire_operation().expect("operation");
+        state
+            .update_credential_under_operation(&operation, &first.id, old, replacement.revision)
+            .expect("older live credential is ignored");
+        assert_eq!(
+            state.account_by_id(&first.id).expect("saved").credential,
+            fresh
+        );
+        state
+            .complete_switch_under_operation(&operation, &first.id)
+            .expect("applied");
+        assert!(!state.list().expect("list")[0].needs_apply);
+        drop(operation);
+        let _ = fs::remove_dir_all(path.parent().expect("parent"));
+    }
+
+    #[test]
+    fn verified_live_rotation_updates_saved_login_without_pending_apply() {
+        let path = temp_path("verified-live-rotation");
+        let state = AppState::new(path.clone()).expect("state");
+        let first = save(
+            &state,
+            draft("workspace", stable_credential("workspace", "old")),
+        );
+        let operation = state.acquire_operation().expect("operation");
+        let rotated = state
+            .upsert_verified_live_under_operation(
+                &operation,
+                draft("workspace", stable_credential("workspace", "rotated")),
+            )
+            .expect("verified live rotation");
+        assert_eq!(rotated.id, first.id);
+        assert!(!rotated.needs_apply);
+        drop(operation);
+
+        let newer = save(
+            &state,
+            draft("workspace", stable_credential("workspace", "browser-login")),
+        );
+        assert!(newer.needs_apply);
+        let operation = state.acquire_operation().expect("operation");
+        assert!(state
+            .upsert_verified_live_under_operation(
+                &operation,
+                draft("workspace", stable_credential("workspace", "old-live")),
+            )
+            .is_err());
+        assert_eq!(
+            state.account_by_id(&first.id).expect("saved").credential,
+            stable_credential("workspace", "browser-login")
+        );
+        drop(operation);
+        let _ = fs::remove_dir_all(path.parent().expect("parent"));
+    }
+
+    #[test]
+    fn first_saved_browser_login_can_wait_for_live_application() {
+        let path = temp_path("new-pending-live-login");
+        let state = AppState::new(path.clone()).expect("state");
+        let operation = state.acquire_operation().expect("operation");
+        let account = state
+            .upsert_pending_live_under_operation(
+                &operation,
+                draft("workspace", stable_credential("workspace", "browser-login")),
+            )
+            .expect("save pending login");
+        assert!(account.needs_apply);
+        assert!(state.list().expect("list")[0].needs_apply);
+        drop(operation);
+        let _ = fs::remove_dir_all(path.parent().expect("parent"));
+    }
+
+    #[test]
+    fn authentication_status_is_generation_scoped() {
+        let path = temp_path("auth-generation");
+        let state = AppState::new(path.clone()).expect("state");
+        let first = save(
+            &state,
+            draft("workspace", stable_credential("workspace", "old")),
+        );
+        let operation = state.acquire_operation().expect("operation");
+        state
+            .mark_sign_in_required(&operation, &first.id, first.revision)
+            .expect("mark");
+        assert!(state.list().expect("list")[0].sign_in_required);
+        drop(operation);
+        let fresh = save(
+            &state,
+            draft("workspace", stable_credential("workspace", "fresh")),
+        );
+        assert!(!fresh.sign_in_required);
+        let operation = state.acquire_operation().expect("operation");
+        state
+            .mark_sign_in_required(&operation, &first.id, first.revision)
+            .expect("old failure");
+        assert!(!state.list().expect("list")[0].sign_in_required);
+        drop(operation);
         let _ = fs::remove_dir_all(path.parent().expect("parent"));
     }
 
@@ -2689,6 +3021,28 @@ mod tests {
         assert!(matches!(
             state.oauth_status("login-one").expect("status"),
             OAuthLoginStatus::Cancelled
+        ));
+        let _ = fs::remove_dir_all(path.parent().expect("parent"));
+    }
+
+    #[test]
+    fn accepted_oauth_completion_cannot_be_cancelled_by_closing_the_browser() {
+        let path = temp_path("oauth-accepted");
+        let state = AppState::new(path.clone()).expect("state");
+        let cancelled = Arc::new(AtomicBool::new(false));
+        state
+            .start_oauth_login(
+                "accepted".into(),
+                "https://auth.openai.com/example".into(),
+                cancelled.clone(),
+            )
+            .expect("start");
+        assert!(state.accept_oauth_completion("accepted").expect("accept"));
+        state.cancel_oauth("accepted").expect("late cancel");
+        assert!(!cancelled.load(Ordering::SeqCst));
+        assert!(matches!(
+            state.oauth_status("accepted").expect("status"),
+            OAuthLoginStatus::Finishing
         ));
         let _ = fs::remove_dir_all(path.parent().expect("parent"));
     }
