@@ -1161,6 +1161,78 @@ describe("GSwitch account workspace", () => {
     expect(mocks.removeSavedAccount).not.toHaveBeenCalled();
   });
 
+  it("closes an account menu on an outside press, Escape, or another menu", async () => {
+    const otherAccount = { ...chatAccount, id: "account-2", email: "other@example.com" };
+    mocks.listAccounts.mockResolvedValue([chatAccount, otherAccount]);
+    const user = userEvent.setup();
+    render(<App />);
+    const trigger = await screen.findByRole("button", { name: "More actions for person@example.com" });
+    const menuItem = () => screen.queryByRole("button", { name: "Remove person@example.com" });
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    expect(menuItem()).not.toBeInTheDocument();
+
+    await user.click(trigger);
+    expect(trigger).toHaveAttribute("aria-expanded", "true");
+    expect(menuItem()).toBeInTheDocument();
+    await user.click(screen.getByRole("heading", { name: "2 saved accounts" }));
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    expect(menuItem()).not.toBeInTheDocument();
+
+    await user.click(trigger);
+    await user.keyboard("{Escape}");
+    expect(menuItem()).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+
+    await user.click(trigger);
+    await user.click(screen.getByRole("button", { name: "More actions for other@example.com" }));
+    expect(menuItem()).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Remove other@example.com" })).toBeInTheDocument();
+  });
+
+  it("closes an account menu when keyboard focus leaves it or an action is chosen", async () => {
+    mocks.listAccounts.mockResolvedValue([chatAccount]);
+    // userEvent.setup() installs its own clipboard, so stub it afterwards.
+    const user = userEvent.setup();
+    const copyEmail = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(window.navigator, "clipboard", { configurable: true, value: { writeText: copyEmail } });
+    render(<App />);
+    const trigger = await screen.findByRole("button", { name: "More actions for person@example.com" });
+
+    trigger.focus();
+    await user.keyboard("{Enter}");
+    await user.tab();
+    expect(screen.getByRole("button", { name: "Copy email" })).toHaveFocus();
+    await user.tab();
+    expect(screen.getByRole("button", { name: "Remove person@example.com" })).toHaveFocus();
+    await user.tab();
+    expect(screen.queryByRole("button", { name: "Copy email" })).not.toBeInTheDocument();
+
+    await user.click(trigger);
+    await user.click(screen.getByRole("button", { name: "Copy email" }));
+    expect(copyEmail).toHaveBeenCalledWith("person@example.com");
+    expect(screen.queryByRole("button", { name: "Copy email" })).not.toBeInTheDocument();
+
+    await user.click(trigger);
+    await user.click(screen.getByRole("button", { name: "Remove person@example.com" }));
+    const dialog = await screen.findByRole("dialog", { name: "Remove person@example.com?" });
+    expect(screen.queryByRole("button", { name: "Copy email" })).not.toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(trigger).toHaveFocus();
+  });
+
+  it("closes the language menu on an outside press", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    const heading = await screen.findByRole("heading", { name: "0 saved accounts" });
+    const trigger = screen.getByRole("button", { name: "Language" });
+
+    await user.click(trigger);
+    expect(screen.getByRole("button", { name: "English" })).toBeInTheDocument();
+    await user.click(heading);
+    expect(screen.queryByRole("button", { name: "English" })).not.toBeInTheDocument();
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+  });
+
   it("localizes the remove-operation retry prompt in Simplified Chinese", async () => {
     window.localStorage.setItem("gswitch.language", "zh-CN");
     mocks.listAccounts.mockResolvedValue([chatAccount]);

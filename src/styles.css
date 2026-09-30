@@ -201,21 +201,19 @@ summary:focus-visible {
   position: relative;
 }
 
-.language-menu summary {
+.language-menu > button {
   display: grid;
   width: 35px;
   height: 35px;
   place-items: center;
-  list-style: none;
+  padding: 0;
   border: 1px solid var(--border);
   border-radius: 9px;
   color: var(--muted);
   background: var(--surface);
-  cursor: pointer;
 }
 
-.language-menu summary::-webkit-details-marker { display: none; }
-.language-menu summary:hover { color: var(--text); background: var(--surface-hover); }
+.language-menu > button:hover { color: var(--text); background: var(--surface-hover); }
 
 .language-menu-popover {
   position: absolute;
@@ -726,21 +724,19 @@ summary:focus-visible {
   flex: 0 0 auto;
 }
 
-.card-menu summary {
+.card-menu > button {
   display: grid;
   width: 28px;
   height: 28px;
   place-items: center;
-  list-style: none;
+  padding: 0;
+  border: 0;
   border-radius: 7px;
   color: var(--soft-muted);
+  background: transparent;
 }
 
-.card-menu summary::-webkit-details-marker {
-  display: none;
-}
-
-.card-menu summary:hover {
+.card-menu > button:hover {
   color: var(--text);
   background: var(--surface-hover);
 }
