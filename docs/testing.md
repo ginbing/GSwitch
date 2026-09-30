@@ -87,6 +87,11 @@ routine update creates a branch only after dashboard approval. Renovate opens
 security remediation PRs immediately, without automerge; GitHub Dependabot
 Alerts remain a signal but Dependabot Security Updates PRs are disabled.
 
+A Renovate pull request is a proposal, not a merge candidate. Merging it
+directly records the bot as a commit author and lists it as a contributor.
+Recreate its change in a maintainer-authored commit and pull request, run the
+checks for the changed paths there, then close Renovate's pull request.
+
 GitHub CodeQL default setup, rather than a repository workflow, scans Actions,
 JavaScript/TypeScript, and Rust. Its effective language list and the
 repository's SHA-pinning policy must be read from GitHub when making a claim
