@@ -93,6 +93,10 @@ without a click. Codex CLI and the Codex desktop app update separately.
 - Opening a dialog moves keyboard focus inside it. Tab stays inside, and closing
   restores focus to the launching control. A dialog cannot be dismissed while
   its non-cancellable action is in progress.
+- The account and language menus are small popovers, and only one is open at a
+  time. Pressing outside, Escape, moving keyboard focus away, opening another
+  menu, or choosing an action closes the menu. Escape and a chosen action
+  return focus to the menu button.
 - Disable conflicting credential actions while one is in progress.
 - Show progress on the affected row or in the focused operation dialog.
 - Keep Wake results per account; identify each result by email and workspace,
