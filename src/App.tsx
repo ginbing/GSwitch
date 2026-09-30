@@ -223,6 +223,9 @@ function oauthFailureMessage(t: Translator, code: OAuthFailureCode) {
     not_completed: "oauth.failureNotCompleted",
     timed_out: "oauth.failureTimedOut",
     identity_mismatch: "oauth.failureIdentity",
+    authentication: "oauth.failureAuthentication",
+    network: "oauth.failureNetwork",
+    local_codex: "oauth.failureLocalCodex",
     verification_failed: "oauth.failureVerification",
     save_failed: "oauth.failureSave",
     unavailable: "oauth.failureUnavailable",
@@ -584,6 +587,7 @@ function AccountCard({
   onRemove,
   onCopyEmail,
   onReauthenticate,
+  onApply,
   reauthenticationAvailable,
   quotaFailure,
   selectionMode,
@@ -605,6 +609,7 @@ function AccountCard({
   onRemove: () => void;
   onCopyEmail: () => void;
   onReauthenticate: () => void;
+  onApply: () => void;
   reauthenticationAvailable: boolean;
   quotaFailure?: QuotaRefreshFailureCode;
   selectionMode: boolean;
@@ -618,6 +623,7 @@ function AccountCard({
   const primaryName = accountPrimaryName(account);
   const secondaryName = accountSecondaryName(account, primaryName, t);
   const controlsBusy = globalBusy || busyAction !== undefined;
+  const signInRequired = account.sign_in_required || reauthenticationAvailable;
 
   return (
     <article className={"account-card" + (active ? " account-active" : "") + (selected ? " account-selected" : "")}>
@@ -651,10 +657,6 @@ function AccountCard({
                 event.currentTarget.closest("details")?.removeAttribute("open");
                 onCopyEmail();
               }} type="button"><Copy size={15} />{t("account.copyEmail")}</button> : null}
-              {reauthenticationAvailable ? <button disabled={controlsBusy} onClick={(event) => {
-                event.currentTarget.closest("details")?.removeAttribute("open");
-                onReauthenticate();
-              }} type="button"><Globe2 size={15} />{t("account.signInAgain")}</button> : null}
               <button
                 className="card-menu-danger"
                 aria-label={t("account.remove", { name: primaryName })}
@@ -673,6 +675,8 @@ function AccountCard({
       <div className="account-badges">
         {active ? <span className="badge badge-active"><Check size={13} /> {t("account.active")}</span> : null}
         <span className="badge">{accountPlan(account, t)}</span>
+        {signInRequired ? <span className="badge badge-error">{t("account.signInRequired")}</span> : null}
+        {!signInRequired && active && account.needs_apply ? <span className="badge badge-muted">{t("account.pendingApply")}</span> : null}
         {quota?.status === "stale" ? <span className="badge badge-muted">{t("account.stale")}</span> : null}
       </div>
 
@@ -729,7 +733,7 @@ function AccountCard({
           <RefreshCw className={busyAction === "refresh" ? "spin" : ""} size={17} />
         </button> : null}
         <div className="card-footer-actions">
-          {!isApiKey ? (
+          {!isApiKey && !signInRequired ? (
             <button
               aria-label={t("account.wake", { name: primaryName })}
               className="button button-secondary"
@@ -742,14 +746,14 @@ function AccountCard({
             </button>
           ) : null}
           <button
-            aria-label={t(active ? "account.current" : "account.switch", { name: primaryName })}
+            aria-label={t(signInRequired ? "account.signInAgain" : active && account.needs_apply ? "account.apply" : active ? "account.current" : "account.switch", { name: primaryName })}
             className="button button-primary"
-            disabled={controlsBusy || active}
-            onClick={onSwitch}
+            disabled={controlsBusy || (active && !account.needs_apply && !signInRequired)}
+            onClick={signInRequired ? onReauthenticate : active && account.needs_apply ? onApply : onSwitch}
             type="button"
           >
-            {busyAction === "switch" ? <LoaderCircle className="spin" size={15} /> : <ArrowRightLeft size={15} />}
-            {active ? t("common.current") : t("common.switch")}
+            {busyAction === "switch" ? <LoaderCircle className="spin" size={15} /> : signInRequired ? <Globe2 size={15} /> : <ArrowRightLeft size={15} />}
+            {signInRequired ? t("account.signInAgain") : active && account.needs_apply ? t("account.apply") : active ? t("common.current") : t("common.switch")}
           </button>
         </div>
       </div> : null}
@@ -898,6 +902,8 @@ export default function App() {
   const quotaRefreshes = useRef(new Map<string, Promise<QuotaView>>());
   const quotaRefreshQueue = useRef<Promise<void>>(Promise.resolve());
   const accountOperations = useRef(new Set<string>());
+  const snapshotSequence = useRef(0);
+  const initialSnapshotLoaded = useRef(false);
   const [label, setLabel] = useState("");
   const locale = useMemo(() => resolveLocale(languagePreference), [languagePreference]);
   const t = useMemo(() => createTranslator(locale.language), [locale.language]);
@@ -1013,30 +1019,40 @@ export default function App() {
   }, []);
 
   const loadSnapshot = useCallback(async () => {
-    setLoading(true);
+    const sequence = ++snapshotSequence.current;
+    if (!initialSnapshotLoaded.current) setLoading(true);
     try {
       const initial = await api.appSnapshot();
+      if (sequence !== snapshotSequence.current) return;
       const activeAccountId = initial.live?.account?.id;
       const nextAccounts = [...initial.accounts].sort(
         (left, right) =>
           Number(right.active || right.id === activeAccountId) -
           Number(left.active || left.id === activeAccountId),
       );
-      setAccounts(nextAccounts);
+      setAccounts((current) => {
+        if (!current.length) return nextAccounts;
+        const byId = new Map(nextAccounts.map((account) => [account.id, account]));
+        const retained = current.flatMap((account) => byId.has(account.id) ? [byId.get(account.id)!] : []);
+        const added = nextAccounts.filter((account) => !current.some((saved) => saved.id === account.id));
+        return [...retained, ...added];
+      });
       setSelectedAccountIds((current) =>
         current.filter((id) => nextAccounts.some((account) => account.id === id)),
       );
       setStorage(initial.storage);
       setPendingResetCredit(initial.pending_reset_credit);
       setLive(initial.live || null);
-      setQuotas({});
-      setQuotaFailures({});
+      const savedIds = new Set(nextAccounts.map((account) => account.id));
+      setQuotas((current) => Object.fromEntries(Object.entries(current).filter(([id]) => savedIds.has(id))));
+      setQuotaFailures((current) => Object.fromEntries(Object.entries(current).filter(([id]) => savedIds.has(id))));
       if (initial.storage.status === "ready") {
         void Promise.allSettled(
           nextAccounts
             .filter((account) => account.kind === "chat_gpt")
             .map(async (account) => [account.id, await api.accountQuota(account.id)] as const),
         ).then((quotaPairs) => {
+          if (sequence !== snapshotSequence.current) return;
           const cached = Object.fromEntries(
             quotaPairs.flatMap((result) => result.status === "fulfilled" ? [result.value] : []),
           ) as Record<string, QuotaView>;
@@ -1054,7 +1070,10 @@ export default function App() {
         text: friendlyError(t, error, t("error.snapshot")),
       });
     } finally {
-      setLoading(false);
+      if (sequence === snapshotSequence.current) {
+        initialSnapshotLoaded.current = true;
+        setLoading(false);
+      }
     }
   }, [requestQuotaRefresh, t]);
 
@@ -1249,7 +1268,7 @@ export default function App() {
   }, [importPaths]);
 
   useEffect(() => {
-    if (!oauth || oauth.status.status !== "pending") {
+    if (!oauth || (oauth.status.status !== "pending" && oauth.status.status !== "finishing")) {
       return;
     }
     let closed = false;
@@ -1268,10 +1287,11 @@ export default function App() {
           if (oauthTarget) {
             setAccountSignInNeeded((current) => ({ ...current, [oauthTarget.id]: false }));
           }
-          setNotice({ kind: "success", text: t(oauthTarget ? "notice.reauthenticatedAccount" : "notice.importedAccount", { name: accountPrimaryName(status.account) }) });
-          setDialog(null);
+          if (!status.account.needs_apply) {
+            setNotice({ kind: "success", text: t(oauthTarget ? "notice.reauthenticatedAccount" : "notice.importedAccount", { name: accountPrimaryName(status.account) }) });
+          }
           void loadSnapshot();
-        } else if (status.status === "pending") {
+        } else if (status.status === "pending" || status.status === "finishing") {
           timer = window.setTimeout(poll, 800);
         }
       } catch {
@@ -1392,11 +1412,13 @@ export default function App() {
     if (!oauth) {
       return;
     }
-    const completed = await runVoidTask("oauth-cancel", () => api.cancelOAuth(oauth.login_id), false);
-    if (completed) {
-      setOauthStatusUnavailable(false);
-      setOauth((current) => current ? { ...current, status: { status: "cancelled" } } : current);
-    }
+    await runVoidTask("oauth-cancel", () => api.cancelOAuth(oauth.login_id), false);
+  };
+
+  const retryOAuthSave = async () => {
+    if (!oauth) return;
+    const completed = await runVoidTask("oauth-retry", () => api.retryOAuth(oauth.login_id), false);
+    if (completed) setOauth((current) => current ? { ...current, status: { status: "finishing" } } : current);
   };
 
   const closeAddDialog = () => {
@@ -1768,7 +1790,7 @@ export default function App() {
           <div className="brand-copy">
             <h1>GSwitch</h1>
             <p aria-atomic="true" aria-live="polite" className="brand-status">
-              <span aria-hidden="true" className={live?.status === "ready" ? "status-dot status-ready" : "status-dot"} />
+              <span aria-hidden="true" className="status-dot" />
               <span className="brand-status-label">{liveAccountLabel}</span>
               <span aria-hidden="true">·</span>
               <span className="brand-status-state">{liveStatusLabel}</span>
@@ -1970,6 +1992,7 @@ export default function App() {
                   key={account.id}
                   onCopyEmail={() => void copyAccountEmail(account)}
                   onReauthenticate={() => void startOAuth(account)}
+                  onApply={() => void switchAccount(account)}
                   onRefresh={() => void refreshAccount(account)}
                   onRemove={() => {
                     setRemoveAccount(account);
@@ -1997,7 +2020,7 @@ export default function App() {
                   }}
                   quota={quotas[account.id]}
                   quotaFailure={quotaFailures[account.id]}
-                  reauthenticationAvailable={account.kind === "chat_gpt" && (quotaFailures[account.id] === "authentication" || accountSignInNeeded[account.id] === true)}
+                  reauthenticationAvailable={account.kind === "chat_gpt" && (account.sign_in_required === true || quotaFailures[account.id] === "authentication" || accountSignInNeeded[account.id] === true)}
                   selected={selectedAccountIds.includes(account.id)}
                   selectionMode={selectionMode}
                   t={t}
@@ -2182,6 +2205,11 @@ export default function App() {
 
           {addMethod === "oauth" && oauth ? (
             <div className="oauth-flow">
+              {oauthTarget ? <div className="oauth-target">
+                <span>{t("oauth.targetEmail", { email: oauthTarget.email || accountPrimaryName(oauthTarget) })}</span>
+                {oauthTarget.workspace_name ? <span>{t("oauth.targetWorkspace", { workspace: oauthTarget.workspace_name })}</span> : null}
+                {oauthTarget.email ? <button className="text-button" onClick={() => void copyAccountEmail(oauthTarget)} type="button">{t("account.copyEmail")}</button> : null}
+              </div> : null}
               {oauth.status.status === "pending" ? (
                 <>
                   <div className="oauth-hero">
@@ -2199,10 +2227,17 @@ export default function App() {
                     <button className="button button-primary" onClick={() => void api.openOAuth(oauth.login_id).catch(() => setNotice({ kind: "error", text: t("oauth.openFailed") }))} type="button"><Globe2 size={16} />{t("oauth.openBrowser")}</button>
                   </div>
                 </>
+              ) : oauth.status.status === "finishing" ? (
+                <div className="oauth-hero" role="status">
+                  <LoaderCircle className="spin" size={26} />
+                  <div><h3>{t("oauth.finishing")}</h3><p>{t("oauth.finishingBody")}</p></div>
+                </div>
               ) : oauth.status.status === "complete" ? (
                 <div className="outcome-panel">
                   <CircleCheck size={26} />
                   <h3>{t(oauthTarget ? "oauth.reauthenticated" : "oauth.added", { name: accountPrimaryName(oauth.status.account) })}</h3>
+                  {oauth.status.account.needs_apply ? <p>{t(oauth.status.account.active ? "oauth.pendingApplyCurrent" : "oauth.pendingApplyOther")}</p> : null}
+                  {oauth.status.cleanup_warning ? <p>{t("oauth.cleanupWarning")}</p> : null}
                   <button className="button button-primary" onClick={closeAddDialog} type="button">{t("common.done")}</button>
                 </div>
               ) : (
@@ -2210,7 +2245,9 @@ export default function App() {
                   <CircleAlert size={26} />
                   <h3>{oauth.status.status === "cancelled" ? t("oauth.cancelled") : t("oauth.incomplete")}</h3>
                   <p>{oauth.status.status === "failed" ? oauthFailureMessage(t, oauth.status.code) : t("oauth.unchanged")}</p>
-                  <button className="button button-primary" onClick={() => void startOAuth(oauthTarget ?? undefined)} type="button">{t("oauth.retry")}</button>
+                  {oauth.status.status === "failed" && oauth.status.retryable ? (
+                    <button className="button button-primary" onClick={() => void retryOAuthSave()} type="button">{t("oauth.retrySave")}</button>
+                  ) : <button className="button button-primary" onClick={() => void startOAuth(oauthTarget ?? undefined)} type="button">{t("oauth.retry")}</button>}
                 </div>
               )}
             </div>
@@ -2519,6 +2556,9 @@ export default function App() {
                         {secondary ? <span>{secondary}</span> : null}
                       </div>
                       <p>{wakeResultLabel(result, wake.alternate_model === true, t)}</p>
+                      {result.result === "needs_sign_in" && account ? (
+                        <button className="wake-retry" onClick={() => void startOAuth(account)} type="button">{t("account.signInAgain")}</button>
+                      ) : null}
                       {wake.status !== "running" && result.result === "model_unavailable" && !wake.alternate_model ? (
                         <button
                           className="wake-retry"

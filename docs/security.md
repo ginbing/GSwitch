@@ -103,6 +103,14 @@ Atomic writes protect against partial files; they do not by themselves prove
 that the data being written is current. Every mutation must also verify identity
 and expected prior state.
 
+An accepted OAuth completion is staged in the protected vault before its
+provider check and short serialized save. A failed verification or save keeps
+that staged credential for a retry, without leaving plaintext in the isolated
+profile. The selected account ID, stable identity, and saved credential
+generation are checked again at commit. Browser closure after acceptance does
+not cancel the commit. Isolated-profile cleanup failure is separate from
+whether the login was saved.
+
 ## Switching invariants
 
 Before replacing live credentials:
@@ -111,7 +119,8 @@ Before replacing live credentials:
 2. no external Codex runtime may be active or uninspectable, and that check must
    happen before target-network validation;
 3. the current live identity must be saved or the live profile must be empty;
-4. the newest live credential must be reconciled into its saved profile;
+4. the newest live credential may be reconciled into its saved profile only
+   at the expected saved generation and when no newer login awaits application;
 5. a ChatGPT target must pass a read-only account check with its saved snapshot,
    or an API-key target must pass local structure and stable-identity checks;
 6. a ChatGPT 401 or 403 may use one isolated managed refresh after another
@@ -124,7 +133,7 @@ Before replacing live credentials:
    the preflight observations.
 
 After replacement, success requires a local reread of `auth.json` to derive the
-requested identity. That check does not start App Server or make a provider
+requested complete credential. That check does not start App Server or make a provider
 request. Rollback is allowed only if the live file still matches the credential
 GSwitch wrote. Otherwise fail closed and require recovery. A stale saved refresh
 token must never overwrite a newer live token.

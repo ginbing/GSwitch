@@ -24,13 +24,13 @@ or recovery; they do not create a second navigation system.
 The toolbar contains the current Codex account, Refresh, Wake all, Add account,
 and a compact language menu. It is a command bar, not a dashboard header
 or a custom window chrome. Its status dot always remains visible; only a long
-account label may truncate. The status is also written in text so ready, unknown,
+account label may truncate. The status is also written in text so current, unknown,
 signed-out, setup, and recovery states do not rely on color.
 
 An account card should show only the state needed for a decision:
 
 - label and useful identity;
-- active, ready, needs-login, unsupported, or busy state;
+- current selection, needs-login, pending-apply, unsupported, or busy state;
 - the Codex quota windows actually supplied for that plan, with reset timing when available;
 - reset-credit count and nearest expiry when available;
 - direct actions such as Switch, Wake, refresh, reset, or remove when eligible.
@@ -121,9 +121,16 @@ without a click. Codex CLI and the Codex desktop app update separately.
   Old percentages say "Last" and use muted meters; an unavailable result stays
   unknown. Actions stay in the account menu, not in the warning tooltip. Batch
   feedback describes quota results only.
-- A saved email can be copied from its card menu. Offer sign-in again only after
-  an authentication failure. The focused login dialog explains which saved
-  account will be updated; a mismatched login changes no account.
+- A saved email can be copied from its card menu. After a confirmed
+  authentication failure, the card shows **Sign in required** and makes
+  **Sign in again** its primary action. The focused dialog shows the saved
+  email and workspace, offers Copy email, and updates the original record only
+  after verifying the returning identity. A saved login for the current account
+  that could not be applied shows **Apply**. The toolbar identifies the selected
+  local Codex account without claiming that its remote sign-in is valid.
+- After Wake, sign-in, or refresh, update affected cards in place. Preserve
+  order and last known quota while a new provider projection is pending; old
+  results cannot replace a newer login or clear the entire account grid.
 - Keep card content compact. Truncated account and workspace names expose their
   full value on hover; do not reserve empty vertical space for the old heading
   reminder. Quota reset timing shows one compact relative and absolute line,

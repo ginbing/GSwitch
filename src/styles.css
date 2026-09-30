@@ -191,11 +191,6 @@ summary:focus-visible {
   background: var(--soft-muted);
 }
 
-.status-ready {
-  background: var(--success);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--success) 16%, transparent);
-}
-
 .toolbar-actions {
   flex-wrap: wrap;
   justify-content: flex-end;
@@ -816,6 +811,12 @@ summary:focus-visible {
 .badge-muted {
   color: var(--warning);
   background: var(--warning-soft);
+}
+
+.badge-error {
+  border-color: transparent;
+  color: var(--danger);
+  background: var(--danger-soft);
 }
 
 .quota-pair {
@@ -1447,6 +1448,16 @@ summary:focus-visible {
   align-items: flex-start;
   gap: 12px;
   margin-bottom: 19px;
+}
+
+.oauth-target {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px 14px;
+  margin-bottom: 18px;
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .oauth-hero > svg {

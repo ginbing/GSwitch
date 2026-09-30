@@ -32,6 +32,7 @@ export const api = {
     invoke<void>("reset_damaged_account_store"),
   liveAccount: () => invoke<LiveAccountView>("get_live_account_state"),
   startOAuth: (targetId?: string) => invoke<OAuthLoginStart>("start_oauth_login", { targetId }),
+  retryOAuth: (loginId: string) => invoke<void>("retry_oauth_login", { loginId }),
   oauthStatus: (loginId: string) =>
     invoke<OAuthLoginStatus>("get_oauth_login_status", { loginId }),
   cancelOAuth: (loginId: string) =>

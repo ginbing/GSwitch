@@ -6,8 +6,10 @@ particular revision.
 
 ## Account intake
 
-All intake methods produce the same local saved-account model without changing
-the user's live Codex identity.
+All intake methods produce the same local saved-account model. A new login for
+the currently selected account can also apply that credential to Codex after
+the browser login is saved, provided Codex is closed and the live document has
+not changed. Other intake never changes the live identity.
 
 ### ChatGPT OAuth
 
@@ -16,15 +18,24 @@ the user's live Codex identity.
 3. Show the returned HTTPS authorization URL for copying or an explicit
    **Open browser** action. Do not open it automatically. Use Codex's local
    success page so completing login does not launch the ChatGPT desktop app.
-4. Wait for the matching completion event, read the complete resulting
-   credential document, and use its fresh access-token snapshot for the
-   read-only account metadata check. Do not request a proactive refresh.
-5. Write the verified complete document to a new protected-vault generation,
-   then atomically commit metadata pointing at it only after its identity is
-   known.
+4. Wait for the matching completion event. Once accepted, show **Finishing
+   sign-in**; closing the browser or dialog does not cancel this local commit.
+   Read the complete credential document into protected recovery storage before
+   ending the isolated profile. Use its fresh access-token snapshot for a
+   read-only metadata check without requesting a proactive refresh.
+5. Match the verified identity, email when available, and saved generation to
+   the intended account. Write the complete document to a new protected-vault
+   generation, then atomically commit metadata pointing at it. An existing
+   identity replaces its original record rather than adding a duplicate.
+6. If this was the selected live account when login started and is still selected,
+   Codex is closed, and the live document is unchanged, apply the saved login
+   through the normal switch transaction. Otherwise show **Apply** for a saved
+   current login or leave a non-current account ready for its next switch.
 
-Cancellation and timeout end the isolated login. OAuth is the default login
-experience; GSwitch does not implement a parallel OAuth protocol.
+Cancellation before the completion event and timeout end the isolated login.
+OAuth is the default login experience; GSwitch does not implement a parallel
+OAuth protocol. An unreadable live Codex credential does not block a new
+browser login, but prevents automatic application to that live profile.
 A failed status query in the WebView does not end the isolated login. Keep the
 login ID and retry the read; only a terminal status from the login operation
 may be presented as completed, failed, cancelled, or timed out.
@@ -33,8 +44,11 @@ compare the newly verified user and workspace identity, plus an available
 email, before replacing that account's saved credential. A different login,
 removed account, or changed identity leaves the saved account and live Codex
 credential unchanged. The WebView receives only a safe failure category.
-The App Server is stopped before the isolated profile is removed, including
-after cancellation or validation failure; cleanup failure is reported.
+If account verification or saving fails after completion, the protected login
+can be retried without repeating browser authorization. A rejected identity
+cannot overwrite the selected account. A failed cleanup of the isolated profile
+is reported separately from the saved-login result. The App Server is stopped
+before the isolated profile is removed.
 
 ### JSON or file import
 
@@ -156,7 +170,9 @@ The visible interaction is one **Switch** action. Rust owns the full transaction
    Codex runtime before any provider request;
 3. confirm the effective file-backed store through the supported Codex
    configuration surface, then stop that helper process;
-4. read the live credential and preserve it into the matching saved profile;
+4. read the live credential and preserve it into the matching saved profile only
+   when it belongs to the same saved generation and no newer login awaits
+   application;
 5. validate the target snapshot: ChatGPT uses the saved access token for one
    read-only account check, routing it to the selected workspace from the
    credential or its stable identity claim; API-key identity is checked locally
@@ -167,8 +183,14 @@ The visible interaction is one **Switch** action. Rust owns the full transaction
 7. persist pending-switch metadata and protected rollback auth;
 8. check the external process state and live credential fingerprint again;
 9. atomically replace the live credential;
-10. reread `auth.json` and confirm the requested identity locally;
+10. reread `auth.json` and confirm the requested complete credential locally;
 11. commit the active profile only after that verification.
+
+A switch back to the same identity is still a transaction when the saved login
+is newer than the live document. Identity equality alone cannot report success.
+The write and readback must apply that saved generation. A normal Codex token
+rotation may still reconcile to the saved record when it matches the expected
+prior generation.
 
 A successful ChatGPT snapshot check updates only normalized non-secret account
 metadata. It does not start an isolated App Server, refresh the token, or rewrite

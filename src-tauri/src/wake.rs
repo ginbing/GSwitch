@@ -254,6 +254,15 @@ fn run_targets(
             Ok(account) => wake_account(state, operation, &account, cancelled, model),
             Err(error) => WakeAccountOutcome::new(WakeResultKind::Failed, error),
         };
+        if outcome.result == WakeResultKind::NeedsSignIn {
+            if let Ok(account) = state.account_by_id_under_operation(operation, &target.id) {
+                let _ = state.mark_sign_in_required(
+                    operation,
+                    &target.id,
+                    account.credential_generation,
+                );
+            }
+        }
         view.results.push(WakeAccountResult {
             account_id: target.id.clone(),
             label: target.label.clone(),

@@ -79,6 +79,12 @@ pub struct StoredAccount {
     pub credential_ref: String,
     #[serde(default)]
     pub credential_generation: u64,
+    /// A replacement saved by sign-in/import/managed refresh has not yet been
+    /// installed into live Codex. Never reconcile an older live file over it.
+    #[serde(default)]
+    pub needs_apply: bool,
+    #[serde(default)]
+    pub sign_in_required: bool,
     /// Kept in Rust memory for existing domain operations, but never written
     /// back into accounts.json. Legacy stores deserialize it only long enough
     /// for the one-time protected-vault migration.
@@ -96,6 +102,9 @@ pub struct AccountView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_name: Option<String>,
     pub active: bool,
+    pub needs_apply: bool,
+    pub sign_in_required: bool,
+    pub revision: u64,
 }
 
 /// A display-only outcome for one bounded user-selected account-file batch.
@@ -560,9 +569,16 @@ pub struct OAuthLoginStart {
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum OAuthLoginStatus {
     Pending,
-    Complete { account: AccountView },
+    Finishing,
+    Complete {
+        account: AccountView,
+        cleanup_warning: bool,
+    },
     Cancelled,
-    Failed { code: OAuthFailureCode },
+    Failed {
+        code: OAuthFailureCode,
+        retryable: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -571,6 +587,9 @@ pub enum OAuthFailureCode {
     NotCompleted,
     TimedOut,
     IdentityMismatch,
+    Authentication,
+    Network,
+    LocalCodex,
     VerificationFailed,
     SaveFailed,
     Unavailable,

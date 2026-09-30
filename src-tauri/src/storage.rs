@@ -198,6 +198,8 @@ mod tests {
             reset_credits: None,
             credential_ref: "account:test".into(),
             credential_generation: 1,
+            needs_apply: false,
+            sign_in_required: false,
             credential,
         }
     }
