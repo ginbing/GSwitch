@@ -125,8 +125,10 @@ without a click. Codex CLI and the Codex desktop app update separately.
   Old percentages say "Last" and use muted meters; an unavailable result stays
   unknown. Actions stay in the account menu, not in the warning tooltip. Batch
   feedback describes quota results only.
-- A saved email can be copied from its card menu. After a confirmed
-  authentication failure, the card shows **Sign in required** and makes
+- A saved email can be copied from its card menu. Every saved ChatGPT account
+  also keeps **Sign in again** in that menu, so recovery never depends on
+  GSwitch diagnosing a failure correctly. After a confirmed authentication
+  failure, the card additionally shows **Sign in required** and makes
   **Sign in again** its primary action. The focused dialog shows the saved
   email and workspace, offers Copy email, and updates the original record only
   after verifying the returning identity. A saved login for the current account

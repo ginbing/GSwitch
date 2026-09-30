@@ -739,6 +739,7 @@ function AccountCard({
             label={t("account.moreActions", { name: primaryName })}
           >
             {account.email ? <button onClick={onCopyEmail} type="button"><Copy size={15} />{t("account.copyEmail")}</button> : null}
+            {!isApiKey ? <button disabled={controlsBusy} onClick={onReauthenticate} type="button"><Globe2 size={15} />{t("account.signInAgain")}</button> : null}
             <button
               className="card-menu-danger"
               aria-label={t("account.remove", { name: primaryName })}
