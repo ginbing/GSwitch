@@ -60,13 +60,15 @@ Issue. If feedback leads to another change, commit it and increase the preview
 suffix before rebuilding.
 
 From the repository root in PowerShell 7, derive a unique preview version from
-the current product version, then build:
+the next patch version, then build. Product pull requests leave the version
+files at the last release, so a suffix on the current version would sort below
+the installed release and be offered that release as an update:
 
 ```powershell
 $dirty = git status --porcelain
 if ($dirty) { throw 'Build the preview from a clean, committed source revision.' }
-$baseVersion = node -p "require('./src-tauri/tauri.conf.json').version"
-$previewVersion = "$baseVersion-rc.1"
+$major, $minor, $patch = (node -p "require('./src-tauri/tauri.conf.json').version").Split('.')
+$previewVersion = "$major.$minor.$([int]$patch + 1)-rc.1"
 New-Item -ItemType Directory -Force -Path 'src-tauri/target' | Out-Null
 $previewConfig = Join-Path (Resolve-Path 'src-tauri/target').Path "tauri-$previewVersion.json"
 Set-Content -LiteralPath $previewConfig -Value "{`"version`":`"$previewVersion`"}" -NoNewline -Encoding utf8
