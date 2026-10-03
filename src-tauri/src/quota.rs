@@ -1944,7 +1944,11 @@ mod tests {
 
         #[test]
         fn recovery_entry_point_reports_a_missing_record_before_any_provider_work() {
-            let (state, _accounts, root) = state_with_accounts(&["user"]);
+            // An empty store keeps credential fixtures out of the real entry
+            // point, which would otherwise reach App Server code.
+            let root = std::env::temp_dir().join(format!("gswitch-reset-{}", Uuid::new_v4()));
+            fs::create_dir_all(&root).expect("test directory");
+            let state = AppState::new(root.join("accounts.json")).expect("state");
             assert_eq!(
                 recover_pending_reset_credit(&state).expect_err("no record"),
                 NO_PENDING_RESET
