@@ -61,7 +61,7 @@ pub fn run() {
             commands::remove_saved_account,
             commands::get_account_quota,
             commands::refresh_account_quota,
-            commands::redeem_earliest_reset_credit,
+            commands::redeem_reset_credit,
             commands::recover_pending_reset_credit,
             commands::start_wake,
             commands::start_wake_all,

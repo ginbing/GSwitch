@@ -1737,7 +1737,9 @@ export default function App() {
   };
 
   const redeemReset = async () => {
-    if (!resetAccount) {
+    // The dialog lists credits soonest-first and says the first one is used.
+    const credit = resetCredits?.usable_credits[0];
+    if (!resetAccount || !credit) {
       return;
     }
     if (!resetConfirmation) {
@@ -1746,7 +1748,7 @@ export default function App() {
     }
     const result = await runTask(
       "reset:" + resetAccount.id,
-      () => api.redeemEarliestResetCredit(resetAccount.id),
+      () => api.redeemResetCredit(resetAccount.id, credit),
     );
     if (!result) {
       // A failed request may have left a pending record that needs recovery.

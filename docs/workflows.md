@@ -307,8 +307,10 @@ display and action eligibility.
 2. keeps only available and unexpired credits of the Codex rate-limit reset
    kind (a credit with no reported kind comes from an older payload that
    carried only Codex resets; any other kind is never listed or redeemed);
-3. chooses the eligible credit with the earliest expiry, placing credits without
-   an expiry after dated credits;
+3. finds the credit the user picked by its expiry and, when both sides report
+   it, its grant time. The WebView never holds a credit ID; if the picked
+   credit is no longer available, nothing is consumed and the refreshed list is
+   saved for the dialog;
 4. persists a non-secret pending reference plus the selected credit and unique
    idempotency key in protected storage;
 5. consumes that exact credit through Codex;
@@ -322,6 +324,11 @@ refresh fails; the UI reports the refresh warning separately. An interrupted
 request reuses the durable idempotency key during recovery. After a failed
 request the workspace reloads its state, so a pending record shows the recovery
 prompt at once.
+
+A new pick is refused while any reset record is pending, so it can never
+silently consume the recorded, possibly different credit; only recovery replays
+that record. Saved credit lists are recomputed when read, so a credit that
+expired after the last provider read is no longer offered.
 
 `reset` and `alreadyRedeemed` are confirmed outcomes. `nothingToReset` and
 `noCredit` explicitly mean no credit was consumed. Recovery is a user-directed

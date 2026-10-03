@@ -33,7 +33,7 @@ const mocks = vi.hoisted(() => ({
   removeSavedAccount: vi.fn(),
   accountQuota: vi.fn(),
   refreshAccountQuota: vi.fn(),
-  redeemEarliestResetCredit: vi.fn(),
+  redeemResetCredit: vi.fn(),
   recoverPendingResetCredit: vi.fn(),
   startWake: vi.fn(),
   startWakeAll: vi.fn(),
@@ -173,7 +173,7 @@ function prepareDefaults() {
   mocks.recoverPendingSwitch.mockResolvedValue(undefined);
   mocks.removeSavedAccount.mockResolvedValue(undefined);
   mocks.refreshAccountQuota.mockResolvedValue(staleQuota);
-  mocks.redeemEarliestResetCredit.mockResolvedValue({
+  mocks.redeemResetCredit.mockResolvedValue({
     account_id: "account-1",
     outcome: "reset",
   });
@@ -568,12 +568,12 @@ describe("GSwitch account workspace", () => {
     await userEvent.click(screen.getByRole("button", { name: "Details" }));
     expect(await screen.findByRole("dialog", { name: "Use a reset credit · person@example.com" })).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Use reset credit" }));
-    expect(mocks.redeemEarliestResetCredit).not.toHaveBeenCalled();
+    expect(mocks.redeemResetCredit).not.toHaveBeenCalled();
     expect(screen.getByText("Use the earliest eligible reset credit for person@example.com?")).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: "Use earliest credit" }));
     await waitFor(() =>
-      expect(mocks.redeemEarliestResetCredit).toHaveBeenCalledWith("account-1"),
+      expect(mocks.redeemResetCredit).toHaveBeenCalledWith("account-1", { expires_at: 1893456000 }),
     );
   });
 
@@ -596,7 +596,7 @@ describe("GSwitch account workspace", () => {
     let redeemed = false;
     mocks.listAccounts.mockResolvedValue([chatAccount]);
     mocks.accountQuota.mockImplementation(async () => (redeemed ? quotaAfterReset : staleQuota));
-    mocks.redeemEarliestResetCredit.mockImplementation(async () => {
+    mocks.redeemResetCredit.mockImplementation(async () => {
       redeemed = true;
       return { account_id: "account-1", outcome: "reset", quota: quotaAfterReset };
     });
@@ -628,7 +628,7 @@ describe("GSwitch account workspace", () => {
       runtime: await mocks.runtimeInfo(),
       live: await mocks.liveAccount(),
     }));
-    mocks.redeemEarliestResetCredit.mockImplementation(async () => {
+    mocks.redeemResetCredit.mockImplementation(async () => {
       failed = true;
       throw "Codex App Server did not respond";
     });
@@ -819,11 +819,11 @@ describe("GSwitch account workspace", () => {
     await userEvent.click(screen.getByRole("button", { name: "Review reset recovery" }));
     expect(await screen.findByRole("dialog", { name: "Recover reset credit" })).toBeInTheDocument();
     expect(mocks.recoverPendingResetCredit).not.toHaveBeenCalled();
-    expect(mocks.redeemEarliestResetCredit).not.toHaveBeenCalled();
+    expect(mocks.redeemResetCredit).not.toHaveBeenCalled();
 
     await userEvent.click(screen.getByRole("button", { name: "Recover original request" }));
     await waitFor(() => expect(mocks.recoverPendingResetCredit).toHaveBeenCalledOnce());
-    expect(mocks.redeemEarliestResetCredit).not.toHaveBeenCalled();
+    expect(mocks.redeemResetCredit).not.toHaveBeenCalled();
   });
 
   it("keeps account actions available when a local quota projection cannot be read", async () => {

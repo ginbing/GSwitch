@@ -329,6 +329,10 @@ pub struct ResetCreditsView {
 pub struct ResetCreditDetailView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<i64>,
+    /// With `expires_at`, identifies the credit a user picks without exposing
+    /// the provider's credit ID to the WebView.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub granted_at: Option<i64>,
 }
 
 /// Rust-owned reset-credit data. The opaque ID is never part of a Tauri
@@ -350,6 +354,8 @@ pub struct StoredResetCredit {
     /// Codex rate-limit resets.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reset_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub granted_at: Option<i64>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
