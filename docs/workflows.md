@@ -250,7 +250,9 @@ later successful refresh or a new sign-in clears it.
 Quota is read from ChatGPT's current read-only usage endpoint with the live
 access-token snapshot when Codex is running, or the saved credential snapshot
 when it is not. GSwitch sends no App Server request and writes no credential
-for a successful ordinary read. It normalizes the provider's primary,
+for a successful ordinary read. All provider reads share one HTTP client, so
+reads after the first reuse its open connection instead of a new TLS
+handshake. It normalizes the provider's primary,
 secondary, and additional buckets into five-hour, weekly, and other windows by
 the durations supplied by the provider; missing or malformed values remain
 unknown. The card renders whichever Codex windows the provider actually supplies,
