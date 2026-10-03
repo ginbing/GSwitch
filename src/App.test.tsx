@@ -662,6 +662,24 @@ describe("GSwitch account workspace", () => {
     )).toBeInTheDocument();
   });
 
+  it("keeps the reset dialog closable while a full refresh runs", async () => {
+    mocks.listAccounts.mockResolvedValue([chatAccount]);
+    mocks.accountQuota.mockResolvedValue({ ...staleQuota, status: "fresh" });
+    mocks.refreshAccountQuota.mockImplementation(() => new Promise(() => undefined));
+    render(<App />);
+    await screen.findByRole("heading", { name: "person@example.com" });
+
+    await userEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    await userEvent.click(screen.getByRole("button", { name: "Details" }));
+    const dialog = await screen.findByRole("dialog", { name: "Use a reset credit · person@example.com" });
+
+    expect(within(dialog).queryByText("Working…")).not.toBeInTheDocument();
+    const close = within(dialog).getByRole("button", { name: /^Close / });
+    expect(close).toBeEnabled();
+    await userEvent.click(close);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
   it("shows reset recovery after a reset request fails", async () => {
     let failed = false;
     mocks.listAccounts.mockResolvedValue([chatAccount]);
