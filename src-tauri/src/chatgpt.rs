@@ -87,32 +87,29 @@ pub(crate) struct ChatGptClient {
 }
 
 impl ChatGptClient {
+    /// Every production request shares one client and its connection pool, so
+    /// after the first account each quota read reuses the open connection to
+    /// ChatGPT instead of paying for a new TLS handshake. No cookie store is
+    /// enabled, and each request carries only its own account's headers.
     pub(crate) fn new() -> Result<Self, String> {
-        Self::with_base_url(CHATGPT_BACKEND_URL)
+        static SHARED: OnceLock<Client> = OnceLock::new();
+        let client = match SHARED.get() {
+            Some(client) => client.clone(),
+            None => {
+                let client = build_client()?;
+                SHARED.get_or_init(|| client).clone()
+            }
+        };
+        Ok(Self {
+            client,
+            base_url: CHATGPT_BACKEND_URL.to_string(),
+        })
     }
 
     #[cfg(test)]
     pub(crate) fn with_base_url(base_url: &str) -> Result<Self, String> {
-        install_crypto_provider();
-        let client = Client::builder()
-            .timeout(REQUEST_TIMEOUT)
-            .build()
-            .map_err(|_| "Unable to prepare the ChatGPT quota request".to_string())?;
         Ok(Self {
-            client,
-            base_url: base_url.trim_end_matches('/').to_string(),
-        })
-    }
-
-    #[cfg(not(test))]
-    pub(crate) fn with_base_url(base_url: &str) -> Result<Self, String> {
-        install_crypto_provider();
-        let client = Client::builder()
-            .timeout(REQUEST_TIMEOUT)
-            .build()
-            .map_err(|_| "Unable to prepare the ChatGPT quota request".to_string())?;
-        Ok(Self {
-            client,
+            client: build_client()?,
             base_url: base_url.trim_end_matches('/').to_string(),
         })
     }
@@ -410,6 +407,14 @@ fn assistant_text(item: Option<&Value>) -> bool {
                     })
                 })
     })
+}
+
+fn build_client() -> Result<Client, String> {
+    install_crypto_provider();
+    Client::builder()
+        .timeout(REQUEST_TIMEOUT)
+        .build()
+        .map_err(|_| "Unable to prepare the ChatGPT quota request".to_string())
 }
 
 fn install_crypto_provider() {
