@@ -121,7 +121,9 @@ after checking the saved credential generation. Startup reads account secrets
 from one Stronghold session instead of reopening the snapshot for every card.
 React keeps point-operation state local: a single-account quota refresh
 replaces only that account's quota projection, while a full workspace reload is
-reserved for initial state or a real topology change.
+reserved for initial state or a real topology change. When a reload reads saved
+projections, a newer saved projection replaces the in-memory one and an older
+one does not.
 
 `accounts.json` is metadata, not a vault. Its version-4 account records carry
 an opaque credential reference and generation; complete documents and

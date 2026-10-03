@@ -248,6 +248,19 @@ function removeFailureMessage(t: Translator, error: unknown) {
   return t("remove.failed");
 }
 
+// A projection Rust saved after this view loaded it, such as the quota read
+// after a reset, replaces the in-memory copy. An older saved copy does not.
+function mergeNewerQuotas(current: Record<string, QuotaView>, saved: Record<string, QuotaView>) {
+  const next = { ...current };
+  for (const [accountId, quota] of Object.entries(saved)) {
+    const held = next[accountId];
+    if (!held || (quota.snapshot?.fetched_at_unix_ms ?? 0) > (held.snapshot?.fetched_at_unix_ms ?? 0)) {
+      next[accountId] = quota;
+    }
+  }
+  return next;
+}
+
 function accountGridHasGlobalMutation(busy: string | null) {
   if (!busy) {
     return false;
@@ -1138,7 +1151,7 @@ export default function App() {
           const cached = Object.fromEntries(
             quotaPairs.flatMap((result) => result.status === "fulfilled" ? [result.value] : []),
           ) as Record<string, QuotaView>;
-          setQuotas((current) => ({ ...cached, ...current }));
+          setQuotas((current) => mergeNewerQuotas(current, cached));
           for (const quota of Object.values(cached)) {
             if (quota.status === "unknown" || quota.status === "stale") {
               void requestQuotaRefresh(quota.account_id, true).catch(() => undefined);
@@ -1709,6 +1722,20 @@ export default function App() {
     }
   };
 
+  // Rust returns the quota it read after a confirmed reset; show it at once
+  // instead of waiting for the card's next refresh.
+  const showResetQuota = (quota: QuotaView | undefined) => {
+    if (!quota) {
+      return;
+    }
+    setQuotas((current) => ({ ...current, [quota.account_id]: quota }));
+    setQuotaFailures((current) => {
+      const next = { ...current };
+      delete next[quota.account_id];
+      return next;
+    });
+  };
+
   const redeemReset = async () => {
     if (!resetAccount) {
       return;
@@ -1721,32 +1748,39 @@ export default function App() {
       "reset:" + resetAccount.id,
       () => api.redeemEarliestResetCredit(resetAccount.id),
     );
-    if (result) {
-      const complete = result.outcome === "reset" || result.outcome === "already_redeemed";
-      setNotice({
-        kind: complete ? "success" : "info",
-        text: complete
-          ? result.refresh_warning ? t("notice.resetRefreshWarning") : t("notice.resetUsed")
-          : t("notice.noResetUsed"),
-      });
-      setResetAccount(null);
-      setResetConfirmation(false);
-      setDialog(null);
+    if (!result) {
+      // A failed request may have left a pending record that needs recovery.
+      void loadSnapshot();
+      return;
     }
+    showResetQuota(result.quota);
+    const complete = result.outcome === "reset" || result.outcome === "already_redeemed";
+    setNotice({
+      kind: complete ? "success" : "info",
+      text: complete
+        ? result.refresh_warning ? t("notice.resetRefreshWarning") : t("notice.resetUsed")
+        : t("notice.noResetUsed"),
+    });
+    setResetAccount(null);
+    setResetConfirmation(false);
+    setDialog(null);
   };
 
   const recoverPendingResetCredit = async () => {
     const result = await runTask("recover-reset-credit", api.recoverPendingResetCredit);
-    if (result) {
-      const confirmed = result.outcome === "reset" || result.outcome === "already_redeemed";
-      setNotice({
-        kind: confirmed ? "success" : "info",
-        text: result.refresh_warning ? t("notice.resetRefreshWarning") : (confirmed
-          ? t("notice.recoveredReset")
-          : t("notice.resetNotConsumed")),
-      });
-      setDialog(null);
+    if (!result) {
+      void loadSnapshot();
+      return;
     }
+    showResetQuota(result.quota);
+    const confirmed = result.outcome === "reset" || result.outcome === "already_redeemed";
+    setNotice({
+      kind: confirmed ? "success" : "info",
+      text: result.refresh_warning ? t("notice.resetRefreshWarning") : (confirmed
+        ? t("notice.recoveredReset")
+        : t("notice.resetNotConsumed")),
+    });
+    setDialog(null);
   };
 
   const removeSavedAccount = async () => {

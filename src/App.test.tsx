@@ -577,6 +577,71 @@ describe("GSwitch account workspace", () => {
     );
   });
 
+  it("shows the quota a reset returns on the card without a manual refresh", async () => {
+    const quotaAfterReset: QuotaView = {
+      account_id: "account-1",
+      status: "fresh",
+      snapshot: {
+        ...staleQuota.snapshot!,
+        fetched_at_unix_ms: Date.now(),
+        reset_credits: {
+          available_count: 1,
+          nearest_expiry: 1894060800,
+          details_available: true,
+          can_redeem: true,
+          usable_credits: [{ expires_at: 1894060800 }],
+        },
+      },
+    };
+    let redeemed = false;
+    mocks.listAccounts.mockResolvedValue([chatAccount]);
+    mocks.accountQuota.mockImplementation(async () => (redeemed ? quotaAfterReset : staleQuota));
+    mocks.redeemEarliestResetCredit.mockImplementation(async () => {
+      redeemed = true;
+      return { account_id: "account-1", outcome: "reset", quota: quotaAfterReset };
+    });
+    const { container } = render(<App />);
+
+    expect(await screen.findByText("Personal")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(container.querySelector(".credit-count strong")?.textContent).toBe("2"),
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "Details" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Use reset credit" }));
+    await userEvent.click(screen.getByRole("button", { name: "Use earliest credit" }));
+
+    await waitFor(() =>
+      expect(container.querySelector(".credit-count strong")?.textContent).toBe("1"),
+    );
+    expect(mocks.refreshAccountQuota).not.toHaveBeenCalledWith("account-1", false);
+  });
+
+  it("shows reset recovery after a reset request fails", async () => {
+    let failed = false;
+    mocks.listAccounts.mockResolvedValue([chatAccount]);
+    mocks.accountQuota.mockResolvedValue(staleQuota);
+    mocks.appSnapshot.mockImplementation(async () => ({
+      storage: { status: "ready" },
+      accounts: [chatAccount],
+      pending_reset_credit: failed,
+      runtime: await mocks.runtimeInfo(),
+      live: await mocks.liveAccount(),
+    }));
+    mocks.redeemEarliestResetCredit.mockImplementation(async () => {
+      failed = true;
+      throw "Codex App Server did not respond";
+    });
+    render(<App />);
+
+    expect(await screen.findByText("Personal")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Details" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Use reset credit" }));
+    await userEvent.click(screen.getByRole("button", { name: "Use earliest credit" }));
+
+    expect(await screen.findByText("A reset-credit request needs recovery")).toBeInTheDocument();
+  });
+
   it("shows the provider-supplied five-week free quota and reset time", async () => {
     const freeAccount = { ...chatAccount, plan_type: "free" };
     const resetAt = Math.floor(Date.now() / 1000) + 21 * 24 * 60 * 60;
