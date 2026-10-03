@@ -311,12 +311,15 @@ display and action eligibility.
    idempotency key in protected storage;
 5. consumes that exact credit through Codex;
 6. clears the pending record only after an authoritative outcome;
-7. refreshes quota and reset-credit state.
+7. refreshes quota and reset-credit state, and the card shows that result
+   immediately without a manual refresh.
 
 If detailed credits are unavailable, GSwitch may show the count but cannot
 redeem safely. A confirmed redemption remains confirmed if the post-action
 refresh fails; the UI reports the refresh warning separately. An interrupted
-request reuses the durable idempotency key during recovery.
+request reuses the durable idempotency key during recovery. After a failed
+request the workspace reloads its state, so a pending record shows the recovery
+prompt at once.
 
 `reset` and `alreadyRedeemed` are confirmed outcomes. `nothingToReset` and
 `noCredit` explicitly mean no credit was consumed. Recovery is a user-directed
