@@ -69,6 +69,7 @@ import type {
   QuotaRefreshFailureCode,
   QuotaView,
   QuotaWindow,
+  ResetCreditDetail,
   ResetCreditFailure,
   ResetCreditFailureCode,
   ResetCreditOutcome,
@@ -1068,7 +1069,7 @@ export default function App() {
   const [resetAccount, setResetAccount] = useState<AccountView | null>(null);
   const [removeAccount, setRemoveAccount] = useState<AccountView | null>(null);
   const [removeError, setRemoveError] = useState<string | null>(null);
-  const [resetConfirmation, setResetConfirmation] = useState(false);
+  const [redeemingCredit, setRedeemingCredit] = useState<string | null>(null);
   const [pendingUpdate, setPendingUpdate] = useState<PendingUpdate | null>(null);
   const [cliInfo, setCliInfo] = useState<CodexCliInfo | null>(null);
   const [cliChecking, setCliChecking] = useState(false);
@@ -1931,20 +1932,18 @@ export default function App() {
     }
   };
 
-  const redeemReset = async () => {
-    // The dialog lists credits soonest-first and says the first one is used.
-    const credit = resetCredits?.usable_credits[0];
-    if (!resetAccount || !credit) {
+  // Redeems the credit on the row the user confirmed. Rust matches it again
+  // against a fresh provider read before consuming anything.
+  const redeemReset = async (credit: ResetCreditDetail, pick: string) => {
+    if (!resetAccount) {
       return;
     }
-    if (!resetConfirmation) {
-      setResetConfirmation(true);
-      return;
-    }
+    setRedeemingCredit(pick);
     const result = await runTask(
       "reset:" + resetAccount.id,
       () => api.redeemResetCredit(resetAccount.id, credit),
     );
+    setRedeemingCredit(null);
     if (!result) {
       // A failed request may have left a pending record that needs recovery.
       void loadSnapshot();
@@ -1953,7 +1952,6 @@ export default function App() {
     showResetQuota(result.quota);
     setNotice(resetOutcomeNotice(result));
     setResetAccount(null);
-    setResetConfirmation(false);
     setDialog(null);
   };
 
@@ -2032,6 +2030,13 @@ export default function App() {
     (account) => account.kind === "chat_gpt" && selectedAccountIds.includes(account.id),
   ).length;
   const resetCredits = resetAccount ? quotas[resetAccount.id]?.snapshot?.reset_credits : undefined;
+  const resetDialogName = (account: AccountView) => {
+    const name = accountPrimaryName(account);
+    const sameEmail = account.email
+      ? accounts.filter((saved) => saved.email === account.email).length
+      : 1;
+    return sameEmail > 1 && account.workspace_name ? `${name} · ${account.workspace_name}` : name;
+  };
   const pendingResetAccount = pendingReset
     ? accounts.find((account) => account.id === pendingReset.account_id)
     : undefined;
@@ -2331,7 +2336,7 @@ export default function App() {
                       return;
                     }
                     setResetAccount(account);
-                    setResetConfirmation(false);
+                    confirm.disarm();
                     setDialog("reset");
                   }}
                   resetRecoveryRequired={pendingResetCredit}
@@ -2796,39 +2801,59 @@ export default function App() {
         <Modal
           dismissible={!runningAny("reset:")}
           onClose={() => {
-            setResetConfirmation(false);
+            confirm.disarm();
             setDialog(null);
           }}
           t={t}
-          title={t("reset.title", { name: accountPrimaryName(resetAccount) })}
+          title={t("reset.title", { name: resetDialogName(resetAccount) })}
         >
           <div className="reset-details">
-            {accountSecondaryName(resetAccount, accountPrimaryName(resetAccount), t) ? <p className="reset-account-workspace">{accountSecondaryName(resetAccount, accountPrimaryName(resetAccount), t)}</p> : null}
-            <p>
-              {t("reset.available", { count: formatNumber(resetCredits?.available_count ?? 0, locale.formatLocale) })}
-            </p>
-            {resetCredits?.details_available ? (
+            <div className="credit-list-head">
+              <span className="badge badge-active">{t("reset.availableCount", { count: formatNumber(resetCredits?.available_count ?? 0, locale.formatLocale) })}</span>
+            </div>
+            {!resetCredits?.details_available ? (
+              <div className="inline-warning"><CircleAlert size={17} />{t("reset.detailsUnavailable")}</div>
+            ) : resetCredits.usable_credits.length ? (
               <ul className="credit-list">
-                {resetCredits.usable_credits.map((credit, index) => (
-                  <li key={String(credit.expires_at ?? "unknown") + "-" + index}>
-                    <span>{t("reset.eligible", { number: formatNumber(index + 1, locale.formatLocale) })}</span>
-                    <strong>{credit.expires_at ? t("reset.expires", { time: formatDateTimeWithRelative(credit.expires_at, locale.formatLocale) }) : t("reset.expiryUnknown")}</strong>
-                  </li>
-                ))}
+                {resetCredits.usable_credits.map((credit, index) => {
+                  const pick = `reset-${credit.expires_at ?? "none"}-${credit.granted_at ?? "none"}-${index}`;
+                  const expiry = credit.expires_at ? formatDateTime(credit.expires_at, locale.formatLocale) : undefined;
+                  const armed = confirm.armed === pick;
+                  return (
+                    <li key={pick}>
+                      <span className="credit-copy">
+                        <strong>{credit.title ?? t("reset.creditTitleFallback")}</strong>
+                        <small>
+                          {credit.expires_at
+                            ? t("reset.expiresAt", { date: expiry!, relative: formatRelativeTime(credit.expires_at, locale.formatLocale) })
+                            : t("reset.expiryUnknown")}
+                        </small>
+                      </span>
+                      <button
+                        aria-label={expiry
+                          ? t(armed ? "reset.confirmLabel" : "reset.useLabel", { date: expiry })
+                          : t(armed ? "reset.confirmLabelUndated" : "reset.useLabelUndated")}
+                        className={"button " + (armed ? "button-danger" : "button-secondary")}
+                        data-confirm={pick}
+                        disabled={busy !== null}
+                        onClick={() => confirm.click(pick, () => void redeemReset(credit, pick))}
+                        type="button"
+                      >
+                        {redeemingCredit === pick ? <LoaderCircle className="spin" size={15} /> : null}
+                        {armed ? t("reset.confirm") : t("reset.use")}
+                      </button>
+                    </li>
+                  );
+                })}
               </ul>
             ) : (
-              <div className="inline-warning"><CircleAlert size={17} />{t("reset.detailsUnavailable")}</div>
+              <div className="inline-warning"><CircleAlert size={17} />{t("reset.noneUsable")}</div>
             )}
-            {resetConfirmation ? (
-              <div className="confirm-copy"><strong>{t("reset.question", { name: accountPrimaryName(resetAccount) })}</strong><p>{t("reset.warning")}</p></div>
+            {resetCredits?.details_available && resetCredits.available_count > resetCredits.usable_credits.length ? (
+              <p className="credit-unlisted">
+                {t("reset.unlisted", { count: formatNumber(resetCredits.available_count - resetCredits.usable_credits.length, locale.formatLocale) })}
+              </p>
             ) : null}
-            <div className="modal-actions">
-              <button className="button button-secondary" disabled={busy !== null} onClick={() => setDialog(null)} type="button">{t("common.cancel")}</button>
-              <button className="button button-danger" disabled={!resetCredits?.can_redeem || busy !== null} onClick={() => void redeemReset()} type="button">
-                {busy?.startsWith("reset:") ? <LoaderCircle className="spin" size={16} /> : <Zap size={16} />}
-                {resetConfirmation ? t("reset.useEarliest") : t("reset.use")}
-              </button>
-            </div>
           </div>
         </Modal>
       ) : null}

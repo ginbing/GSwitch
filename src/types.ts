@@ -179,6 +179,8 @@ export interface QuotaBucket {
 export interface ResetCreditDetail {
   expires_at?: number;
   granted_at?: number;
+  // The provider's display title, such as "Full reset (Weekly + 5 hr)".
+  title?: string;
 }
 
 export interface ResetCreditsView {
