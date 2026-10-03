@@ -342,6 +342,10 @@ pub struct StoredResetCredits {
     pub available_count: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credits: Option<Vec<StoredResetCredit>>,
+    /// When the credit list was last read from the usage endpoint's detail
+    /// lookup; absent when it came from elsewhere or is unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details_read_at_unix_ms: Option<i64>,
 }
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]

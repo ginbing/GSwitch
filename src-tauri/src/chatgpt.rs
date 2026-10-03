@@ -65,13 +65,6 @@ pub(crate) struct CredentialSnapshot {
     pub(crate) account_id: Option<String>,
 }
 
-#[derive(Debug)]
-pub(crate) struct QuotaResponse {
-    pub(crate) usage: Value,
-    pub(crate) reset_credit_details: Option<Value>,
-    pub(crate) detail_failure: Option<RequestFailure>,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AccountMetadataProjection {
     pub(crate) account_id: String,
@@ -114,22 +107,15 @@ impl ChatGptClient {
         })
     }
 
-    pub(crate) fn quota(&self, credential: &Value) -> Result<QuotaResponse, RequestFailure> {
-        let snapshot = credential_snapshot(credential).map_err(|_| RequestFailure {
-            kind: RequestFailureKind::Authentication,
-            status: Some(401),
-        })?;
-        let usage = self.get_json("/wham/usage", &snapshot)?;
-        let (reset_credit_details, detail_failure) =
-            match self.get_json("/wham/rate-limit-reset-credits", &snapshot) {
-                Ok(value) => (Some(value), None),
-                Err(error) => (None, Some(error)),
-            };
-        Ok(QuotaResponse {
-            usage,
-            reset_credit_details,
-            detail_failure,
-        })
+    pub(crate) fn usage(&self, credential: &Value) -> Result<Value, RequestFailure> {
+        self.get_json("/wham/usage", &quota_credential(credential)?)
+    }
+
+    pub(crate) fn reset_credit_details(&self, credential: &Value) -> Result<Value, RequestFailure> {
+        self.get_json(
+            "/wham/rate-limit-reset-credits",
+            &quota_credential(credential)?,
+        )
     }
 
     pub(crate) fn account_check(&self, credential: &Value) -> Result<Value, RequestFailure> {
@@ -406,6 +392,13 @@ fn assistant_text(item: Option<&Value>) -> bool {
                                 .is_some_and(|text| !text.trim().is_empty())
                     })
                 })
+    })
+}
+
+fn quota_credential(credential: &Value) -> Result<CredentialSnapshot, RequestFailure> {
+    credential_snapshot(credential).map_err(|_| RequestFailure {
+        kind: RequestFailureKind::Authentication,
+        status: Some(401),
     })
 }
 

@@ -189,6 +189,8 @@ as applicable:
   while a record is pending, dropping credits that expired since the last read,
   and idempotent outcomes;
 - reset credits of another kind never being listed or redeemed;
+- saved reset-credit details being reused only while the usage count matches
+  and they are under an hour old;
 - reset failure codes distinguishing a busy lock and failures before consume
   (nothing spent) from an explicit provider rejection and an unknown outcome
   (record kept), and outcome notices naming the account and used credit;

@@ -128,7 +128,8 @@ pub fn refresh_quota_background(state: &AppState, account_id: &str) -> Result<Qu
             (account.credential.clone(), false)
         }
     };
-    let normalized = match fetch_quota_projection(&identity, &credential) {
+    let saved_credits = account.reset_credits.as_ref();
+    let normalized = match fetch_quota_projection(&identity, &credential, saved_credits) {
         Ok(normalized) => normalized,
         Err(ReadOnlyRefreshFailure::Provider(error))
             if matching_live && error.can_fallback_to_managed_refresh() =>
@@ -140,7 +141,8 @@ pub fn refresh_quota_background(state: &AppState, account_id: &str) -> Result<Qu
             if latest == credential {
                 return Err(ReadOnlyRefreshFailure::Provider(error).message());
             }
-            fetch_quota_projection(&identity, &latest).map_err(ReadOnlyRefreshFailure::message)?
+            fetch_quota_projection(&identity, &latest, saved_credits)
+                .map_err(ReadOnlyRefreshFailure::message)?
         }
         Err(ReadOnlyRefreshFailure::Provider(error)) if error.can_fallback_to_managed_refresh() => {
             return Err("Refresh this account to retry its saved sign-in".to_string());
@@ -220,7 +222,7 @@ pub(crate) fn refresh_quota_snapshot(
     identity: &AccountIdentity,
     credential: &Value,
 ) -> Result<QuotaSnapshot, ReadOnlyRefreshFailure> {
-    let normalized = fetch_quota_projection(identity, credential)?;
+    let normalized = fetch_quota_projection(identity, credential, account.reset_credits.as_ref())?;
     let snapshot = normalized.snapshot;
     state
         .update_quota_under_operation(
@@ -233,32 +235,86 @@ pub(crate) fn refresh_quota_snapshot(
     Ok(snapshot)
 }
 
+/// Credit details change only when a credit is granted, used, or expires.
+/// The usage response's count reveals the first two, and saved lists are
+/// filtered for expiry when read, so a matching count within this window lets
+/// a refresh skip the separate detail request.
+const CREDIT_DETAILS_FRESH_FOR_MS: i64 = 60 * 60 * 1000;
+
 fn fetch_quota_projection(
     identity: &AccountIdentity,
     credential: &Value,
+    saved: Option<&StoredResetCredits>,
 ) -> Result<NormalizedRateLimits, ReadOnlyRefreshFailure> {
     let client = ChatGptClient::new().map_err(ReadOnlyRefreshFailure::Message)?;
-    let response = client
-        .quota(credential)
+    let usage = client
+        .usage(credential)
         .map_err(ReadOnlyRefreshFailure::Provider)?;
-    chatgpt::validate_response_identity(credential, identity, &response.usage)
+    chatgpt::validate_response_identity(credential, identity, &usage)
         .map_err(ReadOnlyRefreshFailure::Message)?;
 
-    let merged = chatgpt::merge_reset_credit_details(
-        &response.usage,
-        response.reset_credit_details.as_ref(),
-    );
-    let mut normalized = normalize_rate_limits_data(&merged, now_unix_ms());
-    if response.detail_failure.is_some() {
-        if let Some(reset_credits) = normalized.reset_credits.as_mut() {
+    let now = now_unix_ms();
+    if let Some(saved) = reusable_credit_details(saved, &usage, now) {
+        return Ok(with_saved_credit_details(
+            normalize_rate_limits_data(&usage, now),
+            saved,
+        ));
+    }
+
+    let details = client.reset_credit_details(credential);
+    let merged = chatgpt::merge_reset_credit_details(&usage, details.as_ref().ok());
+    let mut normalized = normalize_rate_limits_data(&merged, now);
+    if let Some(reset_credits) = normalized.reset_credits.as_mut() {
+        if details.is_err() {
             reset_credits.credits = None;
-            normalized.snapshot.reset_credits = Some(reset_credits_view(
-                reset_credits,
-                normalized.snapshot.fetched_at_unix_ms / 1000,
-            ));
+            normalized.snapshot.reset_credits = Some(reset_credits_view(reset_credits, now / 1000));
+        } else if reset_credits.credits.is_some() {
+            reset_credits.details_read_at_unix_ms = Some(now);
         }
     }
     Ok(normalized)
+}
+
+/// The saved list still describes the account when it was read recently and
+/// its count matches the count in this usage response. A missing count never
+/// matches.
+fn reusable_credit_details<'a>(
+    saved: Option<&'a StoredResetCredits>,
+    usage: &Value,
+    now_unix_ms: i64,
+) -> Option<&'a StoredResetCredits> {
+    let saved = saved?;
+    let read_at = saved.details_read_at_unix_ms?;
+    let usage_count = usage
+        .get("rate_limit_reset_credits")
+        .or_else(|| usage.get("rateLimitResetCredits"))
+        .and_then(|summary| {
+            summary
+                .get("available_count")
+                .or_else(|| summary.get("availableCount"))
+        })
+        .and_then(nonnegative_u64_at)?;
+    (saved.credits.is_some()
+        && saved.available_count == usage_count
+        && read_at <= now_unix_ms
+        && now_unix_ms - read_at < CREDIT_DETAILS_FRESH_FOR_MS)
+        .then_some(saved)
+}
+
+fn with_saved_credit_details(
+    mut normalized: NormalizedRateLimits,
+    saved: &StoredResetCredits,
+) -> NormalizedRateLimits {
+    let now_seconds = normalized.snapshot.fetched_at_unix_ms / 1000;
+    let reset_credits = normalized.reset_credits.get_or_insert(StoredResetCredits {
+        available_count: saved.available_count,
+        credits: None,
+        details_read_at_unix_ms: None,
+    });
+    reset_credits.credits = saved.credits.clone();
+    reset_credits.details_read_at_unix_ms = saved.details_read_at_unix_ms;
+    normalized.snapshot.reset_credits = Some(reset_credits_view(reset_credits, now_seconds));
+    normalized
 }
 
 pub(crate) enum ReadOnlyRefreshFailure {
@@ -1203,6 +1259,7 @@ fn normalize_stored_reset_credits(result: &Value) -> Option<StoredResetCredits> 
     Some(StoredResetCredits {
         available_count,
         credits,
+        details_read_at_unix_ms: None,
     })
 }
 
@@ -1795,6 +1852,7 @@ mod tests {
                     granted_at: None,
                 },
             ]),
+            details_read_at_unix_ms: None,
         };
 
         let pick = |expires_at| ResetCreditChoice {
@@ -1834,6 +1892,7 @@ mod tests {
                     granted_at: Some(20),
                 },
             ]),
+            details_read_at_unix_ms: None,
         };
         let snapshot = QuotaSnapshot {
             fetched_at_unix_ms: 100_000,
@@ -1855,6 +1914,78 @@ mod tests {
             }]
         );
         assert_eq!(current.nearest_expiry, Some(300));
+    }
+
+    fn saved_credits(count: u64, read_at: Option<i64>) -> StoredResetCredits {
+        StoredResetCredits {
+            available_count: count,
+            credits: Some(vec![StoredResetCredit {
+                id: "saved".into(),
+                status: "available".into(),
+                expires_at: Some(4_000_000_000),
+                reset_type: None,
+                granted_at: None,
+            }]),
+            details_read_at_unix_ms: read_at,
+        }
+    }
+
+    fn usage_with_count(count: Option<u64>) -> Value {
+        match count {
+            Some(count) => json!({
+                "rate_limit": {},
+                "rate_limit_reset_credits": {"available_count": count}
+            }),
+            None => json!({"rate_limit": {}}),
+        }
+    }
+
+    #[test]
+    fn saved_credit_details_are_reused_only_while_the_count_matches_and_they_are_fresh() {
+        let now = 10 * CREDIT_DETAILS_FRESH_FOR_MS;
+        let fresh = saved_credits(2, Some(now - 1_000));
+
+        assert!(reusable_credit_details(Some(&fresh), &usage_with_count(Some(2)), now).is_some());
+        assert!(reusable_credit_details(Some(&fresh), &usage_with_count(Some(1)), now).is_none());
+        assert!(reusable_credit_details(Some(&fresh), &usage_with_count(None), now).is_none());
+        assert!(reusable_credit_details(None, &usage_with_count(Some(2)), now).is_none());
+
+        let stale = saved_credits(2, Some(now - CREDIT_DETAILS_FRESH_FOR_MS));
+        assert!(reusable_credit_details(Some(&stale), &usage_with_count(Some(2)), now).is_none());
+        let unknown_age = saved_credits(2, None);
+        assert!(
+            reusable_credit_details(Some(&unknown_age), &usage_with_count(Some(2)), now).is_none()
+        );
+        let from_the_future = saved_credits(2, Some(now + 1));
+        assert!(
+            reusable_credit_details(Some(&from_the_future), &usage_with_count(Some(2)), now)
+                .is_none()
+        );
+        let without_details = StoredResetCredits {
+            credits: None,
+            ..saved_credits(2, Some(now - 1_000))
+        };
+        assert!(
+            reusable_credit_details(Some(&without_details), &usage_with_count(Some(2)), now)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn reused_credit_details_fill_the_usage_only_projection() {
+        let saved = saved_credits(1, Some(5_000));
+        let normalized = with_saved_credit_details(
+            normalize_rate_limits_data(&usage_with_count(Some(1)), 100_000),
+            &saved,
+        );
+
+        let stored = normalized.reset_credits.expect("stored credits");
+        assert_eq!(stored.details_read_at_unix_ms, Some(5_000));
+        assert_eq!(stored.credits.expect("details").len(), 1);
+        let view = normalized.snapshot.reset_credits.expect("credit view");
+        assert!(view.details_available);
+        assert!(view.can_redeem);
+        assert_eq!(view.usable_credits.len(), 1);
     }
 
     #[test]
