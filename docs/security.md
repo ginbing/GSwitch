@@ -93,7 +93,10 @@ external-process guard.
 ## Storage and concurrency
 
 Credential-affecting operations are serialized by an in-process mutex and a
-cross-process file lock. A new secret generation is durably written and
+cross-process file lock. GSwitch also runs as a single instance, because a
+second process would act on its own stale in-memory copy of the store and could
+overwrite a pending reset record or point metadata at a retired secret
+generation. A new secret generation is durably written and
 readable in the vault before metadata points at it; metadata commits before an
 old reachable generation can be retired. Persist metadata successfully before
 changing its in-memory projection. Startup hydration and legacy migration hold

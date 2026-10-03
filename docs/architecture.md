@@ -150,7 +150,10 @@ refreshes nor rewrites credentials. API-key switching does no provider request.
 ## Mutation boundary
 
 Operations that may persist or refresh credentials share one Rust-owned
-in-process mutex and cross-process file lock. Live switching adds external Codex
+in-process mutex and cross-process file lock. Only one GSwitch process runs at a
+time: each process loads the account store into memory once, so a second launch
+brings the running window forward and exits instead of keeping its own copy.
+Live switching adds external Codex
 process checks because a GSwitch lock has no authority over another Codex
 process. The first check precedes provider work; a second check plus the original
 live fingerprint gates the atomic `auth.json` replacement.
