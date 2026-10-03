@@ -78,6 +78,8 @@ export const api = {
     }),
   recoverPendingResetCredit: () =>
     invoke<ResetCreditOutcome>("recover_pending_reset_credit"),
+  discardPendingResetCredit: () =>
+    invoke<void>("discard_pending_reset_credit"),
   startWake: (id: string, alternateModel = false) =>
     invoke<WakeStart>("start_wake", { id, alternateModel }),
   startWakeAll: () => invoke<WakeStart>("start_wake_all"),

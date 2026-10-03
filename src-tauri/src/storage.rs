@@ -311,6 +311,7 @@ mod tests {
                 credit_id: "provider-private-id".into(),
                 idempotency_key: "7e6dff14-928a-4593-846a-5cae9cf0f9c9".into(),
                 created_at_unix_ms: 123,
+                discard_allowed: false,
             }),
         };
 

@@ -60,9 +60,10 @@ import type {
   LiveAccountView,
   MigrationCandidate,
   MigrationPreview,
+  OAuthFailureCode,
   OAuthLoginStart,
   OAuthLoginStatus,
-  OAuthFailureCode,
+  PendingResetView,
   QuotaRefreshFailureCode,
   QuotaView,
   QuotaWindow,
@@ -244,6 +245,9 @@ function removeFailureMessage(t: Translator, error: unknown) {
   }
   if (/recover a previous switch before starting another/i.test(message)) {
     return t("remove.recoveryRequired");
+  }
+  if (/unfinished reset/i.test(message)) {
+    return t("remove.pendingReset");
   }
   return t("remove.failed");
 }
@@ -959,7 +963,9 @@ export default function App() {
   const [accountSignInNeeded, setAccountSignInNeeded] = useState<Record<string, boolean>>({});
   const [live, setLive] = useState<LiveAccountView | null>(null);
   const [storage, setStorage] = useState<StorageView | null>(null);
-  const [pendingResetCredit, setPendingResetCredit] = useState(false);
+  const [pendingReset, setPendingReset] = useState<PendingResetView | null>(null);
+  const pendingResetCredit = pendingReset !== null;
+  const [discardConfirmation, setDiscardConfirmation] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [accountBusy, setAccountBusy] = useState<Record<string, AccountBusyAction>>({});
@@ -1136,7 +1142,7 @@ export default function App() {
         current.filter((id) => nextAccounts.some((account) => account.id === id)),
       );
       setStorage(initial.storage);
-      setPendingResetCredit(initial.pending_reset_credit);
+      setPendingReset(initial.pending_reset ?? null);
       setLive(initial.live || null);
       const savedIds = new Set(nextAccounts.map((account) => account.id));
       setQuotas((current) => Object.fromEntries(Object.entries(current).filter(([id]) => savedIds.has(id))));
@@ -1785,6 +1791,21 @@ export default function App() {
     setDialog(null);
   };
 
+  // Rust offers a discard only when retrying can no longer consume the
+  // recorded credit; the second click confirms.
+  const discardPendingReset = async () => {
+    if (!discardConfirmation) {
+      setDiscardConfirmation(true);
+      return;
+    }
+    const completed = await runVoidTask("discard-reset-credit", api.discardPendingResetCredit);
+    setDiscardConfirmation(false);
+    if (completed) {
+      setDialog(null);
+      setNotice({ kind: "success", text: t("notice.resetDiscarded") });
+    }
+  };
+
   const removeSavedAccount = async () => {
     if (!removeAccount) {
       return;
@@ -1837,6 +1858,9 @@ export default function App() {
     (account) => account.kind === "chat_gpt" && selectedAccountIds.includes(account.id),
   ).length;
   const resetCredits = resetAccount ? quotas[resetAccount.id]?.snapshot?.reset_credits : undefined;
+  const pendingResetAccount = pendingReset
+    ? accounts.find((account) => account.id === pendingReset.account_id)
+    : undefined;
   const storageRecovery = storage?.status === "recovery_required";
   const accountGridBusy = accountGridHasGlobalMutation(busy);
 
@@ -2557,23 +2581,37 @@ export default function App() {
       ) : null}
 
       {dialog === "recover-reset-credit" ? (
-        <Modal dismissible={busy === null} onClose={() => setDialog(null)} t={t} title={t("recovery.resetTitle")}>
+        <Modal
+          dismissible={busy === null}
+          onClose={() => {
+            setDiscardConfirmation(false);
+            setDialog(null);
+          }}
+          t={t}
+          title={t("recovery.resetTitle")}
+        >
           <div className="confirm-panel">
             <CircleAlert size={26} />
-            <h3>{t("recovery.resetHeading")}</h3>
-            <p>{t("recovery.resetBody")}</p>
-            <p>{t("recovery.pendingResetExplanation")}</p>
+            <p>{t("recovery.resetBody", { name: pendingResetAccount ? accountPrimaryName(pendingResetAccount) : t("recovery.removedAccount") })}</p>
+            {discardConfirmation ? <p>{t("recovery.discardWarning")}</p> : null}
             <div className="modal-actions">
-              <button className="button button-secondary" disabled={busy !== null} onClick={() => setDialog(null)} type="button">{t("common.cancel")}</button>
-              <button
-                className="button button-primary"
-                disabled={busy !== null}
-                onClick={() => void recoverPendingResetCredit()}
-                type="button"
-              >
-                {busy === "recover-reset-credit" ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />}
-                {t("recovery.originalRequest")}
-              </button>
+              {pendingReset?.discardable ? (
+                <button className="button button-danger" disabled={busy !== null} onClick={() => void discardPendingReset()} type="button">
+                  {busy === "discard-reset-credit" ? <LoaderCircle className="spin" size={16} /> : <Trash2 size={16} />}
+                  {discardConfirmation ? t("recovery.confirmDiscard") : t("recovery.discard")}
+                </button>
+              ) : null}
+              {pendingResetAccount ? (
+                <button
+                  className="button button-primary"
+                  disabled={busy !== null}
+                  onClick={() => void recoverPendingResetCredit()}
+                  type="button"
+                >
+                  {busy === "recover-reset-credit" ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />}
+                  {t("recovery.retry")}
+                </button>
+              ) : null}
             </div>
           </div>
         </Modal>

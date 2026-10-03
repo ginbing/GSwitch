@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use crate::{
     accounts::{AppState, OperationGuard},
-    app_server::{AppServer, TempCodexHome},
+    app_server::{AppServer, TempCodexHome, REJECTED_REQUEST},
     chatgpt::{self, ChatGptClient, RequestFailure, RequestFailureKind},
     codex,
     identity::{derive_identity, document_kind},
@@ -417,6 +417,23 @@ const NO_PENDING_RESET: &str = "No reset-credit operation needs recovery";
 const RECOVER_PENDING_RESET_FIRST: &str =
     "GSwitch must recover a previous reset-credit operation before starting another";
 const PICKED_CREDIT_UNAVAILABLE: &str = "The selected reset credit is no longer available";
+const PENDING_RESET_STILL_RETRYABLE: &str =
+    "This reset can still be retried safely; retry it instead of discarding the record";
+
+/// Clears a pending reset only when retrying can no longer help: its saved
+/// account was removed, or the provider rejected a replay of a credit it no
+/// longer lists as available. GSwitch cannot consume that credit later either
+/// way, so discarding cannot lead to a second consumption.
+pub fn discard_pending_reset_credit(state: &AppState) -> Result<(), String> {
+    let operation = state.acquire_operation()?;
+    let view = state
+        .pending_reset_view()?
+        .ok_or_else(|| NO_PENDING_RESET.to_string())?;
+    if !view.discardable {
+        return Err(PENDING_RESET_STILL_RETRYABLE.to_string());
+    }
+    state.clear_pending_reset_credit_under_operation(&operation)
+}
 
 /// Whether a redemption starts a new provider request for a picked credit or
 /// may only replay the recorded one.
@@ -553,13 +570,29 @@ fn redeem_with_session(
                 credit_id,
                 idempotency_key: Uuid::new_v4().to_string(),
                 created_at_unix_ms: now_unix_ms(),
+                discard_allowed: false,
             };
             state.prepare_reset_credit_under_operation(operation, pending.clone())?;
             pending
         }
     };
 
-    let response = session.consume(&pending.idempotency_key, &pending.credit_id)?;
+    let response = match session.consume(&pending.idempotency_key, &pending.credit_id) {
+        Ok(response) => response,
+        Err(error) => {
+            if redemption == Redemption::Recovery
+                && error == REJECTED_REQUEST
+                && !recorded_credit_may_still_be_consumed(
+                    normalized.reset_credits.as_ref(),
+                    &pending.credit_id,
+                    now_unix_ms() / 1000,
+                )
+            {
+                let _ = state.allow_pending_reset_discard_under_operation(operation);
+            }
+            return Err(error);
+        }
+    };
     let outcome = parse_reset_outcome(&response)?;
     let mut result = ResetCreditOutcome {
         account_id: account.id.clone(),
@@ -1122,6 +1155,21 @@ fn picked_available_credit(
                 }
         })
         .ok_or_else(|| PICKED_CREDIT_UNAVAILABLE.to_string())
+}
+
+/// Unknown details count as "may still be consumed", so they never permit a
+/// discard.
+fn recorded_credit_may_still_be_consumed(
+    credits: Option<&StoredResetCredits>,
+    credit_id: &str,
+    now_seconds: i64,
+) -> bool {
+    match credits.and_then(|credits| credits.credits.as_ref()) {
+        Some(details) => details
+            .iter()
+            .any(|credit| credit.id == credit_id && is_redeemable_credit(credit, now_seconds)),
+        None => true,
+    }
 }
 
 fn is_redeemable_credit(credit: &StoredResetCredit, now_seconds: i64) -> bool {
@@ -1878,8 +1926,9 @@ mod tests {
             fn consume(&mut self, idempotency_key: &str, credit_id: &str) -> Result<Value, String> {
                 let pending_was_durable = self
                     .state
-                    .has_pending_reset_credit()
-                    .expect("pending reset state");
+                    .pending_reset_view()
+                    .expect("pending reset state")
+                    .is_some();
                 self.consumed.push((
                     idempotency_key.to_string(),
                     credit_id.to_string(),
@@ -2179,6 +2228,87 @@ mod tests {
             redeem(&state, &accounts[0], choice, &mut session).expect("redeem");
 
             assert_eq!(session.consumed[0].1, "granted-later");
+            let _ = fs::remove_dir_all(root);
+        }
+
+        fn leave_a_pending_record(state: &AppState, account: &StoredAccount) {
+            let mut first = ScriptedSession::new(state, "user")
+                .read(Ok(rate_limits(&[("credit-a", FUTURE)])))
+                .consume_returns(Err("Codex App Server did not respond".into()));
+            assert!(redeem(state, account, pick(FUTURE), &mut first).is_err());
+        }
+
+        fn discardable(state: &AppState) -> bool {
+            state
+                .pending_reset_view()
+                .expect("pending reset state")
+                .expect("pending record")
+                .discardable
+        }
+
+        #[test]
+        fn a_rejected_replay_of_a_credit_no_longer_listed_can_be_discarded() {
+            let (state, accounts, root) = state_with_accounts(&["user"]);
+            leave_a_pending_record(&state, &accounts[0]);
+            assert!(!discardable(&state));
+            assert_eq!(
+                discard_pending_reset_credit(&state).expect_err("retryable"),
+                PENDING_RESET_STILL_RETRYABLE
+            );
+
+            let mut replay = ScriptedSession::new(&state, "user")
+                .read(Ok(rate_limits(&[("credit-b", FUTURE)])))
+                .consume_returns(Err(REJECTED_REQUEST.into()));
+            assert!(recover(&state, &accounts[0], &mut replay).is_err());
+
+            assert!(discardable(&state));
+            discard_pending_reset_credit(&state).expect("discard");
+            assert!(pending(&state).is_none());
+            let _ = fs::remove_dir_all(root);
+        }
+
+        #[test]
+        fn a_rejected_replay_of_a_still_listed_credit_stays_retryable() {
+            let (state, accounts, root) = state_with_accounts(&["user"]);
+            leave_a_pending_record(&state, &accounts[0]);
+
+            let mut replay = ScriptedSession::new(&state, "user")
+                .read(Ok(rate_limits(&[("credit-a", FUTURE)])))
+                .consume_returns(Err(REJECTED_REQUEST.into()));
+            assert!(recover(&state, &accounts[0], &mut replay).is_err());
+
+            assert!(!discardable(&state));
+            let _ = fs::remove_dir_all(root);
+        }
+
+        #[test]
+        fn an_unknown_replay_outcome_never_allows_a_discard() {
+            let (state, accounts, root) = state_with_accounts(&["user"]);
+            leave_a_pending_record(&state, &accounts[0]);
+
+            let mut replay = ScriptedSession::new(&state, "user")
+                .read(Ok(rate_limits(&[("credit-b", FUTURE)])))
+                .consume_returns(Err("Codex App Server did not respond".into()));
+            assert!(recover(&state, &accounts[0], &mut replay).is_err());
+
+            assert!(!discardable(&state));
+            let _ = fs::remove_dir_all(root);
+        }
+
+        #[test]
+        fn a_record_whose_account_is_gone_can_be_discarded() {
+            let (state, accounts, root) = state_with_accounts(&["user", "other"]);
+            leave_a_pending_record(&state, &accounts[0]);
+            {
+                let operation = state.acquire_operation().expect("operation");
+                state
+                    .remove_under_operation(&operation, &accounts[0].id)
+                    .expect("remove without the switching guard");
+            }
+
+            assert!(discardable(&state));
+            discard_pending_reset_credit(&state).expect("discard");
+            assert!(pending(&state).is_none());
             let _ = fs::remove_dir_all(root);
         }
 

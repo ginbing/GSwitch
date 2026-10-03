@@ -35,6 +35,7 @@ const mocks = vi.hoisted(() => ({
   refreshAccountQuota: vi.fn(),
   redeemResetCredit: vi.fn(),
   recoverPendingResetCredit: vi.fn(),
+  discardPendingResetCredit: vi.fn(),
   startWake: vi.fn(),
   startWakeAll: vi.fn(),
   startWakeSelected: vi.fn(),
@@ -129,7 +130,6 @@ function prepareDefaults() {
   mocks.appSnapshot.mockImplementation(async () => ({
     storage: { status: "ready" },
     accounts: await mocks.listAccounts(),
-    pending_reset_credit: false,
     runtime: await mocks.runtimeInfo(),
     live: await mocks.liveAccount(),
   }));
@@ -177,6 +177,7 @@ function prepareDefaults() {
     account_id: "account-1",
     outcome: "reset",
   });
+  mocks.discardPendingResetCredit.mockResolvedValue(undefined);
   mocks.recoverPendingResetCredit.mockResolvedValue({
     account_id: "account-1",
     outcome: "nothing_to_reset",
@@ -510,7 +511,6 @@ describe("GSwitch account workspace", () => {
         message: "GSwitch could not safely read its saved account library. Codex credentials were not changed.",
       },
       accounts: [],
-      pending_reset_credit: false,
     });
     render(<App />);
 
@@ -624,7 +624,7 @@ describe("GSwitch account workspace", () => {
     mocks.appSnapshot.mockImplementation(async () => ({
       storage: { status: "ready" },
       accounts: [chatAccount],
-      pending_reset_credit: failed,
+      pending_reset: failed ? { account_id: "account-1", discardable: false } : undefined,
       runtime: await mocks.runtimeInfo(),
       live: await mocks.liveAccount(),
     }));
@@ -639,7 +639,7 @@ describe("GSwitch account workspace", () => {
     await userEvent.click(await screen.findByRole("button", { name: "Use reset credit" }));
     await userEvent.click(screen.getByRole("button", { name: "Use earliest credit" }));
 
-    expect(await screen.findByText("A reset-credit request needs recovery")).toBeInTheDocument();
+    expect(await screen.findByText("A reset hasn't been confirmed")).toBeInTheDocument();
   });
 
   it("shows the provider-supplied five-week free quota and reset time", async () => {
@@ -809,21 +809,57 @@ describe("GSwitch account workspace", () => {
     mocks.appSnapshot.mockImplementation(async () => ({
       storage: { status: "ready" },
       accounts: await mocks.listAccounts(),
-      pending_reset_credit: true,
+      pending_reset: { account_id: "account-1", discardable: false },
       runtime: await mocks.runtimeInfo(),
       live: await mocks.liveAccount(),
     }));
     render(<App />);
 
-    expect(await screen.findByText("A reset-credit request needs recovery")).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Review reset recovery" }));
-    expect(await screen.findByRole("dialog", { name: "Recover reset credit" })).toBeInTheDocument();
+    expect(await screen.findByText("A reset hasn't been confirmed")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Review" }));
+    const dialog = await screen.findByRole("dialog", { name: "Unfinished reset" });
+    expect(within(dialog).getByText(/The last reset for person@example.com wasn't confirmed/)).toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: "Discard this record" })).not.toBeInTheDocument();
     expect(mocks.recoverPendingResetCredit).not.toHaveBeenCalled();
     expect(mocks.redeemResetCredit).not.toHaveBeenCalled();
 
-    await userEvent.click(screen.getByRole("button", { name: "Recover original request" }));
+    await userEvent.click(within(dialog).getByRole("button", { name: "Retry" }));
     await waitFor(() => expect(mocks.recoverPendingResetCredit).toHaveBeenCalledOnce());
     expect(mocks.redeemResetCredit).not.toHaveBeenCalled();
+  });
+
+  it("discards an unrecoverable pending reset only after a second click", async () => {
+    let pending: { account_id: string; discardable: boolean } | undefined = {
+      account_id: "removed-account",
+      discardable: true,
+    };
+    mocks.listAccounts.mockResolvedValue([chatAccount]);
+    mocks.accountQuota.mockResolvedValue(staleQuota);
+    mocks.discardPendingResetCredit.mockImplementation(async () => {
+      pending = undefined;
+    });
+    mocks.appSnapshot.mockImplementation(async () => ({
+      storage: { status: "ready" },
+      accounts: await mocks.listAccounts(),
+      pending_reset: pending,
+      runtime: await mocks.runtimeInfo(),
+      live: await mocks.liveAccount(),
+    }));
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Review" }));
+    const dialog = await screen.findByRole("dialog", { name: "Unfinished reset" });
+    expect(within(dialog).getByText(/The last reset for a removed account/)).toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+
+    await userEvent.click(within(dialog).getByRole("button", { name: "Discard this record" }));
+    expect(mocks.discardPendingResetCredit).not.toHaveBeenCalled();
+    expect(within(dialog).getByText(/can't confirm whether this request went through/)).toBeInTheDocument();
+
+    await userEvent.click(within(dialog).getByRole("button", { name: "Confirm discard" }));
+    await waitFor(() => expect(mocks.discardPendingResetCredit).toHaveBeenCalledOnce());
+    expect(await screen.findByText("The unfinished reset was discarded.")).toBeInTheDocument();
+    expect(screen.queryByText("A reset hasn't been confirmed")).not.toBeInTheDocument();
   });
 
   it("keeps account actions available when a local quota projection cannot be read", async () => {
@@ -1289,6 +1325,25 @@ describe("GSwitch account workspace", () => {
     );
     expect(within(dialog).getByRole("button", { name: "Remove account" })).toBeEnabled();
     expect(mocks.removeSavedAccount).toHaveBeenCalledWith("account-1");
+  });
+
+  it("explains that an account with an unfinished reset cannot be removed yet", async () => {
+    mocks.listAccounts.mockResolvedValue([chatAccount]);
+    mocks.accountQuota.mockResolvedValue({ ...staleQuota, status: "fresh" });
+    mocks.removeSavedAccount.mockRejectedValueOnce(
+      "This account has an unfinished reset; resolve it before removing the account",
+    );
+    render(<App />);
+    await screen.findByRole("heading", { name: "person@example.com" });
+
+    await userEvent.click(screen.getByLabelText("More actions for person@example.com"));
+    await userEvent.click(screen.getByRole("button", { name: "Remove person@example.com" }));
+    const dialog = await screen.findByRole("dialog", { name: "Remove person@example.com?" });
+    await userEvent.click(within(dialog).getByRole("button", { name: "Remove account" }));
+
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent(
+      "This account has an unfinished reset. Resolve it before removing the account.",
+    );
   });
 
   it("keeps the current account protected from removal", async () => {

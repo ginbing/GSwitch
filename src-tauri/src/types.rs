@@ -229,10 +229,10 @@ pub struct AppSnapshot {
     pub storage: StorageView,
     #[serde(default)]
     pub accounts: Vec<AccountView>,
-    /// A deliberately coarse recovery signal. The corresponding account,
-    /// provider credit, and idempotency key must remain in Rust-owned storage.
-    #[serde(default)]
-    pub pending_reset_credit: bool,
+    /// Names the saved account of a reset that needs recovery. The provider
+    /// credit and idempotency key must remain in Rust-owned storage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_reset: Option<PendingResetView>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime: Option<RuntimeInfo>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -370,6 +370,19 @@ pub struct PendingResetCredit {
     #[serde(default, skip_serializing)]
     pub idempotency_key: String,
     pub created_at_unix_ms: i64,
+    /// Set only after the provider rejected a replay of a credit it no longer
+    /// lists as available, so retrying can never consume it.
+    #[serde(default)]
+    pub discard_allowed: bool,
+}
+
+/// A reset that needs recovery, as the WebView sees it: the saved account it
+/// belongs to and whether retrying can no longer help. The provider credit and
+/// idempotency key stay in Rust-owned storage.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PendingResetView {
+    pub account_id: String,
+    pub discardable: bool,
 }
 
 /// Complete account material kept exclusively in the encrypted vault. The
@@ -610,20 +623,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn app_snapshot_exposes_reset_recovery_as_a_boolean_only() {
+    fn app_snapshot_names_only_the_account_of_a_pending_reset() {
         let snapshot = AppSnapshot {
             storage: StorageView {
                 status: StorageStatus::Ready,
                 message: None,
             },
             accounts: Vec::new(),
-            pending_reset_credit: true,
+            pending_reset: Some(PendingResetView {
+                account_id: "account-1".into(),
+                discardable: false,
+            }),
             runtime: None,
             live: None,
         };
 
         let serialized = serde_json::to_string(&snapshot).expect("serialize snapshot");
-        assert!(serialized.contains("\"pending_reset_credit\":true"));
+        assert!(serialized
+            .contains("\"pending_reset\":{\"account_id\":\"account-1\",\"discardable\":false}"));
         assert!(!serialized.contains("credit_id"));
         assert!(!serialized.contains("idempotency_key"));
     }
