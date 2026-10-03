@@ -2015,6 +2015,7 @@ export default function App() {
     }
   };
 
+  const cliUpdateAvailable = cliInfo?.update_status === "available" && cliInfo.supports_update;
   const currentActiveId = live?.account?.id;
   refreshInputs.current = { accounts, quotas, quotaFailures, activeId: currentActiveId };
   const liveAccountLabel = live?.account ? accountPrimaryName(live.account) : t("toolbar.currentAccount");
@@ -2372,14 +2373,20 @@ export default function App() {
         <Modal dismissible={busy !== "codex-cli-update"} onClose={() => setDialog(null)} t={t} title={t("toolbar.codexCli")}>
           <div className="cli-panel">
             {cliChecking ? <p className="cli-status" role="status"><LoaderCircle className="spin" size={18} />{t("cli.checking")}</p> : (
-              <p className="cli-status"><Terminal size={18} />{cliInfo?.version ? t("cli.installed", { version: cliInfo.version }) : t("cli.missing")}</p>
+              <p className="cli-status">
+                <Terminal size={18} />
+                {!cliInfo?.version
+                  ? t("cli.missing")
+                  : cliUpdateAvailable
+                    ? t("cli.updateAvailable", { version: cliInfo.version, latest: cliInfo.latest_version || "" })
+                    : cliInfo.latest_version === cliInfo.version
+                      ? t("cli.upToDate", { version: cliInfo.version })
+                      : t("cli.version", { version: cliInfo.version })}
+              </p>
             )}
-            {cliInfo?.latest_version ? <p>{t("cli.latest", { version: cliInfo.latest_version })}</p> : null}
-            {cliInfo?.version ? <p>{t("cli.separate")}</p> : null}
             {cliInfo?.version && !cliInfo.supports_update ? <p>{t("cli.unsupported")}</p> : null}
-            {cliInfo?.update_status === "available" && cliInfo.supports_update ? <p>{t("cli.closeCodex")}</p> : null}
-            {busy === "codex-cli-update" ? <p role="status">{t("cli.updating")}</p> : null}
-            {cliResult ? <p className="cli-result" role="status">{t(cliResult.kind === "updated" ? "cli.updated" : "cli.sameVersion", { version: cliResult.version })}</p> : null}
+            {cliUpdateAvailable ? <p>{busy === "codex-cli-update" ? t("cli.updatingNote") : t("cli.updateNote")}</p> : null}
+            {cliResult ? <p className="cli-result" role="status">{t(cliResult.kind === "updated" ? "cli.updated" : "cli.sameVersion")}</p> : null}
             {cliError ? <p className="cli-error" role="alert">{t(({
               not_installed: "cli.error.notInstalled",
               unsupported: "cli.error.unsupported",
@@ -2393,10 +2400,10 @@ export default function App() {
             <div className="modal-actions">
               <button className="button button-quiet" disabled={busy !== null} onClick={() => void api.openCodexCliGuide().catch(() => setCliError("open_guide"))} type="button">{t("cli.guide")}</button>
               <button className="button button-secondary" disabled={busy !== null || cliChecking} onClick={() => void checkCodexCli()} type="button">{t("cli.checkAgain")}</button>
-              {cliInfo?.update_status === "available" && cliInfo.supports_update ? (
+              {cliUpdateAvailable ? (
                 <button className="button button-primary" disabled={busy !== null || cliChecking} onClick={() => void updateCodexCli()} type="button">
                   {busy === "codex-cli-update" ? <LoaderCircle className="spin" size={15} /> : <Download size={15} />}
-                  {t("cli.update")}
+                  {busy === "codex-cli-update" ? t("cli.updating") : t("cli.update")}
                 </button>
               ) : null}
             </div>
@@ -2708,7 +2715,6 @@ export default function App() {
         <Modal dismissible={!runningAny("enable-switching")} onClose={() => setDialog(null)} t={t} title={t("switching.title")}>
           <div className="confirm-panel">
             <ShieldAlert size={26} />
-            <h3>{t("switching.prepare")}</h3>
             <p>{t("switching.body")}</p>
             <div className="modal-actions">
               <button className="button button-secondary" disabled={busy !== null} onClick={() => setDialog(null)} type="button">{t("common.cancel")}</button>
@@ -2736,7 +2742,6 @@ export default function App() {
         <Modal dismissible={!runningAny("recover-switch")} onClose={() => setDialog(null)} t={t} title={t("recovery.switchTitle")}>
           <div className="confirm-panel">
             <CircleAlert size={26} />
-            <h3>{t("recovery.switchHeading")}</h3>
             <p>{t("recovery.switchBody")}</p>
             <div className="modal-actions">
               <button className="button button-secondary" disabled={busy !== null} onClick={() => setDialog(null)} type="button">{t("common.cancel")}</button>
@@ -2870,7 +2875,6 @@ export default function App() {
         >
           <div className="confirm-panel">
             <Trash2 size={26} />
-            <h3>{t("remove.heading")}</h3>
             <p>{t("remove.body")}</p>
             <div className="remove-account-identity">
               <strong>{accountPrimaryName(removeAccount)}</strong>
@@ -2881,7 +2885,7 @@ export default function App() {
             {removeError ? <p className="remove-error" role="alert">{removeError}</p> : null}
             <div className="modal-actions">
               <button className="button button-secondary" disabled={busy !== null} onClick={() => { setDialog(null); setRemoveError(null); }} type="button">{t("common.cancel")}</button>
-              <button className="button button-danger" disabled={busy !== null} onClick={() => void removeSavedAccount()} type="button"><Trash2 size={16} />{t("common.removeAccount")}</button>
+              <button className="button button-danger" disabled={busy !== null} onClick={() => void removeSavedAccount()} type="button"><Trash2 size={16} />{t("remove.confirm")}</button>
             </div>
           </div>
         </Modal>

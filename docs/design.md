@@ -81,11 +81,13 @@ explicit reset preserves GSwitch's damaged file without touching Codex.
 
 After the account grid appears, GSwitch checks the installed Codex CLI against
 OpenAI's latest stable release in the background. The toolbar shows a compact
-entry only when a newer version is confirmed. Its dialog names the installed
-and latest versions and offers an explicit update action only when that CLI
-exposes the official `update` command. An unsupported CLI points to the
-official install guide. A failed check remains quiet; no update is installed
-without a click. Codex CLI and the Codex desktop app update separately.
+entry only when a newer version is confirmed. Its dialog states the version
+once, in one status line ("up to date" or "{latest} available"), and offers an
+explicit update action only when that CLI exposes the official `update`
+command; a single note says the desktop app updates separately and Codex must
+be quit first, and progress shows on the Update button. An unsupported CLI
+points to the official install guide. A failed check remains quiet; no update
+is installed without a click.
 
 - Do not optimistically display a switch or redemption as complete.
 - After a verified switch, update the toolbar identity and active card directly.
@@ -103,7 +105,9 @@ without a click. Codex CLI and the Codex desktop app update separately.
   return focus to the menu button.
 - Disable conflicting credential actions while one is in progress.
 - Show progress on the affected row or on the focused dialog's own action
-  button, not as a separate dialog header label. A dialog can be closed while
+  button, not as a separate dialog header label. A dialog states each fact
+  once: no heading that restates its title, and no status line that repeats
+  its button. A dialog can be closed while
   unrelated work runs; only its own operation keeps it open.
 - Keep Wake results per account; identify each result by email and workspace,
   localize its status, and distinguish a confirmed model reply from an
@@ -119,9 +123,9 @@ without a click. Codex CLI and the Codex desktop app update separately.
   result control. Only an explicit default-model rejection offers a compact,
   account-specific manual retry with the older model in this dialog; cards do
   not carry a model selector. Quota reset times never imply Wake success.
-- Account removal confirms the email and workspace. It explains that removing a
-  non-current saved copy does not change a running Codex identity, while the
-  current identity stays protected. Operation-lock failures remain visible in
+- Account removal confirms the email and workspace, and says once that it
+  removes only GSwitch's saved copy without signing out or changing the
+  current Codex account, while the current identity stays protected. Operation-lock failures remain visible in
   the confirmation with a retry instruction.
 - Quota refreshes run in separate lanes: automatic reads one at a time, and a
   user's Refresh or Refresh all up to three read-only reads at once, never

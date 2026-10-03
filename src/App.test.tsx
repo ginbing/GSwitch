@@ -233,10 +233,14 @@ describe("GSwitch account workspace", () => {
     render(<App />);
     await userEvent.click(await screen.findByRole("button", { name: "Codex CLI 0.157.0 available" }, { timeout: 5_000 }));
     const dialog = await screen.findByRole("dialog", { name: "Codex CLI" });
-    expect(await within(dialog).findByText("Installed version: 0.156.1")).toBeInTheDocument();
-    expect(within(dialog).getByText("Latest version: 0.157.0")).toBeInTheDocument();
-    await userEvent.click(within(dialog).getByRole("button", { name: "Update Codex CLI" }));
-    expect(await within(dialog).findByText("Update finished. Installed version: 0.157.0.")).toBeInTheDocument();
+    expect(await within(dialog).findByText("Codex CLI 0.156.1 · 0.157.0 available")).toBeInTheDocument();
+    expect(within(dialog).getByText(/updates only the CLI/)).toBeInTheDocument();
+    await userEvent.click(within(dialog).getByRole("button", { name: "Update" }));
+    expect(await within(dialog).findByText("Update complete.")).toBeInTheDocument();
+    // The version appears once, in the status line.
+    expect(within(dialog).getByText("Codex CLI 0.157.0 · up to date")).toBeInTheDocument();
+    expect(within(dialog).getAllByText(/0\.157\.0/)).toHaveLength(1);
+    expect(within(dialog).queryByText(/updates only the CLI/)).not.toBeInTheDocument();
     expect(mocks.updateCodexCli).toHaveBeenCalledOnce();
     expect(mocks.switchAccount).not.toHaveBeenCalled();
     expect(screen.queryByRole("button", { name: /Codex CLI .* available/ })).not.toBeInTheDocument();
@@ -248,10 +252,10 @@ describe("GSwitch account workspace", () => {
     render(<App />);
     await userEvent.click(await screen.findByRole("button", { name: "Codex CLI 0.157.0 可更新" }, { timeout: 5_000 }));
     const dialog = await screen.findByRole("dialog", { name: "Codex CLI" });
-    expect(await within(dialog).findByText("已安装版本：0.156.1")).toBeInTheDocument();
-    await userEvent.click(within(dialog).getByRole("button", { name: "更新 Codex CLI" }));
+    expect(await within(dialog).findByText("Codex CLI 0.156.1 · 可更新到 0.157.0")).toBeInTheDocument();
+    await userEvent.click(within(dialog).getByRole("button", { name: "更新" }));
     expect(await within(dialog).findByRole("alert")).toHaveTextContent("请退出 Codex 后再更新");
-    expect(within(dialog).getByText("已安装版本：0.156.1")).toBeInTheDocument();
+    expect(within(dialog).getByText("Codex CLI 0.156.1 · 可更新到 0.157.0")).toBeInTheDocument();
   });
 
   it("does not offer an update to a CLI without the official command", async () => {
@@ -259,8 +263,9 @@ describe("GSwitch account workspace", () => {
     render(<App />);
     await userEvent.click(await screen.findByRole("button", { name: "Codex CLI 0.157.0 available" }, { timeout: 5_000 }));
     const dialog = await screen.findByRole("dialog", { name: "Codex CLI" });
-    expect(await within(dialog).findByText("Installed version: 0.100.0")).toBeInTheDocument();
-    expect(within(dialog).queryByRole("button", { name: "Update Codex CLI" })).not.toBeInTheDocument();
+    expect(await within(dialog).findByText("Codex CLI 0.100.0")).toBeInTheDocument();
+    expect(within(dialog).getByText(/can't update itself/)).toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: "Update" })).not.toBeInTheDocument();
     expect(within(dialog).getByRole("button", { name: "Official install guide" })).toBeInTheDocument();
   });
 
@@ -1530,13 +1535,13 @@ describe("GSwitch account workspace", () => {
     const dialog = await screen.findByRole("dialog", { name: "Remove person@example.com?" });
     expect(within(dialog).getByText("person@example.com")).toBeInTheDocument();
     expect(within(dialog).getByText("Personal")).toBeInTheDocument();
-    expect(within(dialog).getByText(/remove a non-current account while Codex is running/i)).toBeInTheDocument();
+    expect(within(dialog).getByText(/removes only the copy saved in GSwitch/)).toBeInTheDocument();
 
-    await userEvent.click(within(dialog).getByRole("button", { name: "Remove account" }));
+    await userEvent.click(within(dialog).getByRole("button", { name: "Remove" }));
     expect(await within(dialog).findByRole("alert")).toHaveTextContent(
       "Another GSwitch operation is in progress. Wait for it to finish, then try again.",
     );
-    expect(within(dialog).getByRole("button", { name: "Remove account" })).toBeEnabled();
+    expect(within(dialog).getByRole("button", { name: "Remove" })).toBeEnabled();
     expect(mocks.removeSavedAccount).toHaveBeenCalledWith("account-1");
   });
 
@@ -1552,7 +1557,7 @@ describe("GSwitch account workspace", () => {
     await userEvent.click(screen.getByLabelText("More actions for person@example.com"));
     await userEvent.click(screen.getByRole("button", { name: "Remove person@example.com" }));
     const dialog = await screen.findByRole("dialog", { name: "Remove person@example.com?" });
-    await userEvent.click(within(dialog).getByRole("button", { name: "Remove account" }));
+    await userEvent.click(within(dialog).getByRole("button", { name: "Remove" }));
 
     expect(await within(dialog).findByRole("alert")).toHaveTextContent(
       "This account has an unfinished reset. Resolve it before removing the account.",
@@ -1663,7 +1668,7 @@ describe("GSwitch account workspace", () => {
     await userEvent.click(screen.getByLabelText("person@example.com 的更多操作"));
     await userEvent.click(screen.getByRole("button", { name: "移除 person@example.com" }));
     const dialog = await screen.findByRole("dialog", { name: "移除 person@example.com？" });
-    await userEvent.click(within(dialog).getByRole("button", { name: "移除账户" }));
+    await userEvent.click(within(dialog).getByRole("button", { name: "移除" }));
     expect(await within(dialog).findByRole("alert")).toHaveTextContent(
       "GSwitch 正在执行其他操作。请等待完成后重试。",
     );
