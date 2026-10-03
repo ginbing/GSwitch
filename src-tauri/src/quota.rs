@@ -1007,6 +1007,12 @@ fn normalize_stored_reset_credits(result: &Value) -> Option<StoredResetCredits> 
                             .get("expiresAt")
                             .or_else(|| value.get("expires_at"))
                             .and_then(unix_seconds_at),
+                        reset_type: string_at(
+                            value
+                                .get("resetType")
+                                .or_else(|| value.get("reset_type"))
+                                .or_else(|| value.get("type")),
+                        ),
                     })
                 })
                 .collect(),
@@ -1069,6 +1075,21 @@ fn is_redeemable_credit(credit: &StoredResetCredit, now_seconds: i64) -> bool {
         && credit
             .expires_at
             .is_none_or(|expires_at| expires_at > now_seconds)
+        && credit
+            .reset_type
+            .as_deref()
+            .is_none_or(is_codex_rate_limit_reset)
+}
+
+/// Codex's App Server reports `codexRateLimits`; the usage endpoint uses a
+/// snake-case spelling. Any other kind, including the protocol's `unknown`,
+/// may reset something else and is never listed or redeemed.
+fn is_codex_rate_limit_reset(reset_type: &str) -> bool {
+    reset_type
+        .chars()
+        .filter(|character| *character != '_')
+        .flat_map(char::to_lowercase)
+        .eq("codexratelimits".chars())
 }
 
 fn parse_reset_outcome(value: &Value) -> Result<ResetCreditOutcomeKind, String> {
@@ -1534,21 +1555,25 @@ mod tests {
                     id: "expired".into(),
                     status: "available".into(),
                     expires_at: Some(99),
+                    reset_type: None,
                 },
                 StoredResetCredit {
                     id: "later".into(),
                     status: "available".into(),
                     expires_at: Some(300),
+                    reset_type: None,
                 },
                 StoredResetCredit {
                     id: "without-expiry".into(),
                     status: "available".into(),
                     expires_at: None,
+                    reset_type: None,
                 },
                 StoredResetCredit {
                     id: "first".into(),
                     status: "available".into(),
                     expires_at: Some(200),
+                    reset_type: None,
                 },
             ]),
         };
@@ -1563,6 +1588,39 @@ mod tests {
         assert_eq!(view.nearest_expiry, Some(200));
         assert_eq!(view.usable_credits[0].expires_at, Some(200));
         assert_eq!(view.usable_credits[2].expires_at, None);
+    }
+
+    #[test]
+    fn only_codex_rate_limit_resets_are_listed() {
+        let normalized = normalize_rate_limits_data(
+            &json!({
+                "rate_limit": {},
+                "rate_limit_reset_credits": {
+                    "available_count": 4,
+                    "credits": [
+                        {"id": "a", "status": "available", "expires_at": 300, "reset_type": "codex_rate_limits"},
+                        {"id": "b", "status": "available", "expires_at": 200, "reset_type": "unknown"},
+                        {"id": "c", "status": "available", "expires_at": 400, "type": "image_generation"},
+                        {"id": "d", "status": "available", "expires_at": 500}
+                    ]
+                }
+            }),
+            100_000,
+        );
+        let view = normalized.snapshot.reset_credits.expect("credit view");
+
+        assert_eq!(view.available_count, 4);
+        assert_eq!(view.nearest_expiry, Some(300));
+        assert_eq!(
+            view.usable_credits
+                .iter()
+                .map(|credit| credit.expires_at)
+                .collect::<Vec<_>>(),
+            vec![Some(300), Some(500)]
+        );
+        assert!(is_codex_rate_limit_reset("codexRateLimits"));
+        assert!(is_codex_rate_limit_reset("codex_rate_limits"));
+        assert!(!is_codex_rate_limit_reset("unknown"));
     }
 
     #[test]
@@ -1900,6 +1958,24 @@ mod tests {
             assert_eq!(result.outcome, ResetCreditOutcomeKind::Reset);
             assert!(result.refresh_warning.is_some());
             assert!(pending(&state).is_some());
+            let _ = fs::remove_dir_all(root);
+        }
+
+        #[test]
+        fn a_credit_of_another_reset_kind_is_never_redeemed() {
+            let (state, accounts, root) = state_with_accounts(&["user"]);
+            let mut credits = rate_limits(&[("other-kind", FUTURE - 10), ("codex", FUTURE)]);
+            credits["rateLimitResetCredits"]["credits"][0]["resetType"] = json!("unknown");
+            credits["rateLimitResetCredits"]["credits"][1]["resetType"] = json!("codexRateLimits");
+            let mut session = ScriptedSession::new(&state, "user")
+                .read(Ok(credits))
+                .consume_returns(Ok(json!({"outcome": "reset"})))
+                .read(Ok(rate_limits(&[])));
+
+            redeem(&state, &accounts[0], &mut session).expect("redeem");
+
+            assert_eq!(session.consumed.len(), 1);
+            assert_eq!(session.consumed[0].1, "codex");
             let _ = fs::remove_dir_all(root);
         }
 

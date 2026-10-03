@@ -304,7 +304,9 @@ display and action eligibility.
 **Use reset** is always explicit. Immediately before redemption GSwitch:
 
 1. refreshes the provider's reset-credit state;
-2. keeps only available and unexpired credits;
+2. keeps only available and unexpired credits of the Codex rate-limit reset
+   kind (a credit with no reported kind comes from an older payload that
+   carried only Codex resets; any other kind is never listed or redeemed);
 3. chooses the eligible credit with the earliest expiry, placing credits without
    an expiry after dated credits;
 4. persists a non-secret pending reference plus the selected credit and unique

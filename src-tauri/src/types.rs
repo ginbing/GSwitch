@@ -346,6 +346,10 @@ pub struct StoredResetCredit {
     pub status: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<i64>,
+    /// The provider's reset kind. Absent in older payloads, which carried only
+    /// Codex rate-limit resets.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reset_type: Option<String>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
