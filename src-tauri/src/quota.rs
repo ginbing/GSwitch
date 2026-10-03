@@ -380,15 +380,25 @@ pub(crate) fn keep_refreshed_credential(
     })
 }
 
-/// Redeems one user-confirmed reset credit through the official App Server.
+/// Redeems the reset credit the user picked through the official App Server.
 /// The durable idempotency record is written before the provider call so an
 /// interrupted request can only ever be retried with the same credit and key.
-pub fn redeem_earliest_reset_credit(
+pub fn redeem_reset_credit(
     state: &AppState,
     account_id: &str,
+    choice: ResetCreditChoice,
 ) -> Result<ResetCreditOutcome, String> {
     let operation = state.acquire_operation()?;
-    redeem_under_operation(state, &operation, account_id, Redemption::NewRequest)
+    redeem_under_operation(state, &operation, account_id, Redemption::Pick(choice))
+}
+
+/// The non-secret identity of the credit a user picked. The WebView never
+/// holds the provider's credit ID, so the pick is matched again after a fresh
+/// provider read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ResetCreditChoice {
+    pub expires_at: Option<i64>,
+    pub granted_at: Option<i64>,
 }
 
 /// Replays a pending request with its original credit and idempotency key.
@@ -404,12 +414,15 @@ pub fn recover_pending_reset_credit(state: &AppState) -> Result<ResetCreditOutco
 }
 
 const NO_PENDING_RESET: &str = "No reset-credit operation needs recovery";
+const RECOVER_PENDING_RESET_FIRST: &str =
+    "GSwitch must recover a previous reset-credit operation before starting another";
+const PICKED_CREDIT_UNAVAILABLE: &str = "The selected reset credit is no longer available";
 
-/// Whether a redemption may start a new provider request or may only replay
-/// the recorded one.
+/// Whether a redemption starts a new provider request for a picked credit or
+/// may only replay the recorded one.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Redemption {
-    NewRequest,
+    Pick(ResetCreditChoice),
     Recovery,
 }
 
@@ -509,21 +522,30 @@ fn redeem_with_session(
         normalized.reset_credits.clone(),
     )?;
 
-    let pending = match state.pending_reset_credit_under_operation(operation)? {
-        Some(pending) if pending.account_id == account.id => pending,
-        Some(_) => {
+    // Only recovery replays a recorded request; a new pick never silently
+    // consumes the earlier, possibly different credit instead.
+    let pending = match (
+        state.pending_reset_credit_under_operation(operation)?,
+        redemption,
+    ) {
+        (Some(pending), Redemption::Recovery) if pending.account_id == account.id => pending,
+        (Some(pending), _) if pending.account_id != account.id => {
             return Err(
                 "A reset-credit operation for another account must be recovered first".to_string(),
             )
         }
-        None if redemption == Redemption::Recovery => {
+        (Some(_), Redemption::Pick(_)) => return Err(RECOVER_PENDING_RESET_FIRST.to_string()),
+        (Some(_), Redemption::Recovery) | (None, Redemption::Recovery) => {
             return Err(NO_PENDING_RESET.to_string());
         }
-        None => {
-            let credit_id =
-                earliest_available_credit(normalized.reset_credits.as_ref(), now_unix_ms() / 1000)?
-                    .id
-                    .clone();
+        (None, Redemption::Pick(choice)) => {
+            let credit_id = picked_available_credit(
+                normalized.reset_credits.as_ref(),
+                choice,
+                now_unix_ms() / 1000,
+            )?
+            .id
+            .clone();
             let pending = PendingResetCredit {
                 account_id: account.id.clone(),
                 secret_ref: None,
@@ -809,7 +831,11 @@ fn cached_view(account: &StoredAccount, now: i64) -> QuotaView {
         return not_applicable(account);
     }
     match account.quota.clone() {
-        Some(snapshot) => view_from_snapshot(&account.id, snapshot, now),
+        Some(snapshot) => view_from_snapshot(
+            &account.id,
+            with_current_credit_view(snapshot, account.reset_credits.as_ref(), now / 1000),
+            now,
+        ),
         None => QuotaView {
             account_id: account.id.clone(),
             status: QuotaStatus::Unknown,
@@ -817,6 +843,19 @@ fn cached_view(account: &StoredAccount, now: i64) -> QuotaView {
             message: Some("Quota has not been refreshed for this account".to_string()),
         },
     }
+}
+
+/// A saved credit list was filtered when it was read; recompute it so a credit
+/// that has expired since then is no longer offered.
+fn with_current_credit_view(
+    mut snapshot: QuotaSnapshot,
+    stored: Option<&StoredResetCredits>,
+    now_seconds: i64,
+) -> QuotaSnapshot {
+    if let Some(stored) = stored {
+        snapshot.reset_credits = Some(reset_credits_view(stored, now_seconds));
+    }
+    snapshot
 }
 
 fn not_applicable(account: &StoredAccount) -> QuotaView {
@@ -1013,6 +1052,10 @@ fn normalize_stored_reset_credits(result: &Value) -> Option<StoredResetCredits> 
                                 .or_else(|| value.get("reset_type"))
                                 .or_else(|| value.get("type")),
                         ),
+                        granted_at: value
+                            .get("grantedAt")
+                            .or_else(|| value.get("granted_at"))
+                            .and_then(unix_seconds_at),
                     })
                 })
                 .collect(),
@@ -1035,6 +1078,7 @@ fn reset_credits_view(credits: &StoredResetCredits, now_seconds: i64) -> ResetCr
                 .filter(|credit| is_redeemable_credit(credit, now_seconds))
                 .map(|credit| ResetCreditDetailView {
                     expires_at: credit.expires_at,
+                    granted_at: credit.granted_at,
                 })
                 .collect::<Vec<_>>()
         })
@@ -1053,21 +1097,31 @@ fn reset_credits_view(credits: &StoredResetCredits, now_seconds: i64) -> ResetCr
     }
 }
 
-fn earliest_available_credit(
+/// Matches the user's pick against the fresh provider list. Expiry must match;
+/// grant time must match when both sides report it. Credits that match on
+/// both are interchangeable, so the first is used.
+fn picked_available_credit(
     credits: Option<&StoredResetCredits>,
+    choice: ResetCreditChoice,
     now_seconds: i64,
 ) -> Result<&StoredResetCredit, String> {
     let credits =
         credits.ok_or_else(|| "Codex did not return reset-credit information".to_string())?;
     let details = credits.credits.as_ref().ok_or_else(|| {
-        "Reset-credit details are unavailable, so GSwitch cannot safely choose the earliest credit"
+        "Reset-credit details are unavailable, so GSwitch cannot identify the selected credit"
             .to_string()
     })?;
     details
         .iter()
         .filter(|credit| is_redeemable_credit(credit, now_seconds))
-        .min_by_key(|credit| credit.expires_at.unwrap_or(i64::MAX))
-        .ok_or_else(|| "No available reset credit can be redeemed".to_string())
+        .find(|credit| {
+            credit.expires_at == choice.expires_at
+                && match (credit.granted_at, choice.granted_at) {
+                    (Some(granted_at), Some(picked)) => granted_at == picked,
+                    _ => true,
+                }
+        })
+        .ok_or_else(|| PICKED_CREDIT_UNAVAILABLE.to_string())
 }
 
 fn is_redeemable_credit(credit: &StoredResetCredit, now_seconds: i64) -> bool {
@@ -1543,11 +1597,19 @@ mod tests {
         assert!(!view.details_available);
         assert!(!view.can_redeem);
         assert!(view.usable_credits.is_empty());
-        assert!(earliest_available_credit(normalized.reset_credits.as_ref(), 100).is_err());
+        assert!(picked_available_credit(
+            normalized.reset_credits.as_ref(),
+            ResetCreditChoice {
+                expires_at: None,
+                granted_at: None,
+            },
+            100
+        )
+        .is_err());
     }
 
     #[test]
-    fn reset_credit_selection_uses_the_earliest_unexpired_available_credit() {
+    fn listed_credits_are_unexpired_sorted_and_only_those_can_be_picked() {
         let credits = StoredResetCredits {
             available_count: 4,
             credits: Some(vec![
@@ -1556,38 +1618,90 @@ mod tests {
                     status: "available".into(),
                     expires_at: Some(99),
                     reset_type: None,
+                    granted_at: None,
                 },
                 StoredResetCredit {
                     id: "later".into(),
                     status: "available".into(),
                     expires_at: Some(300),
                     reset_type: None,
+                    granted_at: None,
                 },
                 StoredResetCredit {
                     id: "without-expiry".into(),
                     status: "available".into(),
                     expires_at: None,
                     reset_type: None,
+                    granted_at: None,
                 },
                 StoredResetCredit {
                     id: "first".into(),
                     status: "available".into(),
                     expires_at: Some(200),
                     reset_type: None,
+                    granted_at: None,
                 },
             ]),
         };
 
+        let pick = |expires_at| ResetCreditChoice {
+            expires_at,
+            granted_at: None,
+        };
+        assert!(picked_available_credit(Some(&credits), pick(Some(99)), 100).is_err());
         assert_eq!(
-            earliest_available_credit(Some(&credits), 100)
-                .expect("eligible credit")
+            picked_available_credit(Some(&credits), pick(Some(300)), 100)
+                .expect("picked credit")
                 .id,
-            "first"
+            "later"
         );
         let view = reset_credits_view(&credits, 100);
         assert_eq!(view.nearest_expiry, Some(200));
         assert_eq!(view.usable_credits[0].expires_at, Some(200));
         assert_eq!(view.usable_credits[2].expires_at, None);
+    }
+
+    #[test]
+    fn a_saved_credit_list_drops_credits_that_expired_since_it_was_read() {
+        let stored = StoredResetCredits {
+            available_count: 2,
+            credits: Some(vec![
+                StoredResetCredit {
+                    id: "soon".into(),
+                    status: "available".into(),
+                    expires_at: Some(200),
+                    reset_type: None,
+                    granted_at: Some(10),
+                },
+                StoredResetCredit {
+                    id: "later".into(),
+                    status: "available".into(),
+                    expires_at: Some(300),
+                    reset_type: None,
+                    granted_at: Some(20),
+                },
+            ]),
+        };
+        let snapshot = QuotaSnapshot {
+            fetched_at_unix_ms: 100_000,
+            account_id: None,
+            ordinary_usage_allowed: None,
+            buckets: vec![],
+            reset_credits: Some(reset_credits_view(&stored, 100)),
+        };
+
+        let current = with_current_credit_view(snapshot, Some(&stored), 250)
+            .reset_credits
+            .expect("credit view");
+
+        assert_eq!(
+            current.usable_credits,
+            vec![ResetCreditDetailView {
+                expires_at: Some(300),
+                granted_at: Some(20),
+            }]
+        );
+        assert_eq!(current.nearest_expiry, Some(300));
     }
 
     #[test]
@@ -1784,9 +1898,17 @@ mod tests {
             }
         }
 
+        fn pick(expires_at: i64) -> ResetCreditChoice {
+            ResetCreditChoice {
+                expires_at: Some(expires_at),
+                granted_at: None,
+            }
+        }
+
         fn redeem(
             state: &AppState,
             account: &StoredAccount,
+            choice: ResetCreditChoice,
             session: &mut ScriptedSession<'_>,
         ) -> Result<ResetCreditOutcome, String> {
             let operation = state.acquire_operation().expect("operation");
@@ -1796,7 +1918,7 @@ mod tests {
                 &operation,
                 account,
                 &identity,
-                Redemption::NewRequest,
+                Redemption::Pick(choice),
                 session,
             )
         }
@@ -1833,7 +1955,7 @@ mod tests {
                 .consume_returns(Ok(json!({"outcome": "reset"})))
                 .read(Ok(rate_limits(&[])));
 
-            let result = redeem(&state, &accounts[0], &mut session).expect("redeem");
+            let result = redeem(&state, &accounts[0], pick(FUTURE), &mut session).expect("redeem");
 
             assert_eq!(result.outcome, ResetCreditOutcomeKind::Reset);
             assert!(result.refresh_warning.is_none());
@@ -1855,7 +1977,7 @@ mod tests {
                 .read(Ok(rate_limits(&[("credit-a", FUTURE)])))
                 .consume_returns(Err("Codex App Server did not respond".into()));
 
-            assert!(redeem(&state, &accounts[0], &mut session).is_err());
+            assert!(redeem(&state, &accounts[0], pick(FUTURE), &mut session).is_err());
 
             let recorded = pending(&state).expect("pending record");
             assert_eq!(recorded.account_id, accounts[0].id);
@@ -1865,27 +1987,26 @@ mod tests {
         }
 
         #[test]
-        fn a_retry_replays_the_recorded_credit_and_key() {
+        fn a_new_pick_is_refused_while_a_record_is_pending() {
             let (state, accounts, root) = state_with_accounts(&["user"]);
             let mut first = ScriptedSession::new(&state, "user")
                 .read(Ok(rate_limits(&[("credit-a", FUTURE)])))
                 .consume_returns(Err("Codex App Server did not respond".into()));
-            assert!(redeem(&state, &accounts[0], &mut first).is_err());
+            assert!(redeem(&state, &accounts[0], pick(FUTURE), &mut first).is_err());
 
-            // A newer, earlier-expiring credit must not replace the recorded one.
-            let mut retry = ScriptedSession::new(&state, "user")
+            // Only recovery may replay the recorded request.
+            let mut again = ScriptedSession::new(&state, "user")
                 .read(Ok(rate_limits(&[
                     ("credit-b", FUTURE - 10),
                     ("credit-a", FUTURE),
                 ])))
-                .consume_returns(Ok(json!({"outcome": "alreadyRedeemed"})))
-                .read(Ok(rate_limits(&[("credit-b", FUTURE - 10)])));
-            let result = redeem(&state, &accounts[0], &mut retry).expect("retry");
+                .consume_returns(Ok(json!({"outcome": "reset"})));
+            let error =
+                redeem(&state, &accounts[0], pick(FUTURE - 10), &mut again).expect_err("pending");
 
-            assert_eq!(result.outcome, ResetCreditOutcomeKind::AlreadyRedeemed);
-            assert_eq!(retry.consumed[0].0, first.consumed[0].0);
-            assert_eq!(retry.consumed[0].1, "credit-a");
-            assert!(pending(&state).is_none());
+            assert_eq!(error, RECOVER_PENDING_RESET_FIRST);
+            assert!(again.consumed.is_empty());
+            assert_eq!(pending(&state).expect("pending").credit_id, "credit-a");
             let _ = fs::remove_dir_all(root);
         }
 
@@ -1895,12 +2016,13 @@ mod tests {
             let mut first = ScriptedSession::new(&state, "first")
                 .read(Ok(rate_limits(&[("credit-a", FUTURE)])))
                 .consume_returns(Err("Codex App Server did not respond".into()));
-            assert!(redeem(&state, &accounts[0], &mut first).is_err());
+            assert!(redeem(&state, &accounts[0], pick(FUTURE), &mut first).is_err());
 
             let mut second = ScriptedSession::new(&state, "second")
                 .read(Ok(rate_limits(&[("credit-z", FUTURE)])))
                 .consume_returns(Ok(json!({"outcome": "reset"})));
-            let error = redeem(&state, &accounts[1], &mut second).expect_err("blocked");
+            let error =
+                redeem(&state, &accounts[1], pick(FUTURE), &mut second).expect_err("blocked");
 
             assert!(error.contains("another account"));
             assert!(second.consumed.is_empty());
@@ -1925,7 +2047,8 @@ mod tests {
                     .consume_returns(Ok(json!({"outcome": outcome})))
                     .read(Ok(rate_limits(&[("credit-a", FUTURE)])));
 
-                let result = redeem(&state, &accounts[0], &mut session).expect("redeem");
+                let result =
+                    redeem(&state, &accounts[0], pick(FUTURE), &mut session).expect("redeem");
 
                 assert_eq!(result.outcome, expected);
                 assert!(pending(&state).is_none(), "{outcome} must clear the record");
@@ -1940,7 +2063,7 @@ mod tests {
                 .read(Ok(rate_limits(&[("credit-a", FUTURE)])))
                 .consume_returns(Ok(json!({"outcome": "somethingNew"})));
 
-            assert!(redeem(&state, &accounts[0], &mut session).is_err());
+            assert!(redeem(&state, &accounts[0], pick(FUTURE), &mut session).is_err());
             assert!(pending(&state).is_some());
             let _ = fs::remove_dir_all(root);
         }
@@ -1953,7 +2076,7 @@ mod tests {
                 .consume_returns(Ok(json!({"outcome": "reset"})));
             *session.credential_failures_after_consume.borrow_mut() = true;
 
-            let result = redeem(&state, &accounts[0], &mut session).expect("redeem");
+            let result = redeem(&state, &accounts[0], pick(FUTURE), &mut session).expect("redeem");
 
             assert_eq!(result.outcome, ResetCreditOutcomeKind::Reset);
             assert!(result.refresh_warning.is_some());
@@ -1972,10 +2095,90 @@ mod tests {
                 .consume_returns(Ok(json!({"outcome": "reset"})))
                 .read(Ok(rate_limits(&[])));
 
-            redeem(&state, &accounts[0], &mut session).expect("redeem");
+            let error = redeem(&state, &accounts[0], pick(FUTURE - 10), &mut session)
+                .expect_err("other kind");
+            assert_eq!(error, PICKED_CREDIT_UNAVAILABLE);
+            assert!(session.consumed.is_empty());
+
+            let mut credits = rate_limits(&[("other-kind", FUTURE - 10), ("codex", FUTURE)]);
+            credits["rateLimitResetCredits"]["credits"][0]["resetType"] = json!("unknown");
+            credits["rateLimitResetCredits"]["credits"][1]["resetType"] = json!("codexRateLimits");
+            let mut session = ScriptedSession::new(&state, "user")
+                .read(Ok(credits))
+                .consume_returns(Ok(json!({"outcome": "reset"})))
+                .read(Ok(rate_limits(&[])));
+            redeem(&state, &accounts[0], pick(FUTURE), &mut session).expect("redeem");
 
             assert_eq!(session.consumed.len(), 1);
             assert_eq!(session.consumed[0].1, "codex");
+            let _ = fs::remove_dir_all(root);
+        }
+
+        #[test]
+        fn the_picked_credit_is_redeemed_rather_than_the_earliest() {
+            let (state, accounts, root) = state_with_accounts(&["user"]);
+            let mut session = ScriptedSession::new(&state, "user")
+                .read(Ok(rate_limits(&[
+                    ("earliest", FUTURE - 10),
+                    ("picked", FUTURE),
+                ])))
+                .consume_returns(Ok(json!({"outcome": "reset"})))
+                .read(Ok(rate_limits(&[("earliest", FUTURE - 10)])));
+
+            redeem(&state, &accounts[0], pick(FUTURE), &mut session).expect("redeem");
+
+            assert_eq!(session.consumed.len(), 1);
+            assert_eq!(session.consumed[0].1, "picked");
+            let _ = fs::remove_dir_all(root);
+        }
+
+        #[test]
+        fn a_pick_that_is_no_longer_available_consumes_nothing() {
+            let (state, accounts, root) = state_with_accounts(&["user"]);
+            let mut session = ScriptedSession::new(&state, "user")
+                .read(Ok(rate_limits(&[("remaining", FUTURE)])))
+                .consume_returns(Ok(json!({"outcome": "reset"})));
+
+            let error =
+                redeem(&state, &accounts[0], pick(FUTURE - 10), &mut session).expect_err("gone");
+
+            assert_eq!(error, PICKED_CREDIT_UNAVAILABLE);
+            assert!(session.consumed.is_empty());
+            assert!(pending(&state).is_none());
+            let operation = state.acquire_operation().expect("operation");
+            let saved = state
+                .account_by_id_under_operation(&operation, &accounts[0].id)
+                .expect("account");
+            assert_eq!(
+                saved
+                    .reset_credits
+                    .and_then(|credits| credits.credits)
+                    .map(|credits| credits.len()),
+                Some(1),
+                "the fresh list is saved so the dialog can show it"
+            );
+            drop(operation);
+            let _ = fs::remove_dir_all(root);
+        }
+
+        #[test]
+        fn grant_time_tells_apart_credits_that_expire_together() {
+            let (state, accounts, root) = state_with_accounts(&["user"]);
+            let mut credits = rate_limits(&[("granted-first", FUTURE), ("granted-later", FUTURE)]);
+            credits["rateLimitResetCredits"]["credits"][0]["grantedAt"] = json!(100);
+            credits["rateLimitResetCredits"]["credits"][1]["grantedAt"] = json!(200);
+            let mut session = ScriptedSession::new(&state, "user")
+                .read(Ok(credits))
+                .consume_returns(Ok(json!({"outcome": "reset"})))
+                .read(Ok(rate_limits(&[])));
+
+            let choice = ResetCreditChoice {
+                expires_at: Some(FUTURE),
+                granted_at: Some(200),
+            };
+            redeem(&state, &accounts[0], choice, &mut session).expect("redeem");
+
+            assert_eq!(session.consumed[0].1, "granted-later");
             let _ = fs::remove_dir_all(root);
         }
 
@@ -2000,7 +2203,7 @@ mod tests {
             let mut first = ScriptedSession::new(&state, "user")
                 .read(Ok(rate_limits(&[("credit-a", FUTURE)])))
                 .consume_returns(Err("Codex App Server did not respond".into()));
-            assert!(redeem(&state, &accounts[0], &mut first).is_err());
+            assert!(redeem(&state, &accounts[0], pick(FUTURE), &mut first).is_err());
 
             let mut recovery = ScriptedSession::new(&state, "user")
                 .read(Ok(rate_limits(&[
@@ -2040,7 +2243,7 @@ mod tests {
                 .consume_returns(Ok(json!({"outcome": "reset"})))
                 .read(Err("Unable to reach ChatGPT".into()));
 
-            let result = redeem(&state, &accounts[0], &mut session).expect("redeem");
+            let result = redeem(&state, &accounts[0], pick(FUTURE), &mut session).expect("redeem");
 
             assert_eq!(result.outcome, ResetCreditOutcomeKind::Reset);
             assert!(result.quota.is_none());

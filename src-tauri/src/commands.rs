@@ -366,12 +366,18 @@ pub async fn refresh_account_quota(
 }
 
 #[tauri::command]
-pub async fn redeem_earliest_reset_credit(
+pub async fn redeem_reset_credit(
     state: State<'_, AppState>,
     id: String,
+    expires_at: Option<i64>,
+    granted_at: Option<i64>,
 ) -> Result<ResetCreditOutcome, String> {
     let state = state.inner().clone();
-    run_blocking(move || quota::redeem_earliest_reset_credit(&state, &id)).await
+    let choice = quota::ResetCreditChoice {
+        expires_at,
+        granted_at,
+    };
+    run_blocking(move || quota::redeem_reset_credit(&state, &id, choice)).await
 }
 
 #[tauri::command]

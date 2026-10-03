@@ -10,6 +10,7 @@ import type {
   OAuthLoginStart,
   OAuthLoginStatus,
   QuotaView,
+  ResetCreditDetail,
   ResetCreditOutcome,
   RuntimeInfo,
   SwitchOutcome,
@@ -67,8 +68,14 @@ export const api = {
   accountQuota: (id: string) => invoke<QuotaView>("get_account_quota", { id }),
   refreshAccountQuota: (id: string, background = false) =>
     invoke<QuotaView>("refresh_account_quota", { id, background }),
-  redeemEarliestResetCredit: (id: string) =>
-    invoke<ResetCreditOutcome>("redeem_earliest_reset_credit", { id }),
+  // Only the credit's non-secret timestamps identify the pick; Rust matches
+  // them against a fresh provider read before consuming anything.
+  redeemResetCredit: (id: string, credit: ResetCreditDetail) =>
+    invoke<ResetCreditOutcome>("redeem_reset_credit", {
+      id,
+      expiresAt: credit.expires_at ?? null,
+      grantedAt: credit.granted_at ?? null,
+    }),
   recoverPendingResetCredit: () =>
     invoke<ResetCreditOutcome>("recover_pending_reset_credit"),
   startWake: (id: string, alternateModel = false) =>

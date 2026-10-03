@@ -184,7 +184,10 @@ as applicable:
 - a quota projection failure leaving the saved-account workspace and Switch
   action available;
 - provider refresh before reset-credit selection;
-- earliest eligible unexpired reset-credit selection and idempotent outcomes;
+- redeeming the picked credit rather than the earliest, matching by expiry and
+  grant time, consuming nothing when the pick is gone, refusing a new pick
+  while a record is pending, dropping credits that expired since the last read,
+  and idempotent outcomes;
 - reset credits of another kind never being listed or redeemed;
 - the reset-credit redemption flow against a scripted App Server session: a
   durable pending record before consume, its retention after a failed or

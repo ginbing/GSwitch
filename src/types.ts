@@ -172,6 +172,7 @@ export interface QuotaBucket {
 
 export interface ResetCreditDetail {
   expires_at?: number;
+  granted_at?: number;
 }
 
 export interface ResetCreditsView {
