@@ -333,7 +333,18 @@ that record. Saved credit lists are recomputed when read, so a credit that
 expired after the last provider read is no longer offered.
 
 `reset` and `alreadyRedeemed` are confirmed outcomes. `nothingToReset` and
-`noCredit` explicitly mean no credit was consumed. Recovery is a user-directed
+`noCredit` explicitly mean no credit was consumed. Each outcome tells the user
+whether a credit was used; a confirmed reset names the account and the expiry
+of the credit it used, and `nothingToReset` says the account does not need a
+reset right now.
+
+A failure crosses IPC as a code that says whether a credit could have been
+used. Before the consume request nothing was spent, so those failures are
+"not started" unless they name a more specific cause: GSwitch busy, Codex
+running, recovery required, credit details unavailable, or a picked credit no
+longer available. After the consume request, an explicit provider rejection
+and an unknown outcome are reported separately; both keep the pending record
+so a retry reuses the same credit and key. Recovery is a user-directed
 retry of the exact recorded credit and key; it never selects a replacement
 credit automatically. When recovery is pending, the workspace names the saved
 account it belongs to; it never exposes the credit ID or idempotency key.

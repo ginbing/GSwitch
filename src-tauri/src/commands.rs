@@ -9,8 +9,9 @@ use crate::{
         AccountView, AppSnapshot, CodexCliInfo, CodexCliUpdateFailure, CodexCliUpdateStatus,
         ExportResult, ImportResult, LiveAccountView, MigrationPreview, OAuthLoginStart,
         OAuthLoginStatus, QuotaRefreshFailure, QuotaRefreshFailureCode, QuotaView,
-        ResetCreditOutcome, RuntimeInfo, StorageStatus, SwitchFailure, SwitchFailureCode,
-        SwitchOutcome, UpdateDelivery, WakeOperationView, WakeStart,
+        ResetCreditFailure, ResetCreditFailureCode, ResetCreditOutcome, RuntimeInfo, StorageStatus,
+        SwitchFailure, SwitchFailureCode, SwitchOutcome, UpdateDelivery, WakeOperationView,
+        WakeStart,
     },
     wake,
 };
@@ -371,13 +372,25 @@ pub async fn redeem_reset_credit(
     id: String,
     expires_at: Option<i64>,
     granted_at: Option<i64>,
-) -> Result<ResetCreditOutcome, String> {
+) -> Result<ResetCreditOutcome, ResetCreditFailure> {
     let state = state.inner().clone();
     let choice = quota::ResetCreditChoice {
         expires_at,
         granted_at,
     };
-    run_blocking(move || quota::redeem_reset_credit(&state, &id, choice)).await
+    run_reset_blocking(move || quota::redeem_reset_credit(&state, &id, choice)).await
+}
+
+/// A stopped worker cannot say whether the consume request was sent, so its
+/// outcome is unknown; any pending record stays for recovery.
+async fn run_reset_blocking(
+    task: impl FnOnce() -> Result<ResetCreditOutcome, ResetCreditFailure> + Send + 'static,
+) -> Result<ResetCreditOutcome, ResetCreditFailure> {
+    tauri::async_runtime::spawn_blocking(task)
+        .await
+        .map_err(|_| ResetCreditFailure {
+            code: ResetCreditFailureCode::ResultUnknown,
+        })?
 }
 
 #[tauri::command]
@@ -389,9 +402,9 @@ pub async fn discard_pending_reset_credit(state: State<'_, AppState>) -> Result<
 #[tauri::command]
 pub async fn recover_pending_reset_credit(
     state: State<'_, AppState>,
-) -> Result<ResetCreditOutcome, String> {
+) -> Result<ResetCreditOutcome, ResetCreditFailure> {
     let state = state.inner().clone();
-    run_blocking(move || quota::recover_pending_reset_credit(&state)).await
+    run_reset_blocking(move || quota::recover_pending_reset_credit(&state)).await
 }
 
 #[tauri::command]

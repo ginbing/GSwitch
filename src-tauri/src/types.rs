@@ -424,6 +424,31 @@ pub struct ResetCreditOutcome {
     pub quota: Option<QuotaView>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refresh_warning: Option<String>,
+    /// Expiry of the credit this request used, when the provider listed it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub used_expires_at: Option<i64>,
+}
+
+/// Why a reset did not produce a result. Only a stable code crosses the
+/// Rust/WebView boundary, and each code says whether a credit could have been
+/// used: before the consume request nothing was spent; `provider_rejected` and
+/// `result_unknown` keep a pending record so a retry reuses the same credit.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ResetCreditFailureCode {
+    OperationBusy,
+    CodexOpen,
+    RecoveryRequired,
+    DetailsUnavailable,
+    CreditsChanged,
+    NotStarted,
+    ProviderRejected,
+    ResultUnknown,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResetCreditFailure {
+    pub code: ResetCreditFailureCode,
 }
 
 /// A short-lived, in-memory Wake result. Wake is intentionally not a job

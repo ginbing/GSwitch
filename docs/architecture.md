@@ -16,8 +16,8 @@ smaller than a general account-management platform.
 
 The frontend asks for user-level actions such as add, switch, refresh, redeem,
 or Wake. It does not orchestrate their internal steps or receive the stored
-credential document. Switch failures cross IPC as a small serialized error code,
-not a Rust display string or raw provider error.
+credential document. Switch and reset-credit failures cross IPC as a small
+serialized error code, not a Rust display string or raw provider error.
 
 ## State ownership
 
