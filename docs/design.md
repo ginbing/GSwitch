@@ -123,7 +123,8 @@ without a click. Codex CLI and the Codex desktop app update separately.
   user's Refresh or Refresh all up to three read-only reads at once, never
   waiting behind automatic reads. Refresh all shows "Refreshing n/total" on the
   toolbar and leaves the workspace usable; a successful card refresh needs no
-  notice because the card itself updates. Automatic reads leave switching
+  notice because the card itself updates. Each card shows how long ago its
+  quota was read next to its refresh button. Automatic reads leave switching
   available while waiting for the provider and never refresh a saved
   credential. A failed card keeps a visible,
   compact warning icon beside quota;

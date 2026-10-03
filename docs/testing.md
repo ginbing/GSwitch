@@ -180,6 +180,11 @@ as applicable:
   official sign-in refresh only after a read shows it is needed, same-account
   refresh coalescing, six-account continuation after partial failure, toolbar
   progress, and stale or unavailable state on each failed card;
+- the automatic refresh policy: unread accounts at once, the current account
+  every two minutes or one minute after focus, other accounts after thirty
+  minutes or once a quota window has reset, retries spaced from the last
+  attempt, and failures only the user can fix left to the user; each card's
+  "updated" age;
 - a one-account quota refresh updating its own projection without rebuilding
   the workspace, and that account's busy state leaving unrelated cards usable;
 - quota bucket normalization, zero remaining, and stale-cache labeling;

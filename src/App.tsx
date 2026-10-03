@@ -54,6 +54,7 @@ import {
   type Translator,
 } from "./i18n";
 import { RefreshLanes } from "./refreshLanes";
+import { quotaRefreshDue } from "./refreshPolicy";
 import type {
   AccountView,
   CodexCliInfo,
@@ -731,6 +732,7 @@ function AccountCard({
   onSelectionChange,
   t,
   formatLocale,
+  now,
 }: {
   account: AccountView;
   quota?: QuotaView;
@@ -753,6 +755,7 @@ function AccountCard({
   onSelectionChange: () => void;
   t: Translator;
   formatLocale: string;
+  now: number;
 }) {
   const credits = quota?.snapshot?.reset_credits;
   const isApiKey = account.kind === "api_key";
@@ -865,6 +868,13 @@ function AccountCard({
         >
           <RefreshCw className={busyAction === "refresh" ? "spin" : ""} size={17} />
         </button> : null}
+        {!isApiKey && quota?.snapshot?.fetched_at_unix_ms ? (
+          <small className="quota-updated">
+            {now - quota.snapshot.fetched_at_unix_ms < 60_000
+              ? t("quota.updatedJustNow")
+              : t("quota.updatedAgo", { time: formatRelativeTime(quota.snapshot.fetched_at_unix_ms / 1000, formatLocale, now) })}
+          </small>
+        ) : null}
         <div className="card-footer-actions">
           {!isApiKey && !signInRequired ? (
             <button
@@ -1039,6 +1049,14 @@ export default function App() {
   // up to three read-only reads; only a saved sign-in that needs the official
   // token refresh takes the credential lock, one account at a time.
   const refreshLanes = useRef(new RefreshLanes({ background: 1, manual: 3, signIn: 1 }));
+  const lastQuotaAttempt = useRef(new Map<string, number>());
+  const refreshInputs = useRef<{
+    accounts: AccountView[];
+    quotas: Record<string, QuotaView>;
+    quotaFailures: Record<string, QuotaRefreshFailureCode>;
+    activeId?: string;
+  }>({ accounts: [], quotas: {}, quotaFailures: {} });
+  const [clock, setClock] = useState(() => Date.now());
   const [refreshProgress, setRefreshProgress] = useState<{ done: number; total: number } | null>(null);
   const accountOperations = useRef(new Set<string>());
   const snapshotSequence = useRef(0);
@@ -1123,6 +1141,7 @@ export default function App() {
       return current.promise;
     }
 
+    lastQuotaAttempt.current.set(accountId, Date.now());
     const lanes = refreshLanes.current;
     const entry: QuotaRefreshEntry = { manual: !background, started: false, promise: Promise.resolve() as never };
     const read = () => {
@@ -1217,9 +1236,17 @@ export default function App() {
             quotaPairs.flatMap((result) => result.status === "fulfilled" ? [result.value] : []),
           ) as Record<string, QuotaView>;
           setQuotas((current) => mergeNewerQuotas(current, cached));
-          for (const quota of Object.values(cached)) {
-            if (quota.status === "unknown" || quota.status === "stale") {
-              void requestQuotaRefresh(quota.account_id, true).catch(() => undefined);
+          const now = Date.now();
+          for (const account of nextAccounts) {
+            const quota = cached[account.id];
+            if (quota && quotaRefreshDue(quota, {
+              active: account.active || account.id === activeAccountId,
+              focused: false,
+              failure: refreshInputs.current.quotaFailures[account.id],
+              lastAttemptAt: lastQuotaAttempt.current.get(account.id),
+              now,
+            })) {
+              void requestQuotaRefresh(account.id, true).catch(() => undefined);
             }
           }
         });
@@ -1240,6 +1267,43 @@ export default function App() {
   useEffect(() => {
     void loadSnapshot();
   }, [loadSnapshot]);
+
+  // While the window is visible, read each account when its quota can have
+  // changed: every check every 30 seconds, and at once when the window
+  // regains focus. A hidden window makes no reads.
+  useEffect(() => {
+    if (loading) return;
+    const check = (focused: boolean) => {
+      if (document.visibilityState === "hidden") return;
+      const now = Date.now();
+      setClock(now);
+      const { accounts: saved, quotas: readings, quotaFailures: failures, activeId } = refreshInputs.current;
+      for (const account of saved) {
+        if (account.kind !== "chat_gpt") continue;
+        if (quotaRefreshDue(readings[account.id], {
+          active: account.active || account.id === activeId,
+          focused,
+          failure: failures[account.id],
+          lastAttemptAt: lastQuotaAttempt.current.get(account.id),
+          now,
+        })) {
+          void requestQuotaRefresh(account.id, true).catch(() => undefined);
+        }
+      }
+    };
+    const interval = window.setInterval(() => check(false), 30_000);
+    const onFocus = () => check(true);
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") check(true);
+    };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [loading, requestQuotaRefresh]);
 
   const checkForUpdate = useCallback(async () => {
     if (!("__TAURI_INTERNALS__" in window) || updateCheckInFlight.current) {
@@ -1447,6 +1511,7 @@ export default function App() {
           if (oauthTarget) {
             setAccountSignInNeeded((current) => ({ ...current, [oauthTarget.id]: false }));
           }
+          void requestQuotaRefresh(status.account.id, true).catch(() => undefined);
           if (!status.account.needs_apply) {
             setNotice({ kind: "success", text: t(oauthTarget ? "notice.reauthenticatedAccount" : "notice.importedAccount", { name: accountPrimaryName(status.account) }) });
           }
@@ -1468,7 +1533,7 @@ export default function App() {
         window.clearTimeout(timer);
       }
     };
-  }, [loadSnapshot, oauth, oauthTarget, t]);
+  }, [loadSnapshot, oauth, oauthTarget, requestQuotaRefresh, t]);
 
   useEffect(() => {
     if (!wake || wake.status !== "running") {
@@ -1488,6 +1553,9 @@ export default function App() {
           timer = window.setTimeout(poll, 850);
         } else {
           void loadSnapshot();
+          for (const result of next.results) {
+            void requestQuotaRefresh(result.account_id, true).catch(() => undefined);
+          }
         }
       } catch {
         if (!closed) {
@@ -1503,7 +1571,7 @@ export default function App() {
         window.clearTimeout(timer);
       }
     };
-  }, [loadSnapshot, t, wake]);
+  }, [loadSnapshot, requestQuotaRefresh, t, wake]);
 
   const startOAuth = async (target?: AccountView) => {
     const result = await runTask("oauth", () => api.startOAuth(target?.id), false);
@@ -1723,6 +1791,7 @@ export default function App() {
       ).sort((left, right) => Number(right.active) - Number(left.active)));
       setLive({ status: "ready", credential_store: "file", account: outcome.account });
       setNotice(null);
+      void requestQuotaRefresh(outcome.account.id, true).catch(() => undefined);
     } catch (error) {
       if (asSwitchFailure(error)?.code === "account_needs_sign_in") {
         setAccountSignInNeeded((current) => ({ ...current, [account.id]: true }));
@@ -1921,6 +1990,7 @@ export default function App() {
   };
 
   const currentActiveId = live?.account?.id;
+  refreshInputs.current = { accounts, quotas, quotaFailures, activeId: currentActiveId };
   const liveAccountLabel = live?.account ? accountPrimaryName(live.account) : t("toolbar.currentAccount");
   const liveStatusLabel = !live ? t("toolbar.statusChecking") : t(({
     ready: "toolbar.statusReady",
@@ -2215,6 +2285,7 @@ export default function App() {
                   active={account.active || account.id === currentActiveId}
                   busyAction={accountBusy[account.id] ?? (busy === "switch:" + account.id ? "switch" : undefined)}
                   formatLocale={locale.formatLocale}
+                  now={clock}
                   globalBusy={accountGridBusy}
                   key={account.id}
                   onCopyEmail={() => void copyAccountEmail(account)}
