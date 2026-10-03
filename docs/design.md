@@ -98,7 +98,9 @@ without a click. Codex CLI and the Codex desktop app update separately.
   menu, or choosing an action closes the menu. Escape and a chosen action
   return focus to the menu button.
 - Disable conflicting credential actions while one is in progress.
-- Show progress on the affected row or in the focused operation dialog.
+- Show progress on the affected row or on the focused dialog's own action
+  button, not as a separate dialog header label. A dialog can be closed while
+  unrelated work runs; only its own operation keeps it open.
 - Keep Wake results per account; identify each result by email and workspace,
   localize its status, and distinguish a confirmed model reply from an
   unconfirmed request or failure. While running, show only "Waking" and the
