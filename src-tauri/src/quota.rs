@@ -388,14 +388,52 @@ pub fn redeem_earliest_reset_credit(
     account_id: &str,
 ) -> Result<ResetCreditOutcome, String> {
     let operation = state.acquire_operation()?;
+    redeem_under_operation(state, &operation, account_id, Redemption::NewRequest)
+}
+
+/// Replays a pending request with its original credit and idempotency key.
+/// The record is read and replayed under one operation lock, so recovery can
+/// never fall through to selecting a new credit.
+pub fn recover_pending_reset_credit(state: &AppState) -> Result<ResetCreditOutcome, String> {
+    let operation = state.acquire_operation()?;
+    let account_id = state
+        .pending_reset_credit_under_operation(&operation)?
+        .ok_or_else(|| NO_PENDING_RESET.to_string())?
+        .account_id;
+    redeem_under_operation(state, &operation, &account_id, Redemption::Recovery)
+}
+
+const NO_PENDING_RESET: &str = "No reset-credit operation needs recovery";
+
+/// Whether a redemption may start a new provider request or may only replay
+/// the recorded one.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Redemption {
+    NewRequest,
+    Recovery,
+}
+
+fn redeem_under_operation(
+    state: &AppState,
+    operation: &OperationGuard<'_>,
+    account_id: &str,
+    redemption: Redemption,
+) -> Result<ResetCreditOutcome, String> {
     runtime::ensure_no_external_codex(&[])?;
-    let account = state.account_by_id_under_operation(&operation, account_id)?;
+    let account = state.account_by_id_under_operation(operation, account_id)?;
     if account.kind == AccountKind::ApiKey {
         return Err("Reset credits are not available for API-key accounts".to_string());
     }
     let identity = verified_chatgpt_identity(&account)?;
     let mut session = AppServerResetSession::start(state, &account.credential)?;
-    redeem_with_session(state, &operation, &account, &identity, &mut session)
+    redeem_with_session(
+        state,
+        operation,
+        &account,
+        &identity,
+        redemption,
+        &mut session,
+    )
 }
 
 /// The provider calls one reset-credit redemption makes. Production runs them
@@ -452,6 +490,7 @@ fn redeem_with_session(
     operation: &OperationGuard<'_>,
     account: &StoredAccount,
     identity: &AccountIdentity,
+    redemption: Redemption,
     session: &mut impl ResetCreditSession,
 ) -> Result<ResetCreditOutcome, String> {
     // This read both proves the provider is reachable and gives GSwitch the
@@ -476,6 +515,9 @@ fn redeem_with_session(
             return Err(
                 "A reset-credit operation for another account must be recovered first".to_string(),
             )
+        }
+        None if redemption == Redemption::Recovery => {
+            return Err(NO_PENDING_RESET.to_string());
         }
         None => {
             let credit_id =
@@ -574,19 +616,6 @@ fn redeem_with_session(
     result.quota = quota;
     result.refresh_warning = warning;
     Ok(result)
-}
-
-/// Replays a pending request with its original credit and idempotency key.
-/// This never selects a new credit during recovery.
-pub fn recover_pending_reset_credit(state: &AppState) -> Result<ResetCreditOutcome, String> {
-    let account_id = {
-        let operation = state.acquire_operation()?;
-        state
-            .pending_reset_credit_under_operation(&operation)?
-            .ok_or_else(|| "No reset-credit operation needs recovery".to_string())?
-            .account_id
-    };
-    redeem_earliest_reset_credit(state, &account_id)
 }
 
 fn refresh_after_confirmed_reset(
@@ -1704,7 +1733,31 @@ mod tests {
         ) -> Result<ResetCreditOutcome, String> {
             let operation = state.acquire_operation().expect("operation");
             let identity = verified_chatgpt_identity(account).expect("identity");
-            redeem_with_session(state, &operation, account, &identity, session)
+            redeem_with_session(
+                state,
+                &operation,
+                account,
+                &identity,
+                Redemption::NewRequest,
+                session,
+            )
+        }
+
+        fn recover(
+            state: &AppState,
+            account: &StoredAccount,
+            session: &mut ScriptedSession<'_>,
+        ) -> Result<ResetCreditOutcome, String> {
+            let operation = state.acquire_operation().expect("operation");
+            let identity = verified_chatgpt_identity(account).expect("identity");
+            redeem_with_session(
+                state,
+                &operation,
+                account,
+                &identity,
+                Redemption::Recovery,
+                session,
+            )
         }
 
         fn pending(state: &AppState) -> Option<PendingResetCredit> {
@@ -1847,6 +1900,59 @@ mod tests {
             assert_eq!(result.outcome, ResetCreditOutcomeKind::Reset);
             assert!(result.refresh_warning.is_some());
             assert!(pending(&state).is_some());
+            let _ = fs::remove_dir_all(root);
+        }
+
+        #[test]
+        fn recovery_without_a_record_never_consumes_a_credit() {
+            let (state, accounts, root) = state_with_accounts(&["user"]);
+            let mut session = ScriptedSession::new(&state, "user")
+                .read(Ok(rate_limits(&[("credit-a", FUTURE)])))
+                .consume_returns(Ok(json!({"outcome": "reset"})));
+
+            let error = recover(&state, &accounts[0], &mut session).expect_err("no record");
+
+            assert_eq!(error, NO_PENDING_RESET);
+            assert!(session.consumed.is_empty());
+            assert!(pending(&state).is_none());
+            let _ = fs::remove_dir_all(root);
+        }
+
+        #[test]
+        fn recovery_replays_only_the_recorded_credit() {
+            let (state, accounts, root) = state_with_accounts(&["user"]);
+            let mut first = ScriptedSession::new(&state, "user")
+                .read(Ok(rate_limits(&[("credit-a", FUTURE)])))
+                .consume_returns(Err("Codex App Server did not respond".into()));
+            assert!(redeem(&state, &accounts[0], &mut first).is_err());
+
+            let mut recovery = ScriptedSession::new(&state, "user")
+                .read(Ok(rate_limits(&[
+                    ("credit-b", FUTURE - 10),
+                    ("credit-a", FUTURE),
+                ])))
+                .consume_returns(Ok(json!({"outcome": "reset"})))
+                .read(Ok(rate_limits(&[("credit-b", FUTURE - 10)])));
+            let result = recover(&state, &accounts[0], &mut recovery).expect("recovery");
+
+            assert_eq!(result.outcome, ResetCreditOutcomeKind::Reset);
+            assert_eq!(recovery.consumed.len(), 1);
+            assert_eq!(recovery.consumed[0].0, first.consumed[0].0);
+            assert_eq!(recovery.consumed[0].1, "credit-a");
+            let _ = fs::remove_dir_all(root);
+        }
+
+        #[test]
+        fn recovery_entry_point_reports_a_missing_record_before_any_provider_work() {
+            // An empty store keeps credential fixtures out of the real entry
+            // point, which would otherwise reach App Server code.
+            let root = std::env::temp_dir().join(format!("gswitch-reset-{}", Uuid::new_v4()));
+            fs::create_dir_all(&root).expect("test directory");
+            let state = AppState::new(root.join("accounts.json")).expect("state");
+            assert_eq!(
+                recover_pending_reset_credit(&state).expect_err("no record"),
+                NO_PENDING_RESET
+            );
             let _ = fs::remove_dir_all(root);
         }
 

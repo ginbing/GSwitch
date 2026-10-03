@@ -189,6 +189,8 @@ as applicable:
   durable pending record before consume, its retention after a failed or
   unknown consume, replay of the recorded credit and key, refusal while another
   account's record is pending, and clearing after each authoritative outcome;
+- reset recovery reading and replaying its record under one operation lock,
+  and never consuming a credit when no record exists;
 - a pending reset being surfaced as a boolean-only recovery prompt and replayed
   only after a new explicit user action;
 - Wake's fixed minimal Responses payload, complete assistant reply confirmation,
