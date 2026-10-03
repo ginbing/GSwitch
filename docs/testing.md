@@ -189,6 +189,9 @@ as applicable:
   while a record is pending, dropping credits that expired since the last read,
   and idempotent outcomes;
 - reset credits of another kind never being listed or redeemed;
+- reset failure codes distinguishing a busy lock and failures before consume
+  (nothing spent) from an explicit provider rejection and an unknown outcome
+  (record kept), and outcome notices naming the account and used credit;
 - the reset-credit redemption flow against a scripted App Server session: a
   durable pending record before consume, its retention after a failed or
   unknown consume, replay of the recorded credit and key, refusal while another

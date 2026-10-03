@@ -214,6 +214,21 @@ export interface ResetCreditOutcome {
   outcome: ResetCreditOutcomeKind;
   quota?: QuotaView;
   refresh_warning?: string;
+  used_expires_at?: number;
+}
+
+export type ResetCreditFailureCode =
+  | "operation_busy"
+  | "codex_open"
+  | "recovery_required"
+  | "details_unavailable"
+  | "credits_changed"
+  | "not_started"
+  | "provider_rejected"
+  | "result_unknown";
+
+export interface ResetCreditFailure {
+  code: ResetCreditFailureCode;
 }
 
 export type WakeResultKind =

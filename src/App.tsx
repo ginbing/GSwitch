@@ -67,6 +67,9 @@ import type {
   QuotaRefreshFailureCode,
   QuotaView,
   QuotaWindow,
+  ResetCreditFailure,
+  ResetCreditFailureCode,
+  ResetCreditOutcome,
   StorageView,
   SwitchFailure,
   SwitchFailureCode,
@@ -110,7 +113,32 @@ function fileFilters(t: Translator) {
   return [{ name: t("file.accountExports"), extensions: ["json"] }];
 }
 
+const resetFailureCodes = new Set<ResetCreditFailureCode>([
+  "operation_busy",
+  "codex_open",
+  "recovery_required",
+  "details_unavailable",
+  "credits_changed",
+  "not_started",
+  "provider_rejected",
+  "result_unknown",
+]);
+
+function asResetCreditFailure(error: unknown): ResetCreditFailure | undefined {
+  if (typeof error !== "object" || error === null || !("code" in error)) {
+    return undefined;
+  }
+  const code = (error as { code?: unknown }).code;
+  return typeof code === "string" && resetFailureCodes.has(code as ResetCreditFailureCode)
+    ? { code: code as ResetCreditFailureCode }
+    : undefined;
+}
+
 function friendlyError(t: Translator, error: unknown, fallback = t("error.actionIncomplete")) {
+  const resetFailure = asResetCreditFailure(error);
+  if (resetFailure) {
+    return t(`resetFailure.${resetFailure.code}`);
+  }
   const message = String(error);
   if (/Quit Codex|Codex is running|external Codex|Unable to reliably inspect/i.test(message)) {
     return t("error.quitCodex");
@@ -1742,6 +1770,33 @@ export default function App() {
     });
   };
 
+  // Each outcome says whether a credit was used, and which one.
+  const resetOutcomeNotice = (result: ResetCreditOutcome): Notice => {
+    const account = accounts.find((saved) => saved.id === result.account_id);
+    const name = account ? accountPrimaryName(account) : t("recovery.removedAccount");
+    switch (result.outcome) {
+      case "reset":
+        if (result.refresh_warning) {
+          return { kind: "success", text: t("notice.resetRefreshWarning") };
+        }
+        return {
+          kind: "success",
+          text: result.used_expires_at
+            ? t("notice.resetUsed", { name, date: formatDateTime(result.used_expires_at, locale.formatLocale) })
+            : t("notice.resetUsedUndated", { name }),
+        };
+      case "already_redeemed":
+        return {
+          kind: "success",
+          text: result.refresh_warning ? t("notice.resetRefreshWarning") : t("notice.resetAlreadyApplied"),
+        };
+      case "nothing_to_reset":
+        return { kind: "info", text: t("notice.resetNotNeeded", { name }) };
+      case "no_credit":
+        return { kind: "info", text: t("notice.resetNoCredit", { name }) };
+    }
+  };
+
   const redeemReset = async () => {
     // The dialog lists credits soonest-first and says the first one is used.
     const credit = resetCredits?.usable_credits[0];
@@ -1762,13 +1817,7 @@ export default function App() {
       return;
     }
     showResetQuota(result.quota);
-    const complete = result.outcome === "reset" || result.outcome === "already_redeemed";
-    setNotice({
-      kind: complete ? "success" : "info",
-      text: complete
-        ? result.refresh_warning ? t("notice.resetRefreshWarning") : t("notice.resetUsed")
-        : t("notice.noResetUsed"),
-    });
+    setNotice(resetOutcomeNotice(result));
     setResetAccount(null);
     setResetConfirmation(false);
     setDialog(null);
@@ -1781,13 +1830,7 @@ export default function App() {
       return;
     }
     showResetQuota(result.quota);
-    const confirmed = result.outcome === "reset" || result.outcome === "already_redeemed";
-    setNotice({
-      kind: confirmed ? "success" : "info",
-      text: result.refresh_warning ? t("notice.resetRefreshWarning") : (confirmed
-        ? t("notice.recoveredReset")
-        : t("notice.resetNotConsumed")),
-    });
+    setNotice(resetOutcomeNotice(result));
     setDialog(null);
   };
 

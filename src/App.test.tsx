@@ -617,6 +617,51 @@ describe("GSwitch account workspace", () => {
     expect(mocks.refreshAccountQuota).not.toHaveBeenCalledWith("account-1", false);
   });
 
+  async function confirmFirstReset() {
+    await userEvent.click(await screen.findByRole("button", { name: "Details" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Use reset credit" }));
+    await userEvent.click(screen.getByRole("button", { name: "Use earliest credit" }));
+  }
+
+  it("names the account and the credit a reset used", async () => {
+    mocks.listAccounts.mockResolvedValue([chatAccount]);
+    mocks.accountQuota.mockResolvedValue(staleQuota);
+    mocks.redeemResetCredit.mockResolvedValue({
+      account_id: "account-1",
+      outcome: "reset",
+      used_expires_at: 1893456000,
+    });
+    render(<App />);
+
+    await confirmFirstReset();
+
+    expect(await screen.findByText(/^Used the reset credit expiring .+ for person@example.com\.$/)).toBeInTheDocument();
+  });
+
+  it("says when an account did not need a reset and no credit was used", async () => {
+    mocks.listAccounts.mockResolvedValue([chatAccount]);
+    mocks.accountQuota.mockResolvedValue(staleQuota);
+    mocks.redeemResetCredit.mockResolvedValue({ account_id: "account-1", outcome: "nothing_to_reset" });
+    render(<App />);
+
+    await confirmFirstReset();
+
+    expect(await screen.findByText("person@example.com doesn't need a reset right now. No credit was used.")).toBeInTheDocument();
+  });
+
+  it("explains an unconfirmed reset without claiming a credit was or was not used", async () => {
+    mocks.listAccounts.mockResolvedValue([chatAccount]);
+    mocks.accountQuota.mockResolvedValue(staleQuota);
+    mocks.redeemResetCredit.mockRejectedValue({ code: "result_unknown" });
+    render(<App />);
+
+    await confirmFirstReset();
+
+    expect(await screen.findByText(
+      "GSwitch couldn't confirm whether the reset went through. The request is saved; retrying uses the same credit and won't use another.",
+    )).toBeInTheDocument();
+  });
+
   it("shows reset recovery after a reset request fails", async () => {
     let failed = false;
     mocks.listAccounts.mockResolvedValue([chatAccount]);
