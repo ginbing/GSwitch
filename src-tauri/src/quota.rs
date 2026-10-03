@@ -394,28 +394,83 @@ pub fn redeem_earliest_reset_credit(
         return Err("Reset credits are not available for API-key accounts".to_string());
     }
     let identity = verified_chatgpt_identity(&account)?;
+    let mut session = AppServerResetSession::start(state, &account.credential)?;
+    redeem_with_session(state, &operation, &account, &identity, &mut session)
+}
 
-    let temporary = TempCodexHome::create(&state.isolated_profile_root()?)?;
-    temporary.write_auth(&account.credential)?;
-    let mut server = AppServer::start(&temporary.path)?;
+/// The provider calls one reset-credit redemption makes. Production runs them
+/// through an isolated official App Server; tests replay scripted results.
+trait ResetCreditSession {
+    fn read_rate_limits(&mut self) -> Result<Value, String>;
+    fn consume(&mut self, idempotency_key: &str, credit_id: &str) -> Result<Value, String>;
+    fn read_credential(&self) -> Result<Value, String>;
+}
 
+/// Fields drop in declaration order, so the App Server stops before its
+/// isolated profile is removed.
+struct AppServerResetSession {
+    server: AppServer,
+    temporary: TempCodexHome,
+    next_request_id: i64,
+}
+
+impl AppServerResetSession {
+    fn start(state: &AppState, credential: &Value) -> Result<Self, String> {
+        let temporary = TempCodexHome::create(&state.isolated_profile_root()?)?;
+        temporary.write_auth(credential)?;
+        let server = AppServer::start(&temporary.path)?;
+        Ok(Self {
+            server,
+            temporary,
+            next_request_id: 1,
+        })
+    }
+}
+
+impl ResetCreditSession for AppServerResetSession {
+    fn read_rate_limits(&mut self) -> Result<Value, String> {
+        // A rate-limit read may retry once with the following request ID.
+        let id = self.next_request_id;
+        self.next_request_id += 2;
+        self.server.rate_limits_read(id)
+    }
+
+    fn consume(&mut self, idempotency_key: &str, credit_id: &str) -> Result<Value, String> {
+        let id = self.next_request_id;
+        self.next_request_id += 1;
+        self.server
+            .consume_reset_credit(id, idempotency_key, credit_id)
+    }
+
+    fn read_credential(&self) -> Result<Value, String> {
+        self.temporary.read_auth()
+    }
+}
+
+fn redeem_with_session(
+    state: &AppState,
+    operation: &OperationGuard<'_>,
+    account: &StoredAccount,
+    identity: &AccountIdentity,
+    session: &mut impl ResetCreditSession,
+) -> Result<ResetCreditOutcome, String> {
     // This read both proves the provider is reachable and gives GSwitch the
     // complete current credential document before it attempts an irreversible
     // operation.
-    let preflight = server.rate_limits_read(1)?;
-    let preflight_credential = temporary.read_auth()?;
-    ensure_reset_credential_identity(&preflight_credential, &identity)?;
+    let preflight = session.read_rate_limits()?;
+    let preflight_credential = session.read_credential()?;
+    ensure_reset_credential_identity(&preflight_credential, identity)?;
     let normalized = normalize_rate_limits_data(&preflight, now_unix_ms());
     persist_refreshed_credential_and_quota(
         state,
-        &operation,
+        operation,
         &account.id,
         &preflight_credential,
         normalized.snapshot.clone(),
         normalized.reset_credits.clone(),
     )?;
 
-    let pending = match state.pending_reset_credit_under_operation(&operation)? {
+    let pending = match state.pending_reset_credit_under_operation(operation)? {
         Some(pending) if pending.account_id == account.id => pending,
         Some(_) => {
             return Err(
@@ -435,12 +490,12 @@ pub fn redeem_earliest_reset_credit(
                 idempotency_key: Uuid::new_v4().to_string(),
                 created_at_unix_ms: now_unix_ms(),
             };
-            state.prepare_reset_credit_under_operation(&operation, pending.clone())?;
+            state.prepare_reset_credit_under_operation(operation, pending.clone())?;
             pending
         }
     };
 
-    let response = server.consume_reset_credit(3, &pending.idempotency_key, &pending.credit_id)?;
+    let response = session.consume(&pending.idempotency_key, &pending.credit_id)?;
     let outcome = parse_reset_outcome(&response)?;
     let mut result = ResetCreditOutcome {
         account_id: account.id.clone(),
@@ -452,7 +507,7 @@ pub fn redeem_earliest_reset_credit(
     // An authoritative provider result must not be hidden just because the
     // follow-up persistence or refresh has a local problem. Keep the pending
     // idempotency record in those cases so recovery can safely reconcile it.
-    let refreshed_credential = match temporary.read_auth() {
+    let refreshed_credential = match session.read_credential() {
         Ok(credential) => credential,
         Err(_) => {
             result.refresh_warning = Some(
@@ -462,12 +517,12 @@ pub fn redeem_earliest_reset_credit(
             return Ok(result);
         }
     };
-    if ensure_reset_credential_identity(&refreshed_credential, &identity).is_err() {
+    if ensure_reset_credential_identity(&refreshed_credential, identity).is_err() {
         let recovery_retained = state
             .record_pending_credential_for_identity(
-                &operation,
+                operation,
                 &refreshed_credential,
-                Some(&identity),
+                Some(identity),
             )
             .is_ok();
         result.refresh_warning = Some(
@@ -492,7 +547,7 @@ pub fn redeem_earliest_reset_credit(
     }
     if let Err(error) = persist_refreshed_credential_and_quota(
         state,
-        &operation,
+        operation,
         &account.id,
         &refreshed_credential,
         snapshot_after_result,
@@ -504,7 +559,7 @@ pub fn redeem_earliest_reset_credit(
         return Ok(result);
     }
     if state
-        .clear_pending_reset_credit_under_operation(&operation)
+        .clear_pending_reset_credit_under_operation(operation)
         .is_err()
     {
         result.refresh_warning = Some(
@@ -514,14 +569,8 @@ pub fn redeem_earliest_reset_credit(
         return Ok(result);
     }
 
-    let (quota, warning) = refresh_after_confirmed_reset(
-        state,
-        &operation,
-        &account,
-        &identity,
-        &mut server,
-        &temporary,
-    );
+    let (quota, warning) =
+        refresh_after_confirmed_reset(state, operation, account, identity, session);
     result.quota = quota;
     result.refresh_warning = warning;
     Ok(result)
@@ -545,10 +594,9 @@ fn refresh_after_confirmed_reset(
     operation: &OperationGuard<'_>,
     account: &StoredAccount,
     identity: &AccountIdentity,
-    server: &mut AppServer,
-    temporary: &TempCodexHome,
+    session: &mut impl ResetCreditSession,
 ) -> (Option<QuotaView>, Option<String>) {
-    let provider_state = match server.rate_limits_read(4) {
+    let provider_state = match session.read_rate_limits() {
         Ok(value) => value,
         Err(_) => {
             return (
@@ -560,7 +608,7 @@ fn refresh_after_confirmed_reset(
             );
         }
     };
-    let credential = match temporary.read_auth() {
+    let credential = match session.read_credential() {
         Ok(credential) => credential,
         Err(_) => {
             return (
@@ -1499,5 +1547,324 @@ mod tests {
             ResetCreditOutcomeKind::NoCredit
         );
         assert!(parse_reset_outcome(&json!({"outcome": "unexpected"})).is_err());
+    }
+
+    mod redeem_flow {
+        use std::{cell::RefCell, collections::VecDeque, fs, path::PathBuf};
+
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+        use serde_json::json;
+
+        use super::super::*;
+        use crate::accounts::AccountDraft;
+
+        const FUTURE: i64 = 4_000_000_000;
+
+        fn credential(user: &str) -> Value {
+            let claims = json!({
+                "https://api.openai.com/auth": {
+                    "chatgpt_user_id": user,
+                    "chatgpt_account_id": "workspace"
+                }
+            });
+            let id_token = format!(
+                "header.{}.signature",
+                URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims).expect("claims"))
+            );
+            json!({"tokens": {"id_token": id_token, "access_token": format!("{user}-token")}})
+        }
+
+        fn state_with_accounts(users: &[&str]) -> (AppState, Vec<StoredAccount>, PathBuf) {
+            let root = std::env::temp_dir().join(format!("gswitch-reset-{}", Uuid::new_v4()));
+            fs::create_dir_all(&root).expect("test directory");
+            let state = AppState::new(root.join("accounts.json")).expect("state");
+            let operation = state.acquire_operation().expect("operation");
+            let accounts = users
+                .iter()
+                .map(|user| {
+                    state
+                        .upsert_under_operation(
+                            &operation,
+                            AccountDraft {
+                                label: None,
+                                default_label: format!("{user}@example.com"),
+                                kind: AccountKind::ChatGpt,
+                                email: Some(format!("{user}@example.com")),
+                                plan_type: None,
+                                workspace_name: None,
+                                account_structure: Some("workspace".into()),
+                                identity: AccountIdentity::ChatGpt {
+                                    user_id: (*user).into(),
+                                    workspace_id: Some("workspace".into()),
+                                },
+                                credential: credential(user),
+                            },
+                        )
+                        .expect("save account")
+                })
+                .collect::<Vec<_>>();
+            let accounts = accounts
+                .iter()
+                .map(|saved| {
+                    state
+                        .account_by_id_under_operation(&operation, &saved.id)
+                        .expect("saved account")
+                })
+                .collect();
+            drop(operation);
+            (state, accounts, root)
+        }
+
+        fn rate_limits(credits: &[(&str, i64)]) -> Value {
+            json!({
+                "rateLimits": {
+                    "limitId": "codex",
+                    "primary": {"usedPercent": 100, "windowDurationMins": 300}
+                },
+                "rateLimitResetCredits": {
+                    "availableCount": credits.len(),
+                    "credits": credits
+                        .iter()
+                        .map(|(id, expires_at)| json!({
+                            "id": id,
+                            "status": "available",
+                            "expiresAt": expires_at
+                        }))
+                        .collect::<Vec<_>>()
+                }
+            })
+        }
+
+        struct ScriptedSession<'a> {
+            state: &'a AppState,
+            reads: VecDeque<Result<Value, String>>,
+            consume_results: VecDeque<Result<Value, String>>,
+            credential: Value,
+            credential_failures_after_consume: RefCell<bool>,
+            consumed: Vec<(String, String, bool)>,
+        }
+
+        impl<'a> ScriptedSession<'a> {
+            fn new(state: &'a AppState, user: &str) -> Self {
+                Self {
+                    state,
+                    reads: VecDeque::new(),
+                    consume_results: VecDeque::new(),
+                    credential: credential(user),
+                    credential_failures_after_consume: RefCell::new(false),
+                    consumed: Vec::new(),
+                }
+            }
+
+            fn read(mut self, result: Result<Value, String>) -> Self {
+                self.reads.push_back(result);
+                self
+            }
+
+            fn consume_returns(mut self, result: Result<Value, String>) -> Self {
+                self.consume_results.push_back(result);
+                self
+            }
+        }
+
+        impl ResetCreditSession for ScriptedSession<'_> {
+            fn read_rate_limits(&mut self) -> Result<Value, String> {
+                self.reads
+                    .pop_front()
+                    .unwrap_or_else(|| Err("no scripted rate-limit read".into()))
+            }
+
+            fn consume(&mut self, idempotency_key: &str, credit_id: &str) -> Result<Value, String> {
+                let pending_was_durable = self
+                    .state
+                    .has_pending_reset_credit()
+                    .expect("pending reset state");
+                self.consumed.push((
+                    idempotency_key.to_string(),
+                    credit_id.to_string(),
+                    pending_was_durable,
+                ));
+                self.consume_results
+                    .pop_front()
+                    .unwrap_or_else(|| Err("no scripted consume result".into()))
+            }
+
+            fn read_credential(&self) -> Result<Value, String> {
+                if *self.credential_failures_after_consume.borrow() && !self.consumed.is_empty() {
+                    return Err("credential file is unreadable".into());
+                }
+                Ok(self.credential.clone())
+            }
+        }
+
+        fn redeem(
+            state: &AppState,
+            account: &StoredAccount,
+            session: &mut ScriptedSession<'_>,
+        ) -> Result<ResetCreditOutcome, String> {
+            let operation = state.acquire_operation().expect("operation");
+            let identity = verified_chatgpt_identity(account).expect("identity");
+            redeem_with_session(state, &operation, account, &identity, session)
+        }
+
+        fn pending(state: &AppState) -> Option<PendingResetCredit> {
+            let operation = state.acquire_operation().expect("operation");
+            state
+                .pending_reset_credit_under_operation(&operation)
+                .expect("pending reset state")
+        }
+
+        #[test]
+        fn the_pending_record_is_durable_before_consume_and_cleared_after_a_reset() {
+            let (state, accounts, root) = state_with_accounts(&["user"]);
+            let mut session = ScriptedSession::new(&state, "user")
+                .read(Ok(rate_limits(&[("credit-a", FUTURE)])))
+                .consume_returns(Ok(json!({"outcome": "reset"})))
+                .read(Ok(rate_limits(&[])));
+
+            let result = redeem(&state, &accounts[0], &mut session).expect("redeem");
+
+            assert_eq!(result.outcome, ResetCreditOutcomeKind::Reset);
+            assert!(result.refresh_warning.is_none());
+            assert!(result.quota.is_some());
+            assert_eq!(session.consumed.len(), 1);
+            assert_eq!(session.consumed[0].1, "credit-a");
+            assert!(
+                session.consumed[0].2,
+                "pending record must exist before consume"
+            );
+            assert!(pending(&state).is_none());
+            let _ = fs::remove_dir_all(root);
+        }
+
+        #[test]
+        fn a_failed_consume_keeps_the_pending_record() {
+            let (state, accounts, root) = state_with_accounts(&["user"]);
+            let mut session = ScriptedSession::new(&state, "user")
+                .read(Ok(rate_limits(&[("credit-a", FUTURE)])))
+                .consume_returns(Err("Codex App Server did not respond".into()));
+
+            assert!(redeem(&state, &accounts[0], &mut session).is_err());
+
+            let recorded = pending(&state).expect("pending record");
+            assert_eq!(recorded.account_id, accounts[0].id);
+            assert_eq!(recorded.credit_id, "credit-a");
+            assert_eq!(recorded.idempotency_key, session.consumed[0].0);
+            let _ = fs::remove_dir_all(root);
+        }
+
+        #[test]
+        fn a_retry_replays_the_recorded_credit_and_key() {
+            let (state, accounts, root) = state_with_accounts(&["user"]);
+            let mut first = ScriptedSession::new(&state, "user")
+                .read(Ok(rate_limits(&[("credit-a", FUTURE)])))
+                .consume_returns(Err("Codex App Server did not respond".into()));
+            assert!(redeem(&state, &accounts[0], &mut first).is_err());
+
+            // A newer, earlier-expiring credit must not replace the recorded one.
+            let mut retry = ScriptedSession::new(&state, "user")
+                .read(Ok(rate_limits(&[
+                    ("credit-b", FUTURE - 10),
+                    ("credit-a", FUTURE),
+                ])))
+                .consume_returns(Ok(json!({"outcome": "alreadyRedeemed"})))
+                .read(Ok(rate_limits(&[("credit-b", FUTURE - 10)])));
+            let result = redeem(&state, &accounts[0], &mut retry).expect("retry");
+
+            assert_eq!(result.outcome, ResetCreditOutcomeKind::AlreadyRedeemed);
+            assert_eq!(retry.consumed[0].0, first.consumed[0].0);
+            assert_eq!(retry.consumed[0].1, "credit-a");
+            assert!(pending(&state).is_none());
+            let _ = fs::remove_dir_all(root);
+        }
+
+        #[test]
+        fn another_accounts_pending_record_blocks_redemption() {
+            let (state, accounts, root) = state_with_accounts(&["first", "second"]);
+            let mut first = ScriptedSession::new(&state, "first")
+                .read(Ok(rate_limits(&[("credit-a", FUTURE)])))
+                .consume_returns(Err("Codex App Server did not respond".into()));
+            assert!(redeem(&state, &accounts[0], &mut first).is_err());
+
+            let mut second = ScriptedSession::new(&state, "second")
+                .read(Ok(rate_limits(&[("credit-z", FUTURE)])))
+                .consume_returns(Ok(json!({"outcome": "reset"})));
+            let error = redeem(&state, &accounts[1], &mut second).expect_err("blocked");
+
+            assert!(error.contains("another account"));
+            assert!(second.consumed.is_empty());
+            assert_eq!(
+                pending(&state).expect("pending record").account_id,
+                accounts[0].id
+            );
+            let _ = fs::remove_dir_all(root);
+        }
+
+        #[test]
+        fn every_authoritative_outcome_clears_the_pending_record() {
+            for (outcome, expected) in [
+                ("reset", ResetCreditOutcomeKind::Reset),
+                ("alreadyRedeemed", ResetCreditOutcomeKind::AlreadyRedeemed),
+                ("nothingToReset", ResetCreditOutcomeKind::NothingToReset),
+                ("noCredit", ResetCreditOutcomeKind::NoCredit),
+            ] {
+                let (state, accounts, root) = state_with_accounts(&["user"]);
+                let mut session = ScriptedSession::new(&state, "user")
+                    .read(Ok(rate_limits(&[("credit-a", FUTURE)])))
+                    .consume_returns(Ok(json!({"outcome": outcome})))
+                    .read(Ok(rate_limits(&[("credit-a", FUTURE)])));
+
+                let result = redeem(&state, &accounts[0], &mut session).expect("redeem");
+
+                assert_eq!(result.outcome, expected);
+                assert!(pending(&state).is_none(), "{outcome} must clear the record");
+                let _ = fs::remove_dir_all(root);
+            }
+        }
+
+        #[test]
+        fn an_unknown_outcome_keeps_the_pending_record() {
+            let (state, accounts, root) = state_with_accounts(&["user"]);
+            let mut session = ScriptedSession::new(&state, "user")
+                .read(Ok(rate_limits(&[("credit-a", FUTURE)])))
+                .consume_returns(Ok(json!({"outcome": "somethingNew"})));
+
+            assert!(redeem(&state, &accounts[0], &mut session).is_err());
+            assert!(pending(&state).is_some());
+            let _ = fs::remove_dir_all(root);
+        }
+
+        #[test]
+        fn an_unreadable_credential_after_consume_keeps_the_confirmed_result_recoverable() {
+            let (state, accounts, root) = state_with_accounts(&["user"]);
+            let mut session = ScriptedSession::new(&state, "user")
+                .read(Ok(rate_limits(&[("credit-a", FUTURE)])))
+                .consume_returns(Ok(json!({"outcome": "reset"})));
+            *session.credential_failures_after_consume.borrow_mut() = true;
+
+            let result = redeem(&state, &accounts[0], &mut session).expect("redeem");
+
+            assert_eq!(result.outcome, ResetCreditOutcomeKind::Reset);
+            assert!(result.refresh_warning.is_some());
+            assert!(pending(&state).is_some());
+            let _ = fs::remove_dir_all(root);
+        }
+
+        #[test]
+        fn a_failed_follow_up_read_keeps_the_confirmed_result() {
+            let (state, accounts, root) = state_with_accounts(&["user"]);
+            let mut session = ScriptedSession::new(&state, "user")
+                .read(Ok(rate_limits(&[("credit-a", FUTURE)])))
+                .consume_returns(Ok(json!({"outcome": "reset"})))
+                .read(Err("Unable to reach ChatGPT".into()));
+
+            let result = redeem(&state, &accounts[0], &mut session).expect("redeem");
+
+            assert_eq!(result.outcome, ResetCreditOutcomeKind::Reset);
+            assert!(result.quota.is_none());
+            assert!(result.refresh_warning.is_some());
+            assert!(pending(&state).is_none());
+            let _ = fs::remove_dir_all(root);
+        }
     }
 }

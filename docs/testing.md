@@ -185,6 +185,10 @@ as applicable:
   action available;
 - provider refresh before reset-credit selection;
 - earliest eligible unexpired reset-credit selection and idempotent outcomes;
+- the reset-credit redemption flow against a scripted App Server session: a
+  durable pending record before consume, its retention after a failed or
+  unknown consume, replay of the recorded credit and key, refusal while another
+  account's record is pending, and clearing after each authoritative outcome;
 - a pending reset being surfaced as a boolean-only recovery prompt and replayed
   only after a new explicit user action;
 - Wake's fixed minimal Responses payload, complete assistant reply confirmation,
