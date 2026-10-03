@@ -191,6 +191,7 @@ as applicable:
 - reset credits of another kind never being listed or redeemed;
 - saved reset-credit details being reused only while the usage count matches
   and they are under an hour old;
+- an access token counting as expired only when its own `exp` claim has passed;
 - reset failure codes distinguishing a busy lock and failures before consume
   (nothing spent) from an explicit provider rejection and an unknown outcome
   (record kept), and outcome notices naming the account and used credit;
