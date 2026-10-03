@@ -18,9 +18,9 @@ use crate::{
     storage::{self, AccountStore},
     types::{
         AccountIdentity, AccountKind, AccountSecret, AccountView, OAuthLoginStatus,
-        PendingResetCredit, PendingResetCreditSecret, PendingSwitch, PendingSwitchSecret,
-        StorageStatus, StorageView, StoredAccount, StoredResetCredits, WakeOperationStatus,
-        WakeOperationView,
+        PendingResetCredit, PendingResetCreditSecret, PendingResetView, PendingSwitch,
+        PendingSwitchSecret, StorageStatus, StorageView, StoredAccount, StoredResetCredits,
+        WakeOperationStatus, WakeOperationView,
     },
     vault::CredentialVault,
 };
@@ -716,15 +716,42 @@ impl AppState {
         Ok(store.pending_switch.is_some())
     }
 
-    /// Exposes only whether reset recovery needs the user's attention. The
-    /// selected provider credit and idempotency key never leave Rust-owned
-    /// storage.
-    pub fn has_pending_reset_credit(&self) -> Result<bool, String> {
+    /// Exposes which saved account has a reset needing recovery, and whether
+    /// retrying can no longer help. The selected provider credit and
+    /// idempotency key never leave Rust-owned storage.
+    pub fn pending_reset_view(&self) -> Result<Option<PendingResetView>, String> {
         let store = self
             .store
             .lock()
             .map_err(|_| "Account store lock is unavailable".to_string())?;
-        Ok(store.pending_reset_credit.is_some())
+        Ok(store.pending_reset_credit.as_ref().map(|pending| {
+            let account_saved = store
+                .accounts
+                .iter()
+                .any(|account| account.id == pending.account_id);
+            PendingResetView {
+                account_id: pending.account_id.clone(),
+                discardable: pending.discard_allowed || !account_saved,
+            }
+        }))
+    }
+
+    pub fn allow_pending_reset_discard_under_operation(
+        &self,
+        _operation: &OperationGuard<'_>,
+    ) -> Result<(), String> {
+        let mut store = self
+            .store
+            .lock()
+            .map_err(|_| "Account store lock is unavailable".to_string())?;
+        let mut candidate = store.clone();
+        let Some(pending) = candidate.pending_reset_credit.as_mut() else {
+            return Ok(());
+        };
+        pending.discard_allowed = true;
+        self.persist_candidate(&store, &mut candidate)?;
+        *store = candidate;
+        Ok(())
     }
 
     /// Codex 0.144.5 refuses a CODEX_HOME under the system temporary folder.
@@ -2775,6 +2802,7 @@ mod tests {
                     credit_id: "provider-private-credit".into(),
                     idempotency_key: "private-idempotency-key".into(),
                     created_at_unix_ms: 123,
+                    discard_allowed: false,
                 },
             )
             .expect("persist reset transaction");

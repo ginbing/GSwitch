@@ -17,6 +17,10 @@ use crate::storage;
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(15);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// The provider answered with an error rather than a result, as opposed to a
+/// request whose outcome is unknown.
+pub(crate) const REJECTED_REQUEST: &str = "Codex App Server rejected the request";
+
 #[derive(Debug)]
 enum CallError {
     Transport(String),
@@ -28,7 +32,7 @@ impl CallError {
     fn sanitized(self) -> String {
         match self {
             Self::Transport(message) => message,
-            Self::Rejected { .. } => "Codex App Server rejected the request".to_string(),
+            Self::Rejected { .. } => REJECTED_REQUEST.to_string(),
             Self::MissingResult => "Codex App Server response is missing a result".to_string(),
         }
     }

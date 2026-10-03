@@ -335,9 +335,15 @@ expired after the last provider read is no longer offered.
 `reset` and `alreadyRedeemed` are confirmed outcomes. `nothingToReset` and
 `noCredit` explicitly mean no credit was consumed. Recovery is a user-directed
 retry of the exact recorded credit and key; it never selects a replacement
-credit automatically. When recovery is pending, the workspace shows only a
-generic recovery prompt; it never exposes the recorded account, credit ID, or
-idempotency key.
+credit automatically. When recovery is pending, the workspace names the saved
+account it belongs to; it never exposes the credit ID or idempotency key.
+
+A pending reset can be discarded only when retrying can no longer help: its
+saved account is gone, or the provider rejected a replay of a credit it no
+longer lists as available. Neither case can lead to a second consumption by
+GSwitch, but GSwitch also cannot confirm whether the original request went
+through, and the dialog says so. A timeout or other unknown outcome never
+permits a discard. An account with a pending reset cannot be removed.
 
 There is no automatic redemption, expiry watcher, or scheduler.
 

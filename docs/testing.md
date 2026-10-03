@@ -195,8 +195,11 @@ as applicable:
   account's record is pending, and clearing after each authoritative outcome;
 - reset recovery reading and replaying its record under one operation lock,
   and never consuming a credit when no record exists;
-- a pending reset being surfaced as a boolean-only recovery prompt and replayed
-  only after a new explicit user action;
+- a pending reset being surfaced with its account name only and replayed only
+  after a new explicit user action; a discard offered only after a rejected
+  replay of a credit no longer listed or for a removed account, never after an
+  unknown outcome, and confirmed by a second click; removal refused while the
+  account has a pending reset;
 - Wake's fixed minimal Responses payload, complete assistant reply confirmation,
   active-token reread, available-quota and no-five-hour-window request paths,
   externally owned no-refresh path, inactive authentication-only refresh,

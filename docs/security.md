@@ -187,8 +187,12 @@ separate user-initiated alternate-model request.
 - A pending reset records the account, start time, and an opaque reference to
   the exact protected credit and idempotency key so retry cannot intentionally
   double-consume.
-- The WebView receives only whether reset recovery is pending. It cannot read
-  the recorded account, provider credit, or idempotency key.
+- The WebView receives only the saved account of a pending reset and whether
+  it may be discarded. It cannot read the provider credit or idempotency key.
+- A pending reset may be discarded only when retrying can no longer consume
+  its credit: the saved account is gone, or the provider rejected a replay of
+  a credit it no longer lists as available. An unknown outcome never permits a
+  discard, and an account with a pending reset cannot be removed.
 - Ambiguous external changes are preserved, not overwritten.
 - Switch errors returned to the WebView contain only a structured code for
   Codex-open, sign-in-required, file-store-required, credentials-changed,

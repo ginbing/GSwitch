@@ -45,7 +45,6 @@ const quotas = Object.fromEntries(accounts.map((account, index) => {
 const snapshot: AppSnapshot = {
   storage: { status: "ready" },
   accounts,
-  pending_reset_credit: false,
   live: { status: "ready", credential_store: "file", account: accounts[0] },
 };
 

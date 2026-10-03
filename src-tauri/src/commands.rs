@@ -79,7 +79,7 @@ fn app_snapshot(state: &AppState) -> Result<AppSnapshot, String> {
         return Ok(AppSnapshot {
             storage,
             accounts: Vec::new(),
-            pending_reset_credit: false,
+            pending_reset: None,
             runtime: None,
             live: None,
         });
@@ -88,7 +88,7 @@ fn app_snapshot(state: &AppState) -> Result<AppSnapshot, String> {
     Ok(AppSnapshot {
         storage,
         accounts: state.list()?,
-        pending_reset_credit: state.has_pending_reset_credit()?,
+        pending_reset: state.pending_reset_view()?,
         runtime: Some(codex::runtime_info()?),
         live: Some(switching::live_account(state)?),
     })
@@ -378,6 +378,12 @@ pub async fn redeem_reset_credit(
         granted_at,
     };
     run_blocking(move || quota::redeem_reset_credit(&state, &id, choice)).await
+}
+
+#[tauri::command]
+pub async fn discard_pending_reset_credit(state: State<'_, AppState>) -> Result<(), String> {
+    let state = state.inner().clone();
+    run_blocking(move || quota::discard_pending_reset_credit(&state)).await
 }
 
 #[tauri::command]

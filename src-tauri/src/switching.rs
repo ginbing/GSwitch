@@ -459,6 +459,12 @@ pub fn recover_pending_switch(state: &AppState) -> Result<(), String> {
 pub fn remove_saved_account(state: &AppState, id: &str) -> Result<(), String> {
     let operation = state.acquire_operation()?;
     ensure_ready_for_credential_operation(state, &operation)?;
+    if state
+        .pending_reset_credit_under_operation(&operation)?
+        .is_some_and(|pending| pending.account_id == id)
+    {
+        return Err(PENDING_RESET_BLOCKS_REMOVAL.to_string());
+    }
     let target = state.account_by_id_under_operation(&operation, id)?;
     let (_, target_identity) = stored_identity(&target)?;
     let codex_home = codex::codex_home()?;
@@ -471,6 +477,10 @@ pub fn remove_saved_account(state: &AppState, id: &str) -> Result<(), String> {
     }
     state.remove_under_operation(&operation, id)
 }
+
+/// Removing the account would leave its pending reset unrecoverable.
+pub(crate) const PENDING_RESET_BLOCKS_REMOVAL: &str =
+    "This account has an unfinished reset; resolve it before removing the account";
 
 fn ensure_ready_for_credential_operation(
     state: &AppState,
@@ -895,6 +905,39 @@ mod tests {
             .expect("target");
         drop(operation);
         (state, target, root)
+    }
+
+    #[test]
+    fn an_account_with_a_pending_reset_cannot_be_removed() {
+        let (state, target, root) = state_with_chatgpt_target();
+        {
+            let operation = state.acquire_operation().expect("operation");
+            state
+                .prepare_reset_credit_under_operation(
+                    &operation,
+                    crate::types::PendingResetCredit {
+                        account_id: target.id.clone(),
+                        secret_ref: None,
+                        secret_generation: 0,
+                        credit_id: "credit".into(),
+                        idempotency_key: "key".into(),
+                        created_at_unix_ms: 1,
+                        discard_allowed: false,
+                    },
+                )
+                .expect("pending reset");
+        }
+
+        assert_eq!(
+            remove_saved_account(&state, &target.id).expect_err("blocked"),
+            PENDING_RESET_BLOCKS_REMOVAL
+        );
+        let operation = state.acquire_operation().expect("operation");
+        assert!(state
+            .account_by_id_under_operation(&operation, &target.id)
+            .is_ok());
+        drop(operation);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

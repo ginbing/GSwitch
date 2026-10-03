@@ -48,10 +48,16 @@ export interface StorageView {
   message?: string;
 }
 
+// The provider credit and idempotency key of a pending reset stay in Rust.
+export interface PendingResetView {
+  account_id: string;
+  discardable: boolean;
+}
+
 export interface AppSnapshot {
   storage: StorageView;
   accounts: AccountView[];
-  pending_reset_credit: boolean;
+  pending_reset?: PendingResetView;
   runtime?: RuntimeInfo;
   live?: LiveAccountView;
 }

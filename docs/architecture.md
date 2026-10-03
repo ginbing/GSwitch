@@ -39,9 +39,9 @@ not a Rust display string or raw provider error.
 Unknown, stale, timed-out, or conflicting state remains unknown. A cache is a
 projection, not a second authority over runtime or provider facts.
 
-The initial workspace snapshot may reveal only a boolean that reset-credit
-recovery needs attention. Its account, provider credit, and idempotency key
-remain in Rust-owned storage.
+The initial workspace snapshot names the saved account of a reset that needs
+recovery and whether retrying can no longer help. The provider credit and
+idempotency key remain in Rust-owned storage.
 
 Interrupted credential saves use a separate encrypted pending index. The
 explicit recovery command returns only a recovered count; Rust verifies each
