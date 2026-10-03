@@ -6,6 +6,9 @@ import { open } from "@tauri-apps/plugin-dialog";
 import App from "./App";
 import type { AccountView, QuotaRefreshFailureCode, QuotaView, SwitchFailureCode } from "./types";
 
+// The second click of a two-click confirmation is ignored for 300 ms.
+const pastConfirmGuard = () => new Promise((resolve) => window.setTimeout(resolve, 320));
+
 const mocks = vi.hoisted(() => ({
   runtimeInfo: vi.fn(),
   codexCliInfo: vi.fn(),
@@ -334,6 +337,25 @@ describe("GSwitch account workspace", () => {
     expect(launcher).toHaveFocus();
   });
 
+  it("ignores a double-click on a two-click confirmation and disarms on an outside click", async () => {
+    mocks.listAccounts.mockResolvedValue([chatAccount]);
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByText("person@example.com");
+    await user.click(screen.getByRole("button", { name: "Select accounts" }));
+    await user.click(screen.getByRole("button", { name: "Select all" }));
+    await user.click(screen.getByRole("button", { name: "Export" }));
+    const dialog = screen.getByRole("dialog", { name: "Export 1 account" });
+
+    await user.dblClick(within(dialog).getByRole("button", { name: "Export" }));
+    expect(mocks.exportAccounts).not.toHaveBeenCalled();
+    expect(within(dialog).getByRole("button", { name: "Confirm export" })).toBeInTheDocument();
+
+    await user.click(within(dialog).getByText(/The exported file isn't encrypted/));
+    expect(within(dialog).getByRole("button", { name: "Export" })).toBeInTheDocument();
+    expect(mocks.exportAccounts).not.toHaveBeenCalled();
+  });
+
   it("keeps an export confirmation open while its save operation is pending", async () => {
     let finishExport!: (value: { exported_count: number; cancelled: boolean }) => void;
     mocks.exportAccounts.mockImplementation(() => new Promise((resolve) => { finishExport = resolve; }));
@@ -344,11 +366,12 @@ describe("GSwitch account workspace", () => {
     await user.click(screen.getByRole("button", { name: "Select accounts" }));
     await user.click(screen.getByRole("button", { name: "Select all" }));
     await user.click(screen.getByRole("button", { name: "Export" }));
-    const dialog = screen.getByRole("dialog", { name: "Export selected accounts" });
-    await user.click(within(dialog).getByRole("button", { name: "Continue" }));
-    await user.click(within(dialog).getByRole("button", { name: "Export unencrypted accounts" }));
+    const dialog = screen.getByRole("dialog", { name: "Export 1 account" });
+    await user.click(within(dialog).getByRole("button", { name: "Export" }));
+    await pastConfirmGuard();
+    await user.click(within(dialog).getByRole("button", { name: "Confirm export" }));
     await waitFor(() => expect(mocks.exportAccounts).toHaveBeenCalledOnce());
-    expect(within(dialog).getByRole("button", { name: "Close Export selected accounts" })).toBeDisabled();
+    expect(within(dialog).getByRole("button", { name: "Close Export 1 account" })).toBeDisabled();
     expect(within(dialog).getByRole("button", { name: "Cancel" })).toBeDisabled();
     await user.keyboard("{Escape}");
     expect(dialog).toBeInTheDocument();
@@ -520,11 +543,11 @@ describe("GSwitch account workspace", () => {
 
     await userEvent.click(screen.getAllByRole("button", { name: "Review recovery" })[0]);
     expect(await screen.findByRole("dialog", { name: "Recover GSwitch account storage" })).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await userEvent.click(screen.getByRole("button", { name: "Clear and rebuild" }));
     expect(mocks.resetDamagedAccountStore).not.toHaveBeenCalled();
-    expect(screen.getByText("Reset only GSwitch's saved account library?")).toBeInTheDocument();
 
-    await userEvent.click(screen.getByRole("button", { name: "Reset GSwitch storage" }));
+    await pastConfirmGuard();
+    await userEvent.click(screen.getByRole("button", { name: "Confirm clear" }));
     await waitFor(() => expect(mocks.resetDamagedAccountStore).toHaveBeenCalledOnce());
   });
 
@@ -1875,12 +1898,12 @@ describe("GSwitch account workspace", () => {
     await userEvent.click(await within(wakeDialog).findByRole("button", { name: "Done" }));
 
     await userEvent.click(screen.getByRole("button", { name: "Export" }));
-    const exportDialog = await screen.findByRole("dialog", { name: "Export selected accounts" });
-    expect(within(exportDialog).getByText("Export 1 account")).toBeInTheDocument();
-    expect(within(exportDialog).getByText(/The file is unencrypted and contains sign-in credentials/i)).toBeInTheDocument();
-    await userEvent.click(within(exportDialog).getByRole("button", { name: "Continue" }));
-    expect(within(exportDialog).getByText(/Anyone who can read this JSON file can use its credentials/i)).toBeInTheDocument();
-    await userEvent.click(within(exportDialog).getByRole("button", { name: "Export unencrypted accounts" }));
+    const exportDialog = await screen.findByRole("dialog", { name: "Export 1 account" });
+    expect(within(exportDialog).getByText(/The exported file isn't encrypted/)).toBeInTheDocument();
+    await userEvent.click(within(exportDialog).getByRole("button", { name: "Export" }));
+    expect(mocks.exportAccounts).not.toHaveBeenCalled();
+    await pastConfirmGuard();
+    await userEvent.click(within(exportDialog).getByRole("button", { name: "Confirm export" }));
     await waitFor(() => expect(mocks.exportAccounts).toHaveBeenCalledWith(["account-1"]));
     expect(await screen.findByText("Export complete: 1 selected. Keep this unencrypted file private.")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Done" }));
