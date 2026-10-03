@@ -119,9 +119,13 @@ without a click. Codex CLI and the Codex desktop app update separately.
   non-current saved copy does not change a running Codex identity, while the
   current identity stays protected. Operation-lock failures remain visible in
   the confirmation with a retry instruction.
-- Quota refreshes share a serialized request path across startup and manual
-  refresh. Automatic reads leave switching available while waiting for the
-  provider and never refresh a saved credential. A failed card keeps a visible,
+- Quota refreshes run in separate lanes: automatic reads one at a time, and a
+  user's Refresh or Refresh all up to three read-only reads at once, never
+  waiting behind automatic reads. Refresh all shows "Refreshing n/total" on the
+  toolbar and leaves the workspace usable; a successful card refresh needs no
+  notice because the card itself updates. Automatic reads leave switching
+  available while waiting for the provider and never refresh a saved
+  credential. A failed card keeps a visible,
   compact warning icon beside quota;
   its hover/focus explanation gives the safe reason and last successful update.
   Old percentages say "Last" and use muted meters; an unavailable result stays

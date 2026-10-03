@@ -978,7 +978,58 @@ describe("GSwitch account workspace", () => {
     expect(await screen.findByText("Last 30%")).toBeInTheDocument();
   });
 
-  it("serializes a six-account refresh and continues after one quota failure", async () => {
+  it("starts a user's refresh without waiting behind automatic refreshes", async () => {
+    const secondAccount = { ...chatAccount, id: "account-2", email: "other@example.com" };
+    mocks.listAccounts.mockResolvedValue([chatAccount, secondAccount]);
+    mocks.accountQuota.mockImplementation(async (accountId: string) => ({ account_id: accountId, status: "unknown" }));
+    mocks.refreshAccountQuota.mockImplementation((accountId: string) =>
+      accountId === "account-1"
+        ? new Promise<QuotaView>(() => undefined)
+        : Promise.resolve({ ...staleQuota, account_id: accountId, status: "fresh" }),
+    );
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "other@example.com" });
+    await waitFor(() => expect(mocks.refreshAccountQuota).toHaveBeenCalledWith("account-1", true));
+    expect(mocks.refreshAccountQuota).not.toHaveBeenCalledWith("account-2", true);
+
+    await userEvent.click(screen.getByRole("button", { name: "Refresh other@example.com" }));
+
+    await waitFor(() => expect(mocks.refreshAccountQuota).toHaveBeenCalledWith("account-2", true));
+    expect(mocks.refreshAccountQuota).toHaveBeenCalledTimes(2);
+  });
+
+  it("uses the official sign-in refresh only after a read shows the saved sign-in needs it", async () => {
+    mocks.listAccounts.mockResolvedValue([chatAccount]);
+    mocks.accountQuota.mockResolvedValue({ ...staleQuota, status: "fresh" });
+    mocks.refreshAccountQuota.mockImplementation(async (_accountId: string, background: boolean) => {
+      if (background) {
+        throw { code: "manual_refresh_needed" };
+      }
+      return { ...staleQuota, status: "fresh" };
+    });
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Refresh person@example.com" }));
+
+    await waitFor(() => expect(mocks.refreshAccountQuota).toHaveBeenCalledWith("account-1", false));
+    expect(mocks.refreshAccountQuota.mock.calls).toEqual([["account-1", true], ["account-1", false]]);
+    expect(screen.queryByRole("button", { name: "Quota update failed for person@example.com" })).not.toBeInTheDocument();
+  });
+
+  it("shows full-refresh progress on the toolbar without locking the workspace", async () => {
+    mocks.listAccounts.mockResolvedValue([chatAccount]);
+    mocks.accountQuota.mockResolvedValue({ ...staleQuota, status: "fresh" });
+    mocks.refreshAccountQuota.mockImplementation(() => new Promise<QuotaView>(() => undefined));
+    render(<App />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Refresh" }));
+
+    expect(await screen.findByRole("button", { name: "Refreshing 0/1" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Wake person@example.com" })).toBeEnabled();
+  });
+
+  it("refreshes up to three accounts at once and continues after one quota failure", async () => {
     const accounts = Array.from({ length: 6 }, (_, index) => ({
       ...chatAccount,
       id: `account-${index + 1}`,
@@ -1013,7 +1064,7 @@ describe("GSwitch account workspace", () => {
     await userEvent.click(screen.getByRole("button", { name: "Refresh" }));
 
     await waitFor(() => expect(mocks.refreshAccountQuota).toHaveBeenCalledTimes(6));
-    expect(maximumConcurrentRequests).toBe(1);
+    expect(maximumConcurrentRequests).toBe(3);
     expect(mocks.refreshAccountQuota.mock.calls.map(([id]) => id)).toEqual(
       accounts.map((account) => account.id),
     );
@@ -1079,7 +1130,7 @@ describe("GSwitch account workspace", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "Refresh person@example.com" }));
 
-    await waitFor(() => expect(mocks.refreshAccountQuota).toHaveBeenCalledWith("account-1", false));
+    await waitFor(() => expect(mocks.refreshAccountQuota).toHaveBeenCalledWith("account-1", true));
     expect(mocks.appSnapshot).toHaveBeenCalledTimes(1);
     expect(screen.getByRole("heading", { name: "person@example.com" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "other@example.com" })).toBeInTheDocument();
@@ -1110,7 +1161,7 @@ describe("GSwitch account workspace", () => {
 
     await screen.findByRole("heading", { name: "person@example.com" });
     await userEvent.click(screen.getByRole("button", { name: "Refresh person@example.com" }));
-    await waitFor(() => expect(mocks.refreshAccountQuota).toHaveBeenCalledWith("account-1", false));
+    await waitFor(() => expect(mocks.refreshAccountQuota).toHaveBeenCalledWith("account-1", true));
 
     expect(screen.getByRole("button", { name: "Refresh person@example.com" })).toBeDisabled();
     const otherWake = screen.getByRole("button", { name: "Wake other@example.com" });

@@ -276,9 +276,13 @@ minutes and then visibly stale. API-key accounts show quota as not applicable.
 Quota is operational account state, not usage analytics.
 
 The workspace renders its cached quota immediately and refreshes unknown or
-stale ChatGPT accounts in the background. Startup and manual refreshes share one
-serial request queue, and requests for the same account join the in-flight
-request. Automatic refresh uses only a credential snapshot for its provider
+stale ChatGPT accounts in the background. Automatic reads run one at a time.
+A user's Refresh or Refresh all runs in its own lane of up to three read-only
+reads, so it never waits behind automatic reads; a still-waiting automatic
+read for the same account gives way to it, and a started read is joined. Only
+an account whose read shows that its saved sign-in needs the official token
+refresh then takes the credential lock, one account at a time. Read-only and
+automatic refresh use only a credential snapshot for its provider
 read. It does not hold the credential-operation lock while waiting for the
 provider or start a managed token refresh. A short locked commit rechecks the
 saved account identity and credential generation, so a concurrent switch or
