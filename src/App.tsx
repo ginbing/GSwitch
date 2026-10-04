@@ -1,6 +1,7 @@
 import { open } from "@tauri-apps/plugin-dialog";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import {
+  AppWindow,
   ArrowRightLeft,
   Check,
   ChevronRight,
@@ -10,7 +11,6 @@ import {
   Download,
   FileJson,
   FolderOpen,
-  Globe2,
   Info,
   KeyRound,
   ListChecks,
@@ -909,7 +909,7 @@ function AccountCard({
             label={t("account.moreActions", { name: primaryName })}
           >
             {account.email ? <button onClick={onCopyEmail} type="button"><Copy size={15} />{t("account.copyEmail")}</button> : null}
-            {!isApiKey ? <button disabled={controlsBusy} onClick={onReauthenticate} type="button"><Globe2 size={15} />{t("account.signInAgain")}</button> : null}
+            {!isApiKey ? <button disabled={controlsBusy} onClick={onReauthenticate} type="button"><AppWindow size={15} />{t("account.signInAgain")}</button> : null}
             <button
               className="card-menu-danger"
               aria-label={t("account.remove", { name: primaryName })}
@@ -1010,7 +1010,7 @@ function AccountCard({
             onClick={signInRequired ? onReauthenticate : active && account.needs_apply ? onApply : onSwitch}
             type="button"
           >
-            {busyAction === "switch" ? <LoaderCircle className="spin" size={15} /> : signInRequired ? <Globe2 size={15} /> : <ArrowRightLeft size={15} />}
+            {busyAction === "switch" ? <LoaderCircle className="spin" size={15} /> : signInRequired ? <AppWindow size={15} /> : <ArrowRightLeft size={15} />}
             {signInRequired ? t("account.signInAgain") : active && account.needs_apply ? t("account.apply") : active ? t("common.current") : t("common.switch")}
           </button>
         </div>
@@ -1019,7 +1019,53 @@ function AccountCard({
   );
 }
 
-function FirstRun({ onImport, onAdd, t }: { onImport: () => void; onAdd: () => void; t: Translator }) {
+interface AddAccountMethodsProps {
+  busy: boolean;
+  onSignIn: () => void;
+  onImport: () => void;
+  onSelectMethod: (method: "migration" | "json" | "api-key") => void;
+  t: Translator;
+}
+
+function AddAccountMethods({ busy, onSignIn, onImport, onSelectMethod, t }: AddAccountMethodsProps) {
+  return (
+    <div className="add-methods">
+      <button className="add-method-card add-method-sign-in" disabled={busy} onClick={onSignIn} type="button">
+        <span className="method-icon"><AppWindow size={22} /></span>
+        <span><strong>{t("add.browserTitle")}</strong>{" "}<small>{t("add.browserDescription")}</small></span>
+        <ChevronRight size={18} />
+      </button>
+      <button className="add-method-card" disabled={busy} onClick={() => onSelectMethod("migration")} type="button">
+        <span className="method-icon"><Upload size={22} /></span>
+        <span><strong>{t("add.localTitle")}</strong>{" "}<small>{t("add.localDescription")}</small></span>
+        <ChevronRight size={18} />
+      </button>
+      <button className="add-method-card" disabled={busy} onClick={onImport} type="button">
+        <span className="method-icon"><FolderOpen size={22} /></span>
+        <span><strong>{t("add.fileTitle")}</strong>{" "}<small>{t("add.fileDescription")}</small></span>
+        <ChevronRight size={18} />
+      </button>
+      <details className="add-other-methods">
+        <summary>{t("add.otherMethods")}</summary>
+        <div>
+          <button className="add-method-card" disabled={busy} onClick={() => onSelectMethod("json")} type="button">
+            <span className="method-icon"><FileJson size={22} /></span>
+            <span><strong>{t("add.jsonTitle")}</strong>{" "}<small>{t("add.jsonDescription")}</small></span>
+            <ChevronRight size={18} />
+          </button>
+          <button className="add-method-card" disabled={busy} onClick={() => onSelectMethod("api-key")} type="button">
+            <span className="method-icon"><KeyRound size={22} /></span>
+            <span><strong>{t("add.apiKeyTitle")}</strong>{" "}<small>{t("add.apiKeyDescription")}</small></span>
+            <ChevronRight size={18} />
+          </button>
+        </div>
+      </details>
+    </div>
+  );
+}
+
+function FirstRun(props: AddAccountMethodsProps) {
+  const { t } = props;
   return (
     <section className="first-run">
       <div className="first-run-primary">
@@ -1028,21 +1074,7 @@ function FirstRun({ onImport, onAdd, t }: { onImport: () => void; onAdd: () => v
         <p>
           {t("firstRun.body")}
         </p>
-        <div className="first-run-actions">
-          <button className="button button-primary" onClick={onImport} type="button">
-            <Upload size={16} />
-            {t("firstRun.importExport")}
-          </button>
-          <button className="button button-secondary" onClick={onAdd} type="button">
-            <Plus size={16} />
-            {t("firstRun.addManually")}
-          </button>
-        </div>
-      </div>
-      <div className="first-run-methods">
-        <div><Globe2 size={18} /><span>{t("firstRun.browserSignIn")}</span></div>
-        <div><FileJson size={18} /><span>{t("firstRun.authJson")}</span></div>
-        <div><KeyRound size={18} /><span>{t("account.apiKey")}</span></div>
+        <AddAccountMethods {...props} />
       </div>
     </section>
   );
@@ -1770,11 +1802,11 @@ export default function App() {
     setDialog(null);
   };
 
-  const openAddDialog = () => {
+  const openAddDialog = (method: AddMethod = "start") => {
     setOauth(null);
     setOauthStatusUnavailable(false);
     setOauthTarget(null);
-    setAddMethod("start");
+    setAddMethod(method);
     setMigrationPreview(null);
     setMigrationRoot(undefined);
     setMigrationSelection([]);
@@ -2206,7 +2238,7 @@ export default function App() {
           <button
             className="button button-primary"
             disabled={loading || busy !== null || storageRecovery}
-            onClick={openAddDialog}
+            onClick={() => openAddDialog()}
             type="button"
           >
             <Plus size={16} />
@@ -2426,8 +2458,10 @@ export default function App() {
             </div>
           ) : (
             <FirstRun
-              onAdd={openAddDialog}
+              busy={loading || busy !== null}
+              onSignIn={() => void startOAuth()}
               onImport={() => void chooseImportFile()}
+              onSelectMethod={openAddDialog}
               t={t}
             />
           )}
@@ -2479,54 +2513,13 @@ export default function App() {
       {dialog === "add" ? (
         <Modal dismissible={!runningAny("import", "migration-scan", "migration-import", "oauth", "oauth-cancel", "oauth-retry", "import-json", "import-key")} onClose={closeAddDialog} t={t} title={t(oauthTarget ? "oauth.reauthenticateTitle" : "add.title", oauthTarget ? { name: accountPrimaryName(oauthTarget) } : undefined)} wide>
           {addMethod === "start" ? (
-            <div className="add-methods">
-              <section className="add-method-group" aria-labelledby="import-existing-heading">
-                <h3 id="import-existing-heading">{t("add.importExisting")}</h3>
-                <button
-                  className="add-method-card"
-                  onClick={() => {
-                    setMigrationPreview(null);
-                    setMigrationRoot(undefined);
-                    setMigrationSelection([]);
-                    setMigrationScanned(false);
-                    setAddMethod("migration");
-                  }}
-                  type="button"
-                >
-                  <span className="method-icon"><Upload size={22} /></span>
-                  <span><strong>{t("add.localTitle")}</strong><small>{t("add.localDescription")}</small></span>
-                  <ChevronRight size={18} />
-                </button>
-                <button className="add-method-card" onClick={() => void chooseImportFile()} type="button">
-                  <span className="method-icon"><FolderOpen size={22} /></span>
-                  <span><strong>{t("add.fileTitle")}</strong><small>{t("add.fileDescription")}</small></span>
-                  <ChevronRight size={18} />
-                </button>
-              </section>
-              <section className="add-method-group" aria-labelledby="add-new-heading">
-                <h3 id="add-new-heading">{t("add.addNew")}</h3>
-                <button className="add-method-card" onClick={() => void startOAuth()} type="button">
-                  <span className="method-icon"><Globe2 size={22} /></span>
-                  <span><strong>{t("add.browserTitle")}</strong><small>{t("add.browserDescription")}</small></span>
-                  <ChevronRight size={18} />
-                </button>
-              </section>
-              <details className="add-other-methods">
-                <summary>{t("add.otherMethods")}</summary>
-                <div>
-                  <button className="add-method-card" onClick={() => setAddMethod("json")} type="button">
-                    <span className="method-icon"><FileJson size={22} /></span>
-                    <span><strong>{t("add.jsonTitle")}</strong><small>{t("add.jsonDescription")}</small></span>
-                    <ChevronRight size={18} />
-                  </button>
-                  <button className="add-method-card" onClick={() => setAddMethod("api-key")} type="button">
-                    <span className="method-icon"><KeyRound size={22} /></span>
-                    <span><strong>{t("add.apiKeyTitle")}</strong><small>{t("add.apiKeyDescription")}</small></span>
-                    <ChevronRight size={18} />
-                  </button>
-                </div>
-              </details>
-            </div>
+            <AddAccountMethods
+              busy={busy !== null}
+              onSignIn={() => void startOAuth()}
+              onImport={() => void chooseImportFile()}
+              onSelectMethod={openAddDialog}
+              t={t}
+            />
           ) : null}
 
           {addMethod === "migration" ? (
@@ -2627,7 +2620,7 @@ export default function App() {
                   </div>
                   <div className="modal-actions">
                     <button className="button button-secondary" onClick={() => void cancelOAuth()} type="button">{t("oauth.cancel")}</button>
-                    <button className="button button-primary" onClick={() => void api.openOAuth(oauth.login_id).catch(() => setNotice({ kind: "error", text: t("oauth.openFailed") }))} type="button"><Globe2 size={16} />{t("oauth.openBrowser")}</button>
+                    <button className="button button-primary" onClick={() => void api.openOAuth(oauth.login_id).catch(() => setNotice({ kind: "error", text: t("oauth.openFailed") }))} type="button"><AppWindow size={16} />{t("oauth.openBrowser")}</button>
                   </div>
                 </>
               ) : oauth.status.status === "finishing" ? (

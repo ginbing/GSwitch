@@ -254,8 +254,11 @@ as applicable:
   selections, cancellation before write, Unix private permissions, version-1
   import round-trip, unknown-version rejection, saved-identity deduplication,
   and aggregate-only command output;
-- Add Account import-first hierarchy, account selection controls, selected Wake,
-  unencrypted-export confirmation, and result feedback without credential data.
+- shared first-use and Add Account choices, direct browser-sign-in launch,
+  disabled choices during launch, launch failure and cancellation, collapsed
+  other methods, explicit scanning and file selection, and the shortcut to save
+  the current account; account selection controls, selected Wake, unencrypted-export
+  confirmation, and result feedback without credential data.
 - the toolbar's centered brand without a duplicate current-account label,
   current-card identification, signed-out and recovery notices, theme-aware
   language icon, plus the canonical SVG and generated native/installer icon dimensions.
