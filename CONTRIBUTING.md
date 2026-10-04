@@ -16,8 +16,10 @@ relevant document from [the documentation router](docs/README.md).
   state, fixtures, logs, issues, or commits.
 - Do not read another application's private account storage. Import only a file
   that the user explicitly selected or exported.
-- Make one small pull request per independently reviewable behavior. Explain
-  the user-visible result and the local proof in its description.
+- Make one pull request per problem, shared root cause, or acceptance goal,
+  with its tests and documentation. Split out a part only when it needs its
+  own review or rollback. Explain the user-visible result and the local proof
+  in its description.
 
 ## Before opening a pull request
 

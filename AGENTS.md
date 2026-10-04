@@ -61,10 +61,12 @@ path, account mirror, or parallel source of truth.
 - Never force-push, rewrite history, push a protected branch, or stage
   unrelated work. Use branch and PR metadata that describes the accepted
   product change.
-- Keep each pull request to one independently reviewable behavior, with its
-  tests and the documentation it changes. Change the version only in a
-  separate release commit; a product pull request leaves the version files
-  untouched.
+- Keep each pull request to one problem, shared root cause, or acceptance
+  goal, with its implementation, tests, and the documentation it changes.
+  Split out a part only when it needs its own review, acceptance, or rollback,
+  and do not open pull requests that depend on each other's unmerged commits.
+  Change the version only in a separate release commit; a product pull
+  request leaves the version files untouched.
 - The maintainer is the only commit author on `main`. Do not add a
   `Co-authored-by` or other attribution trailer for a tool or bot to a commit
   or squash message, and do not merge a bot-authored commit as is.
