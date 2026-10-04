@@ -2018,14 +2018,6 @@ export default function App() {
   const cliUpdateAvailable = cliInfo?.update_status === "available" && cliInfo.supports_update;
   const currentActiveId = live?.account?.id;
   refreshInputs.current = { accounts, quotas, quotaFailures, activeId: currentActiveId };
-  const liveAccountLabel = live?.account ? accountPrimaryName(live.account) : t("toolbar.currentAccount");
-  const liveStatusLabel = !live ? t("toolbar.statusChecking") : t(({
-    ready: "toolbar.statusReady",
-    not_signed_in: "toolbar.statusSignedOut",
-    unknown_account: "toolbar.statusUnknown",
-    file_store_required: "toolbar.statusFileStore",
-    recovery_required: "toolbar.statusRecovery",
-  } as const)[live.status]);
   const chatGptAccounts = accounts.filter((account) => account.kind === "chat_gpt");
   const selectedChatGptCount = accounts.filter(
     (account) => account.kind === "chat_gpt" && selectedAccountIds.includes(account.id),
@@ -2113,15 +2105,7 @@ export default function App() {
       <header className="toolbar">
         <div className="brand-lockup">
           <img alt="" aria-hidden="true" className="brand-mark" src="/gswitch-icon.svg" />
-          <div className="brand-copy">
-            <h1>GSwitch</h1>
-            <p aria-atomic="true" aria-live="polite" className="brand-status">
-              <span aria-hidden="true" className="status-dot" />
-              <span className="brand-status-label">{liveAccountLabel}</span>
-              <span aria-hidden="true">·</span>
-              <span className="brand-status-state">{liveStatusLabel}</span>
-            </p>
-          </div>
+          <h1>GSwitch</h1>
         </div>
         <div className="toolbar-actions">
           <button className="button button-quiet" disabled={loading || busy !== null || refreshProgress !== null || storageRecovery} onClick={() => void refreshAll()} type="button">
@@ -2159,7 +2143,7 @@ export default function App() {
           ) : null}
           <PopoverMenu
             className="language-menu"
-            icon={<Globe2 size={18} />}
+            icon={<span aria-hidden="true" className="language-menu-icon" />}
             label={t("toolbar.language")}
             popoverLabel={t("settings.language")}
             title={t("toolbar.language")}
@@ -2211,6 +2195,10 @@ export default function App() {
               {safetyNotice.action}
             </button>
           </section>
+        ) : null}
+
+        {!safetyNotice && live?.status === "not_signed_in" && accounts.length > 0 ? (
+          <p className="signed-out-notice" role="status">{t("safety.signedOut")}</p>
         ) : null}
 
         <section className="accounts-section" aria-labelledby="accounts-heading">

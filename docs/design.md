@@ -21,11 +21,14 @@ wide desktop with enough card width, then collapse to two and one card without i
 Focused dialogs may handle add-account, explicit confirmation, progress/results,
 or recovery; they do not create a second navigation system.
 
-The toolbar contains the current Codex account, Refresh, Wake all, Add account,
-and a compact language menu. It is a command bar, not a dashboard header
-or a custom window chrome. Its status dot always remains visible; only a long
-account label may truncate. The status is also written in text so current, unknown,
-signed-out, setup, and recovery states do not rely on color.
+The toolbar contains the vertically centered GSwitch mark and name, Refresh,
+Wake all, Add account, and a compact language menu. The current account is
+identified on its card rather than repeated beside the brand. The language
+button uses Remix Icon's `earth-line` at 18px, inheriting the current theme
+color. It is a command bar, not a dashboard header or custom window chrome.
+Unknown, setup, and recovery states use the existing actionable notice. With
+saved accounts, a signed-out Codex uses one quiet text notice without another
+button; without saved accounts, the empty state provides the next step.
 
 An account card should show only the state needed for a decision:
 
@@ -90,7 +93,7 @@ points to the official install guide. A failed check remains quiet; no update
 is installed without a click.
 
 - Do not optimistically display a switch or redemption as complete.
-- After a verified switch, update the toolbar identity and active card directly.
+- After a verified switch, update the active card directly.
   That state is the visible confirmation; do not insert a success banner above
   the account grid or reload the whole workspace before showing it. Other brief
   success and information messages use one compact floating notice without
@@ -147,8 +150,8 @@ is installed without a click.
   **Sign in again** its primary action. The focused dialog shows the saved
   email and workspace, offers Copy email, and updates the original record only
   after verifying the returning identity. A saved login for the current account
-  that could not be applied shows **Apply**. The toolbar identifies the selected
-  local Codex account without claiming that its remote sign-in is valid.
+  that could not be applied shows **Apply**. The current badge identifies the
+  selected local Codex account without claiming that its remote sign-in is valid.
 - After Wake, sign-in, or refresh, update affected cards in place. Preserve
   order and last known quota while a new provider projection is pending; old
   results cannot replace a newer login or clear the entire account grid.
