@@ -271,8 +271,19 @@ authentication response, a manual refresh may use the
 once. When the saved access token's own expiry has already passed, that
 request is certain to be rejected: a manual refresh goes straight to the
 managed refresh, and an automatic refresh asks for a manual refresh without
-sending it. A successful read-only result stores only the quota projection. A snapshot is fresh for five
-minutes and then visibly stale. API-key accounts show quota as not applicable.
+sending it. A successful read-only result stores only the quota projection. A reading stays current until
+it is replaced, and the card shows how long ago it was read; only a reading
+marked unread after a reset, or kept after a failed read, is shown as stale.
+API-key accounts show quota as not applicable.
+
+GSwitch reads an account when its quota can have changed. While the window is
+visible it reads the current Codex account every two minutes, or one minute
+after the window regains focus; another account after thirty minutes, or as
+soon as one of its quota windows passes its reset time; an unread account at
+once; and an account right after the user switches to it, wakes it, or signs
+in again. A hidden window makes no reads. Retries count from the last attempt,
+and a failure only the user can fix (a rejected sign-in, a sign-in that needs
+a manual refresh, or an identity mismatch) waits for the user.
 Quota is operational account state, not usage analytics.
 
 The workspace renders its cached quota immediately and refreshes unknown or

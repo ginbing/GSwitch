@@ -31,7 +31,6 @@ pub(crate) enum ExternalCredentialState {
     Unidentifiable,
 }
 
-const CACHE_FRESH_FOR_MS: i64 = 5 * 60 * 1000;
 const MANUAL_REFRESH_NEEDED: &str = "Refresh this account to retry its saved sign-in";
 
 /// Only a stable, non-secret reason crosses the Rust/WebView boundary. These
@@ -1086,8 +1085,10 @@ fn view_from_snapshot(account_id: &str, snapshot: QuotaSnapshot, now: i64) -> Qu
             message: Some("Codex did not return subscription quota buckets".to_string()),
         };
     }
-    let fresh = snapshot.fetched_at_unix_ms <= now
-        && now - snapshot.fetched_at_unix_ms <= CACHE_FRESH_FOR_MS;
+    // Age alone no longer makes a reading stale; the WebView decides when a
+    // reading is old enough to refresh. A snapshot marked unread after a
+    // confirmed reset (time zero) or dated in the future is stale.
+    let fresh = snapshot.fetched_at_unix_ms > 0 && snapshot.fetched_at_unix_ms <= now;
     QuotaView {
         account_id: account_id.to_string(),
         status: if fresh {
@@ -1731,9 +1732,9 @@ mod tests {
     }
 
     #[test]
-    fn labels_an_old_snapshot_stale_without_inventing_new_values() {
-        let snapshot = QuotaSnapshot {
-            fetched_at_unix_ms: 1,
+    fn only_a_snapshot_marked_unread_or_from_the_future_is_stale() {
+        let snapshot = |fetched_at_unix_ms| QuotaSnapshot {
+            fetched_at_unix_ms,
             account_id: None,
             ordinary_usage_allowed: None,
             buckets: vec![QuotaBucket {
@@ -1746,8 +1747,19 @@ mod tests {
             }],
             reset_credits: None,
         };
-        let view = view_from_snapshot("account", snapshot, CACHE_FRESH_FOR_MS + 2);
-        assert_eq!(view.status, QuotaStatus::Stale);
+        let day = 24 * 60 * 60 * 1000;
+        assert_eq!(
+            view_from_snapshot("account", snapshot(1), day).status,
+            QuotaStatus::Fresh
+        );
+        assert_eq!(
+            view_from_snapshot("account", snapshot(0), day).status,
+            QuotaStatus::Stale
+        );
+        assert_eq!(
+            view_from_snapshot("account", snapshot(day + 1), day).status,
+            QuotaStatus::Stale
+        );
     }
 
     #[test]

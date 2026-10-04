@@ -80,7 +80,7 @@ const staleQuota: QuotaView = {
   account_id: "account-1",
   status: "stale",
   snapshot: {
-    fetched_at_unix_ms: 1735689600000,
+    fetched_at_unix_ms: Date.now(),
     buckets: [
       {
         limit_id: "codex",
@@ -976,6 +976,39 @@ describe("GSwitch account workspace", () => {
     mocks.accountQuota.mockResolvedValue(staleQuota);
     resolveRefresh?.(staleQuota);
     expect(await screen.findByText("Last 30%")).toBeInTheDocument();
+  });
+
+  it("shows how long ago each card's quota was read", async () => {
+    mocks.listAccounts.mockResolvedValue([chatAccount]);
+    mocks.accountQuota.mockResolvedValue({
+      ...staleQuota,
+      status: "fresh",
+      snapshot: { ...staleQuota.snapshot!, fetched_at_unix_ms: Date.now() - 3 * 60_000 },
+    });
+    render(<App />);
+
+    expect(await screen.findByText("Updated 3 minutes ago")).toBeInTheDocument();
+    expect(mocks.refreshAccountQuota).not.toHaveBeenCalled();
+  });
+
+  it("reads the current account again when the window regains focus after a minute", async () => {
+    const active = { ...chatAccount, active: true };
+    mocks.listAccounts.mockResolvedValue([active]);
+    mocks.liveAccount.mockResolvedValue({ status: "ready", credential_store: "file", account: active });
+    mocks.accountQuota.mockResolvedValue({
+      ...staleQuota,
+      status: "fresh",
+      snapshot: { ...staleQuota.snapshot!, fetched_at_unix_ms: Date.now() - 90_000 },
+    });
+    render(<App />);
+
+    expect(await screen.findByText("Updated 1 minute ago")).toBeInTheDocument();
+    // Under two minutes old, so startup leaves the current account alone.
+    expect(mocks.refreshAccountQuota).not.toHaveBeenCalled();
+
+    fireEvent.focus(window);
+
+    await waitFor(() => expect(mocks.refreshAccountQuota).toHaveBeenCalledWith("account-1", true));
   });
 
   it("starts a user's refresh without waiting behind automatic refreshes", async () => {
