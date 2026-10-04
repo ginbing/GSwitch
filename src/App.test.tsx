@@ -392,18 +392,36 @@ describe("GSwitch account workspace", () => {
     await waitFor(() => expect(dialog).not.toBeInTheDocument());
   });
 
-  it("keeps the current account label visible without claiming sign-in readiness", async () => {
+  it("shows the current account on its card without repeating it in the toolbar", async () => {
+    const account = { ...chatAccount, email: "a-very-long-account-name-that-must-truncate@example.com", active: true };
+    mocks.listAccounts.mockResolvedValue([account]);
     mocks.liveAccount.mockResolvedValue({
       status: "ready",
       credential_store: "file",
-      account: { label: "a-very-long-account-name-that-must-truncate@example.com" },
+      account,
     });
     const { container } = render(<App />);
 
+    const card = (await screen.findByRole("heading", { name: account.email })).closest("article")!;
+    expect(within(card).getByText("Current", { selector: ".badge-active" })).toBeInTheDocument();
+    expect(container.querySelector("header")).not.toHaveTextContent(account.email);
+    expect(within(container.querySelector("header")!).getByRole("heading", { name: "GSwitch" })).toBeInTheDocument();
+  });
+
+  it("shows a signed-out notice with saved accounts and no extra action", async () => {
+    mocks.listAccounts.mockResolvedValue([chatAccount]);
+    render(<App />);
+    const notice = await screen.findByText("Codex is signed out");
+    expect(notice).toHaveAttribute("role", "status");
+    expect(notice.querySelector("button")).toBeNull();
+    expect(screen.getByRole("button", { name: "Switch to person@example.com" })).toBeInTheDocument();
+  });
+
+  it("uses the empty state without a duplicate signed-out notice", async () => {
+    render(<App />);
     await screen.findByRole("heading", { name: "0 saved accounts" });
-    expect(container.querySelector(".brand-status > .status-dot")).toBeInTheDocument();
-    expect(container.querySelector(".brand-status > .status-ready")).not.toBeInTheDocument();
-    expect(container.querySelector(".brand-status-label")).toHaveTextContent("a-very-long-account-name-that-must-truncate@example.com");
+    expect(screen.getByRole("heading", { name: "Add your Codex accounts" })).toBeInTheDocument();
+    expect(screen.queryByText("Codex is signed out")).not.toBeInTheDocument();
   });
 
   it("does not scan local account sources at startup or when the method row opens", async () => {

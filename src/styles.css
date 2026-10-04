@@ -148,47 +148,12 @@ summary:focus-visible {
   flex: 0 0 auto;
 }
 
-.brand-copy {
-  min-width: 0;
-}
-
 .brand-lockup h1 {
   margin: 0;
   font-size: 17px;
   font-weight: 710;
   letter-spacing: -0.025em;
   line-height: 1.2;
-}
-
-.brand-status {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  gap: 6px;
-  margin: 3px 0 0;
-  color: var(--muted);
-  font-size: 12.5px;
-  font-weight: 510;
-  white-space: nowrap;
-}
-
-.brand-status-label {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.brand-status-state {
-  flex: 0 0 auto;
-}
-
-.status-dot {
-  width: 7px;
-  height: 7px;
-  flex: 0 0 auto;
-  border-radius: 50%;
-  background: var(--soft-muted);
 }
 
 .toolbar-actions {
@@ -214,6 +179,20 @@ summary:focus-visible {
 }
 
 .language-menu > button:hover { color: var(--text); background: var(--surface-hover); }
+
+.language-menu-icon {
+  width: 18px;
+  height: 18px;
+  background: currentColor;
+  mask: url("/remix-earth-line.svg") center / contain no-repeat;
+  -webkit-mask: url("/remix-earth-line.svg") center / contain no-repeat;
+}
+
+.signed-out-notice {
+  margin: 0 0 20px;
+  color: var(--muted);
+  font-size: 12.5px;
+}
 
 .language-menu-popover {
   position: absolute;

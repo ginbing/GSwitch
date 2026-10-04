@@ -247,8 +247,9 @@ as applicable:
   and aggregate-only command output;
 - Add Account import-first hierarchy, account selection controls, selected Wake,
   unencrypted-export confirmation, and result feedback without credential data.
-- the toolbar's visible ready indicator beside a separately truncatable account
-  label, plus the canonical SVG and generated native/installer icon dimensions.
+- the toolbar's centered brand without a duplicate current-account label,
+  current-card identification, signed-out and recovery notices, theme-aware
+  language icon, plus the canonical SVG and generated native/installer icon dimensions.
 - system-language selection, unsupported-locale fallback, immediate manual
   language selection, language preference persistence, locale-aware reset-time
   formatting, and the main account flow in Simplified Chinese.
