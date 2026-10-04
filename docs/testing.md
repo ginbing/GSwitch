@@ -210,6 +210,7 @@ as applicable:
   email/workspace identity, localized outcome, and foreground progress;
 - frontend clearing secret inputs, confirming reset consumption, and disabling
   conflicting actions;
+- a dialog staying closable while unrelated work such as a full refresh runs;
 - the card showing the quota a reset returns without a manual refresh, and a
   failed reset reloading state so the recovery prompt appears;
 - browser-login cancellation, selected-file import boundaries, account-space

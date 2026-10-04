@@ -431,7 +431,6 @@ function Modal({
   t,
   wide = false,
   dismissible = true,
-  showProgress = true,
 }: {
   title: string;
   children: ReactNode;
@@ -439,7 +438,6 @@ function Modal({
   t: Translator;
   wide?: boolean;
   dismissible?: boolean;
-  showProgress?: boolean;
 }) {
   const dialogRef = useRef<HTMLElement>(null);
 
@@ -505,7 +503,6 @@ function Modal({
         <div className="modal-header">
           <h2 id="modal-title">{title}</h2>
           <div className="modal-header-actions">
-            {!dismissible && showProgress ? <span className="modal-progress" role="status">{t("common.working")}</span> : null}
             <button aria-label={t("common.closeDialog", { title })} className="icon-button" disabled={!dismissible} onClick={onClose} type="button">
               <X size={18} strokeWidth={2} />
             </button>
@@ -1906,6 +1903,10 @@ export default function App() {
     : undefined;
   const storageRecovery = storage?.status === "recovery_required";
   const accountGridBusy = accountGridHasGlobalMutation(busy);
+  // A dialog stays closable while unrelated work runs; only its own operation
+  // holds it open. A key ending in ":" matches that operation for any account.
+  const runningAny = (...keys: string[]) =>
+    busy !== null && keys.some((key) => (key.endsWith(":") ? busy.startsWith(key) : busy === key));
 
   const safetyNotice = useMemo(() => {
     if (storage?.status === "recovery_required") {
@@ -2259,7 +2260,7 @@ export default function App() {
       ) : null}
 
       {dialog === "add" ? (
-        <Modal dismissible={busy === null} onClose={closeAddDialog} t={t} title={t(oauthTarget ? "oauth.reauthenticateTitle" : "add.title", oauthTarget ? { name: accountPrimaryName(oauthTarget) } : undefined)} wide>
+        <Modal dismissible={!runningAny("import", "migration-scan", "migration-import", "oauth", "oauth-cancel", "oauth-retry", "import-json", "import-key")} onClose={closeAddDialog} t={t} title={t(oauthTarget ? "oauth.reauthenticateTitle" : "add.title", oauthTarget ? { name: accountPrimaryName(oauthTarget) } : undefined)} wide>
           {addMethod === "start" ? (
             <div className="add-methods">
               <section className="add-method-group" aria-labelledby="import-existing-heading">
@@ -2480,7 +2481,7 @@ export default function App() {
 
       {dialog === "export" ? (
         <Modal
-          dismissible={busy === null}
+          dismissible={!runningAny("export-accounts")}
           onClose={() => {
             setExportConfirmation(false);
             setDialog(null);
@@ -2527,7 +2528,7 @@ export default function App() {
 
       {dialog === "storage-recovery" ? (
         <Modal
-          dismissible={busy === null}
+          dismissible={!runningAny("reset-damaged-store")}
           onClose={() => {
             setStorageResetConfirmation(false);
             setDialog(null);
@@ -2568,7 +2569,7 @@ export default function App() {
       ) : null}
 
       {dialog === "enable-switching" ? (
-        <Modal dismissible={busy === null} onClose={() => setDialog(null)} t={t} title={t("switching.title")}>
+        <Modal dismissible={!runningAny("enable-switching")} onClose={() => setDialog(null)} t={t} title={t("switching.title")}>
           <div className="confirm-panel">
             <ShieldAlert size={26} />
             <h3>{t("switching.prepare")}</h3>
@@ -2596,7 +2597,7 @@ export default function App() {
       ) : null}
 
       {dialog === "recover-switch" ? (
-        <Modal dismissible={busy === null} onClose={() => setDialog(null)} t={t} title={t("recovery.switchTitle")}>
+        <Modal dismissible={!runningAny("recover-switch")} onClose={() => setDialog(null)} t={t} title={t("recovery.switchTitle")}>
           <div className="confirm-panel">
             <CircleAlert size={26} />
             <h3>{t("recovery.switchHeading")}</h3>
@@ -2625,7 +2626,7 @@ export default function App() {
 
       {dialog === "recover-reset-credit" ? (
         <Modal
-          dismissible={busy === null}
+          dismissible={!runningAny("recover-reset-credit", "discard-reset-credit")}
           onClose={() => {
             setDiscardConfirmation(false);
             setDialog(null);
@@ -2662,7 +2663,7 @@ export default function App() {
 
       {dialog === "reset" && resetAccount ? (
         <Modal
-          dismissible={busy === null}
+          dismissible={!runningAny("reset:")}
           onClose={() => {
             setResetConfirmation(false);
             setDialog(null);
@@ -2703,7 +2704,7 @@ export default function App() {
 
       {dialog === "remove" && removeAccount ? (
         <Modal
-          dismissible={busy === null}
+          dismissible={!runningAny("remove:")}
           onClose={() => {
             setDialog(null);
             setRemoveError(null);
@@ -2731,7 +2732,7 @@ export default function App() {
       ) : null}
 
       {dialog === "wake" && wake ? (
-        <Modal dismissible={busy === null && wake.status !== "running"} onClose={() => { setDialog(null); setWake(null); }} showProgress={false} t={t} title={t("wake.title")}>
+        <Modal dismissible={wake.status !== "running" && !runningAny("wake-all", "wake-selected", "cancel-wake")} onClose={() => { setDialog(null); setWake(null); }} t={t} title={t("wake.title")}>
           <div className="wake-panel">
             <div className="wake-status">
               {wake.status === "running" ? <LoaderCircle className="spin" size={21} /> : wake.status === "completed" ? <Info size={21} /> : <CircleAlert size={21} />}

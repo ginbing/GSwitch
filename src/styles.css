@@ -1189,11 +1189,6 @@ summary:focus-visible {
   gap: 10px;
 }
 
-.modal-progress {
-  color: var(--muted);
-  font-size: 12px;
-  white-space: nowrap;
-}
 
 .modal-header .icon-button {
   width: 29px;
