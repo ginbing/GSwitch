@@ -191,7 +191,8 @@ as applicable:
 - cached and uncached refresh failures showing at most one quota warning per
   card, historical percentages and muted meters without a stale badge or
   countdown, safe failure details and the last successful time, hover/click/
-  keyboard access and Escape/blur/outside dismissal, stale data without a
+  keyboard access and Escape/blur/outside dismissal, details remaining inside
+  the window at its edges and after scroll/resize, stale data without a
   failure described as awaiting an update, authentication recovery, and a
   successful retry clearing the warning and historical labels;
 - reopening with a successful reading older than five minutes keeping its

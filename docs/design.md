@@ -140,7 +140,9 @@ is installed without a click.
   credential. A failed card has one compact warning icon beside its first quota
   title, with no permanent failure sentence or stale badge. Hover, keyboard
   focus, or click opens the safe reason and last successful update; Escape,
-  focus leaving, or an outside click closes it. Old percentages say "Last" and
+  focus leaving, or an outside click closes it. Details open above the icon
+  when needed and stay within the window as it scrolls or resizes. Old
+  percentages say "Last" and
   use muted meters without reset countdowns or replacement explanation lines.
   An unavailable result stays unknown. Stale data without a failure says
   "Quota awaiting update" in its details rather than claiming a failed refresh.

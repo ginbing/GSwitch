@@ -32,6 +32,7 @@ import {
   useCallback,
   useEffect,
   useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -685,6 +686,31 @@ function QuotaAlert({ accountName, failure, id, lastSuccess, formatLocale, t }: 
 }) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLSpanElement>(null);
+  const detailsRef = useRef<HTMLSpanElement>(null);
+  const [position, setPosition] = useState({ top: 26, left: -4 });
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    const place = () => {
+      if (!rootRef.current || !detailsRef.current) return;
+      const anchor = rootRef.current.getBoundingClientRect();
+      const details = detailsRef.current.getBoundingClientRect();
+      const below = anchor.bottom + 4;
+      const above = anchor.top - details.height - 4;
+      const top = below + details.height <= window.innerHeight - 8 ? below
+        : above >= 8 ? above : Math.max(8, window.innerHeight - details.height - 8);
+      const left = Math.max(8, Math.min(anchor.left - 4, window.innerWidth - details.width - 8));
+      const next = { top: top - anchor.top, left: left - anchor.left };
+      setPosition((current) => current.top === next.top && current.left === next.left ? current : next);
+    };
+    place();
+    window.addEventListener("resize", place);
+    window.addEventListener("scroll", place, true);
+    return () => {
+      window.removeEventListener("resize", place);
+      window.removeEventListener("scroll", place, true);
+    };
+  }, [open, failure, lastSuccess, formatLocale, t]);
 
   useEffect(() => {
     if (!open) return;
@@ -730,7 +756,7 @@ function QuotaAlert({ accountName, failure, id, lastSuccess, formatLocale, t }: 
         onClick={() => setOpen(true)}
         type="button"
       ><CircleAlert size={15} /></button>
-      <span className="quota-alert-tooltip" hidden={!open} id={id} role="tooltip">
+      <span className="quota-alert-tooltip" hidden={!open} id={id} ref={detailsRef} role="tooltip" style={position}>
         <strong>{t(failure ? "quota.refreshErrorLabel" : "quota.pending")}</strong>
         {failure ? <span>{quotaFailureMessage(t, failure)}</span> : null}
         {lastSuccess && lastSuccess > 0 && lastSuccess <= Date.now() ? (
