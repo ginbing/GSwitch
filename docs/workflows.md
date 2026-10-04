@@ -268,7 +268,10 @@ the provider.
 If the read-only endpoint rejects an inactive saved credential with an
 authentication response, a manual refresh may use the
 [managed refresh](#managed-refresh) and then repeats the read-only request
-once. A successful read-only result stores only the quota projection. A snapshot is fresh for five
+once. When the saved access token's own expiry has already passed, that
+request is certain to be rejected: a manual refresh goes straight to the
+managed refresh, and an automatic refresh asks for a manual refresh without
+sending it. A successful read-only result stores only the quota projection. A snapshot is fresh for five
 minutes and then visibly stale. API-key accounts show quota as not applicable.
 Quota is operational account state, not usage analytics.
 

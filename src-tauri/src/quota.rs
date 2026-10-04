@@ -9,7 +9,7 @@ use crate::{
     app_server::{AppServer, TempCodexHome, REJECTED_REQUEST},
     chatgpt::{self, ChatGptClient, RequestFailure, RequestFailureKind},
     codex,
-    identity::{derive_identity, document_kind},
+    identity::{access_token_expired, derive_identity, document_kind},
     runtime,
     types::{
         AccountIdentity, AccountKind, PendingResetCredit, QuotaBucket, QuotaBucketKind,
@@ -32,6 +32,7 @@ pub(crate) enum ExternalCredentialState {
 }
 
 const CACHE_FRESH_FOR_MS: i64 = 5 * 60 * 1000;
+const MANUAL_REFRESH_NEEDED: &str = "Refresh this account to retry its saved sign-in";
 
 /// Only a stable, non-secret reason crosses the Rust/WebView boundary. These
 /// messages originate in GSwitch or the sanitized App Server adapter, never
@@ -94,6 +95,15 @@ pub fn refresh_quota(state: &AppState, account_id: &str) -> Result<QuotaView, St
         ExternalCredentialState::NotRunning | ExternalCredentialState::DifferentAccount => {}
     }
 
+    // A saved token past its own expiry is certain to be rejected, so go
+    // straight to the official refresh instead of waiting for that rejection.
+    if access_token_expired(&account.credential, now_unix_ms() / 1000) {
+        let refreshed = refresh_saved_sign_in(state, &operation, &account, &identity)
+            .map_err(ManagedRefreshFailure::message)?;
+        return refresh_read_only(state, &operation, &account, &identity, &refreshed)
+            .map_err(ReadOnlyRefreshFailure::message);
+    }
+
     match refresh_read_only(state, &operation, &account, &identity, &account.credential) {
         Ok(view) => Ok(view),
         Err(ReadOnlyRefreshFailure::Provider(error)) if error.can_fallback_to_managed_refresh() => {
@@ -128,6 +138,12 @@ pub fn refresh_quota_background(state: &AppState, account_id: &str) -> Result<Qu
             (account.credential.clone(), false)
         }
     };
+    // Automatic refresh never rotates a saved sign-in, so a saved token past
+    // its own expiry needs a manual refresh; asking the provider first only
+    // adds a request that is certain to be rejected.
+    if !matching_live && access_token_expired(&credential, now_unix_ms() / 1000) {
+        return Err(MANUAL_REFRESH_NEEDED.to_string());
+    }
     let saved_credits = account.reset_credits.as_ref();
     let normalized = match fetch_quota_projection(&identity, &credential, saved_credits) {
         Ok(normalized) => normalized,
@@ -145,7 +161,7 @@ pub fn refresh_quota_background(state: &AppState, account_id: &str) -> Result<Qu
                 .map_err(ReadOnlyRefreshFailure::message)?
         }
         Err(ReadOnlyRefreshFailure::Provider(error)) if error.can_fallback_to_managed_refresh() => {
-            return Err("Refresh this account to retry its saved sign-in".to_string());
+            return Err(MANUAL_REFRESH_NEEDED.to_string());
         }
         Err(error) => return Err(error.message()),
     };

@@ -116,6 +116,21 @@ fn api_key_identity(credential: &Value) -> Result<AccountIdentity, String> {
     })
 }
 
+/// Whether the saved access token's own `exp` claim has passed. GSwitch reads
+/// it only to skip a provider request that is certain to be rejected; a token
+/// without a readable expiry counts as possibly valid.
+pub(crate) fn access_token_expired(credential: &Value, now_seconds: i64) -> bool {
+    credential
+        .get("tokens")
+        .and_then(|tokens| tokens.get("access_token"))
+        .or_else(|| credential.get("access_token"))
+        .or_else(|| credential.get("accessToken"))
+        .and_then(Value::as_str)
+        .and_then(|token| jwt_claims(token).ok())
+        .and_then(|claims| claims.get("exp").and_then(Value::as_i64))
+        .is_some_and(|expires_at| expires_at <= now_seconds)
+}
+
 fn jwt_claims(token: &str) -> Result<Value, String> {
     let payload = token
         .split('.')
@@ -138,6 +153,36 @@ fn string_at<'a>(object: Option<&'a serde_json::Map<String, Value>>, key: &str) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn with_access_token_expiry(expires_at: Option<i64>) -> Value {
+        let claims = match expires_at {
+            Some(expires_at) => serde_json::json!({"exp": expires_at}),
+            None => serde_json::json!({}),
+        };
+        let token = format!(
+            "header.{}.signature",
+            URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims).expect("claims"))
+        );
+        serde_json::json!({"tokens": {"access_token": token}})
+    }
+
+    #[test]
+    fn an_access_token_counts_as_expired_only_when_its_own_expiry_has_passed() {
+        assert!(access_token_expired(
+            &with_access_token_expiry(Some(100)),
+            100
+        ));
+        assert!(!access_token_expired(
+            &with_access_token_expiry(Some(101)),
+            100
+        ));
+        assert!(!access_token_expired(&with_access_token_expiry(None), 100));
+        assert!(!access_token_expired(
+            &serde_json::json!({"tokens": {"access_token": "opaque"}}),
+            100
+        ));
+        assert!(!access_token_expired(&serde_json::json!({}), 100));
+    }
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use serde_json::json;
 
