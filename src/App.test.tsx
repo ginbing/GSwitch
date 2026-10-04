@@ -630,7 +630,7 @@ describe("GSwitch account workspace", () => {
     render(<App />);
 
     expect(await screen.findByText("Personal")).toBeInTheDocument();
-    expect(screen.getByText("Stale")).toBeInTheDocument();
+    expect(screen.queryByText("Stale")).not.toBeInTheDocument();
     expect(screen.getByText("Last 30%")).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: "Details" }));
@@ -1192,7 +1192,7 @@ describe("GSwitch account workspace", () => {
     );
     expect(await screen.findByText("Could not refresh quota for 1 of your accounts. See the affected cards for their latest result.")).toBeInTheDocument();
     const failedCard = screen.getByRole("heading", { name: "person3@example.com" }).closest(".account-card");
-    expect(failedCard).toHaveTextContent(/Last result is stale|Not available/);
+    expect(failedCard).not.toHaveTextContent("Last result is stale");
     expect(within(failedCard as HTMLElement).getByRole("button", { name: "Quota update failed for person3@example.com" })).toBeInTheDocument();
     expect(failedCard).toHaveTextContent("GSwitch could not update this quota. Try again later.");
     expect(failedCard).toHaveTextContent("Last 30%");
@@ -1210,8 +1210,12 @@ describe("GSwitch account workspace", () => {
     const alert = await screen.findByRole("button", { name: "Quota update failed for person@example.com" });
     expect(alert).toHaveAttribute("aria-describedby", "quota-error-account-1");
     expect(screen.getByText("Last 30%")).toBeInTheDocument();
-    expect(screen.getByText("This saved sign-in was rejected. Sign in to this account again.")).toBeInTheDocument();
-    expect(screen.getByText(/Last successful update:/)).toBeInTheDocument();
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+    await userEvent.click(alert);
+    const details = screen.getByRole("tooltip");
+    expect(details).toHaveTextContent("This saved sign-in was rejected. Sign in to this account again.");
+    expect(details).toHaveTextContent(/Last successful update:/);
+    expect(within(details).queryByRole("button")).not.toBeInTheDocument();
     expect(screen.queryByText("Quota could not be refreshed. The last result is shown when available.")).not.toBeInTheDocument();
 
     await userEvent.click(screen.getByLabelText("More actions for person@example.com"));
@@ -1221,6 +1225,105 @@ describe("GSwitch account workspace", () => {
     await waitFor(() => expect(mocks.startOAuth).toHaveBeenCalledWith("account-1"));
     expect(mocks.openOAuth).not.toHaveBeenCalled();
     expect(await screen.findByRole("dialog", { name: "Sign in again · person@example.com" })).toBeInTheDocument();
+  });
+
+  it("shows one compact warning for a failed cached reading and opens it by hover, click, or keyboard focus", async () => {
+    const user = userEvent.setup();
+    mocks.listAccounts.mockResolvedValue([chatAccount]);
+    mocks.accountQuota.mockResolvedValue(staleQuota);
+    mocks.refreshAccountQuota.mockRejectedValue({ code: "network", message: "private provider payload" });
+    render(<App />);
+
+    const warning = await screen.findByRole("button", { name: "Quota update failed for person@example.com" });
+    const card = warning.closest("article")!;
+    expect(within(card).getAllByRole("button", { name: /Quota update failed/ })).toHaveLength(1);
+    expect(card).toHaveTextContent("Last 30%");
+    expect(card).toHaveTextContent("Last 85%");
+    expect(card).not.toHaveTextContent(/Stale|Last result is stale|private provider payload/);
+    expect(card.querySelectorAll(".quota-meter small")).toHaveLength(0);
+    expect(within(card).queryByRole("progressbar")).not.toBeInTheDocument();
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+
+    await user.hover(warning);
+    expect(screen.getByRole("tooltip")).toHaveTextContent("The quota service could not be reached. Check your connection.");
+    await user.unhover(warning);
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+
+    await user.click(warning);
+    expect(screen.getByRole("tooltip")).toHaveTextContent(/Last successful update:/);
+    await user.keyboard("{Escape}");
+    expect(warning).toHaveFocus();
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+    await user.click(warning);
+    expect(screen.getByRole("tooltip")).toBeInTheDocument();
+    await user.tab();
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+    await user.tab({ shift: true });
+    expect(warning).toHaveFocus();
+    expect(screen.getByRole("tooltip")).toBeInTheDocument();
+    await user.click(screen.getByRole("heading", { name: "GSwitch" }));
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+
+    mocks.refreshAccountQuota.mockResolvedValue({ ...staleQuota, status: "fresh" });
+    await user.click(screen.getByRole("button", { name: "Refresh person@example.com" }));
+    expect(await within(card).findByText("30%")).toBeInTheDocument();
+    expect(within(card).queryByText(/^Last \d/)).not.toBeInTheDocument();
+    expect(within(card).queryByRole("button", { name: /Quota update failed|Quota awaiting update/ })).not.toBeInTheDocument();
+  });
+
+  it("describes stale data without a failure as awaiting an update and omits an invalid last-success time", async () => {
+    mocks.listAccounts.mockResolvedValue([chatAccount]);
+    mocks.accountQuota.mockResolvedValue({
+      ...staleQuota,
+      snapshot: { ...staleQuota.snapshot!, fetched_at_unix_ms: 0 },
+    });
+    mocks.refreshAccountQuota.mockImplementation(() => new Promise<QuotaView>(() => undefined));
+    render(<App />);
+
+    const warning = await screen.findByRole("button", { name: "Quota awaiting update for person@example.com" });
+    expect(screen.queryByRole("button", { name: /Quota update failed/ })).not.toBeInTheDocument();
+    await userEvent.click(warning);
+    const details = screen.getByRole("tooltip");
+    expect(details).toHaveTextContent("Quota awaiting update");
+    expect(details).not.toHaveTextContent(/failed|Last successful update/);
+    expect(screen.getByText("Last 30%")).toBeInTheDocument();
+  });
+
+  it("keeps a failed quota without a cache unknown and clears its warning after a successful retry", async () => {
+    mocks.listAccounts.mockResolvedValue([chatAccount]);
+    mocks.refreshAccountQuota.mockRejectedValueOnce({ code: "network" });
+    render(<App />);
+
+    const warning = await screen.findByRole("button", { name: "Quota update failed for person@example.com" });
+    const card = warning.closest("article")!;
+    expect(within(card).getByText("Not available")).toBeInTheDocument();
+    expect(within(card).queryByText(/^Last \d/)).not.toBeInTheDocument();
+    expect(card.querySelector(".quota-heading > strong")).toHaveTextContent("—");
+    await userEvent.click(warning);
+    expect(screen.getByRole("tooltip")).not.toHaveTextContent("Last successful update");
+
+    mocks.refreshAccountQuota.mockResolvedValue({ ...staleQuota, status: "fresh" });
+    await userEvent.click(screen.getByRole("button", { name: "Refresh person@example.com" }));
+    expect(await within(card).findByText("30%")).toBeInTheDocument();
+    expect(within(card).getAllByRole("progressbar")).toHaveLength(2);
+    expect(within(card).queryByRole("button", { name: /Quota update failed|Quota awaiting update/ })).not.toBeInTheDocument();
+    expect(within(card).queryByText(/^Last \d/)).not.toBeInTheDocument();
+  });
+
+  it("does not turn a successful reading older than five minutes into stale data on reopening", async () => {
+    mocks.listAccounts.mockResolvedValue([chatAccount]);
+    mocks.accountQuota.mockResolvedValue({
+      ...staleQuota,
+      status: "fresh",
+      snapshot: { ...staleQuota.snapshot!, fetched_at_unix_ms: Date.now() - 10 * 60_000 },
+    });
+    render(<App />);
+
+    expect(await screen.findByText("30%")).toBeInTheDocument();
+    expect(screen.getAllByRole("progressbar")).toHaveLength(2);
+    expect(screen.queryByRole("button", { name: /Quota update failed|Quota awaiting update/ })).not.toBeInTheDocument();
+    expect(screen.queryByText(/Last 30%|Last result is stale|Stale/)).not.toBeInTheDocument();
+    expect(mocks.refreshAccountQuota).not.toHaveBeenCalled();
   });
 
   it("shows a direct recovery action with the saved email and workspace", async () => {

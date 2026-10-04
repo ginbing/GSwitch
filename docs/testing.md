@@ -187,7 +187,15 @@ as applicable:
   "updated" age;
 - a one-account quota refresh updating its own projection without rebuilding
   the workspace, and that account's busy state leaving unrelated cards usable;
-- quota bucket normalization, zero remaining, and stale-cache labeling;
+- quota bucket normalization and zero remaining;
+- cached and uncached refresh failures showing at most one quota warning per
+  card, historical percentages and muted meters without a stale badge or
+  countdown, safe failure details and the last successful time, hover/click/
+  keyboard access and Escape/blur/outside dismissal, stale data without a
+  failure described as awaiting an update, authentication recovery, and a
+  successful retry clearing the warning and historical labels;
+- reopening with a successful reading older than five minutes keeping its
+  normal quota presentation and existing refresh policy;
 - a quota projection failure leaving the saved-account workspace and Switch
   action available;
 - provider refresh before reset-credit selection;
