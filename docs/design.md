@@ -137,12 +137,16 @@ is installed without a click.
   notice because the card itself updates. Each card shows how long ago its
   quota was read next to its refresh button. Automatic reads leave switching
   available while waiting for the provider and never refresh a saved
-  credential. A failed card keeps a visible,
-  compact warning icon beside quota;
-  its hover/focus explanation gives the safe reason and last successful update.
-  Old percentages say "Last" and use muted meters; an unavailable result stays
-  unknown. Actions stay in the account menu, not in the warning tooltip. Batch
-  feedback describes quota results only.
+  credential. A failed card has one compact warning icon beside its first quota
+  title, with no permanent failure sentence or stale badge. Hover, keyboard
+  focus, or click opens the safe reason and last successful update; Escape,
+  focus leaving, or an outside click closes it. Old percentages say "Last" and
+  use muted meters without reset countdowns or replacement explanation lines.
+  An unavailable result stays unknown. Stale data without a failure says
+  "Quota awaiting update" in its details rather than claiming a failed refresh.
+  A successful refresh clears the warning and historical labels. Actions stay
+  in the account menu, not in the warning details. Batch feedback describes
+  quota results only.
 - A saved email can be copied from its card menu. Every saved ChatGPT account
   also keeps **Sign in again** in that menu, so recovery never depends on
   GSwitch diagnosing a failure correctly. After a confirmed authentication
@@ -161,7 +165,7 @@ is installed without a click.
   such as `4h 55m · 09/27 16:30` or `4小时55分 · 09/27 16:30`, without a visible
   introductory label or trailing “in/后”. Show the year only across years and
   allow wrapping at the separator on narrow cards without truncating the date.
-  Stale data shows its stale state instead of a live countdown; an elapsed
+  Stale data omits the live countdown; an elapsed
   fresh reset marker says to refresh. Hover, keyboard focus, and assistive
   text provide the full reset meaning and date.
   Reset credits use two aligned lines: count and action above, compact relative

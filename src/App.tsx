@@ -675,6 +675,72 @@ function QuotaResetTime({ timestamp, t, formatLocale }: {
   );
 }
 
+function QuotaAlert({ accountName, failure, id, lastSuccess, formatLocale, t }: {
+  accountName: string;
+  failure?: QuotaRefreshFailureCode;
+  id: string;
+  lastSuccess?: number;
+  formatLocale: string;
+  t: Translator;
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLSpanElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const closeOutside = (event: Event) => {
+      if (event.target instanceof Node && !rootRef.current?.contains(event.target)) setOpen(false);
+    };
+    const closeOnEscape = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    const close = () => setOpen(false);
+    document.addEventListener("pointerdown", closeOutside);
+    document.addEventListener("focusin", closeOutside);
+    document.addEventListener("keydown", closeOnEscape);
+    window.addEventListener("blur", close);
+    return () => {
+      document.removeEventListener("pointerdown", closeOutside);
+      document.removeEventListener("focusin", closeOutside);
+      document.removeEventListener("keydown", closeOnEscape);
+      window.removeEventListener("blur", close);
+    };
+  }, [open]);
+
+  return (
+    <span
+      className="quota-alert"
+      data-open={open}
+      ref={rootRef}
+      onMouseEnter={() => setOpen(true)}
+      onMouseLeave={() => {
+        if (!rootRef.current?.contains(document.activeElement)) setOpen(false);
+      }}
+      onFocus={() => setOpen(true)}
+      onBlur={(event) => {
+        if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) setOpen(false);
+      }}
+    >
+      <button
+        aria-controls={id}
+        aria-describedby={id}
+        aria-expanded={open}
+        aria-label={t(failure ? "quota.refreshErrorFor" : "quota.pendingFor", { name: accountName })}
+        className="quota-alert-button"
+        onClick={() => setOpen(true)}
+        type="button"
+      ><CircleAlert size={15} /></button>
+      <span className="quota-alert-tooltip" hidden={!open} id={id} role="tooltip">
+        <strong>{t(failure ? "quota.refreshErrorLabel" : "quota.pending")}</strong>
+        {failure ? <span>{quotaFailureMessage(t, failure)}</span> : null}
+        {lastSuccess && lastSuccess > 0 && lastSuccess <= Date.now() ? (
+          <span>{t("quota.lastUpdated", { time: formatDateTimeWithRelative(lastSuccess / 1000, formatLocale) })}</span>
+        ) : null}
+      </span>
+    </span>
+  );
+}
+
 function QuotaMeter({
   accountName,
   label,
@@ -703,20 +769,8 @@ function QuotaMeter({
   return (
     <div className={"quota-meter" + (status === "stale" ? " quota-meter-stale" : "")}>
       <div className="quota-heading">
-        <span className="quota-label">{label}{failure ? (
-          <span className="quota-alert">
-            <button
-              aria-describedby={failureId}
-              aria-label={t("quota.refreshErrorFor", { name: accountName })}
-              className="quota-alert-button"
-              type="button"
-            ><CircleAlert size={15} /></button>
-            <span className="quota-alert-tooltip" id={failureId} role="tooltip">
-              <strong>{t("quota.refreshErrorLabel")}</strong>
-              <span>{quotaFailureMessage(t, failure)}</span>
-              {lastSuccess ? <span>{t("quota.lastUpdated", { time: formatDateTimeWithRelative(lastSuccess / 1000, formatLocale) })}</span> : null}
-            </span>
-          </span>
+        <span className="quota-label">{label}{failureId && (failure || status === "stale") ? (
+          <QuotaAlert accountName={accountName} failure={failure} id={failureId} lastSuccess={lastSuccess} formatLocale={formatLocale} t={t} />
         ) : null}</span>
         <strong>{value === undefined || !known ? "—" : status === "stale"
           ? t("quota.previousValue", { value: formatPercent(value, formatLocale) })
@@ -735,15 +789,13 @@ function QuotaMeter({
           style={{ width: String(value ?? 0) + "%" }}
         />
       </div>
-      <small>
-        {!known
+      {status !== "stale" || value === undefined ? <small>
+        {!known || value === undefined
           ? t("quota.notAvailable")
-          : status === "stale"
-            ? t("quota.lastResultStale")
-            : window?.resets_at
+          : window?.resets_at
               ? <QuotaResetTime timestamp={window.resets_at} formatLocale={formatLocale} t={t} />
               : t("quota.resetTimeUnavailable")}
-      </small>
+      </small> : null}
     </div>
   );
 }
@@ -851,7 +903,6 @@ function AccountCard({
         <span className="badge">{accountPlan(account, t)}</span>
         {signInRequired ? <span className="badge badge-error">{t("account.signInRequired")}</span> : null}
         {!signInRequired && active && account.needs_apply ? <span className="badge badge-muted">{t("account.pendingApply")}</span> : null}
-        {quota?.status === "stale" ? <span className="badge badge-muted">{t("account.stale")}</span> : null}
       </div>
 
       {isApiKey ? (
@@ -869,7 +920,7 @@ function AccountCard({
               <QuotaMeter
                 accountName={primaryName}
                 failure={index === 0 ? quotaFailure : undefined}
-                failureId={"quota-error-" + account.id}
+                failureId={index === 0 ? "quota-error-" + account.id : undefined}
                 lastSuccess={quota?.snapshot?.fetched_at_unix_ms}
                 formatLocale={formatLocale}
                 key={index}

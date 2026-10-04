@@ -858,8 +858,8 @@ summary:focus-visible {
 }
 
 .quota-alert-tooltip strong { font-size: 12px; font-weight: 700; }
-.quota-alert:hover .quota-alert-tooltip,
-.quota-alert:focus-within .quota-alert-tooltip { opacity: 1; visibility: visible; }
+.quota-alert-tooltip[hidden] { display: none; }
+.quota-alert[data-open="true"] .quota-alert-tooltip { opacity: 1; visibility: visible; }
 .quota-meter-stale .quota-heading > strong { color: var(--muted); font-size: 11px; }
 .quota-meter-stale .quota-track span { opacity: .45; }
 
