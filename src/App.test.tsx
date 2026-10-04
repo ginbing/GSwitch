@@ -1271,6 +1271,48 @@ describe("GSwitch account workspace", () => {
     expect(within(card).queryByRole("button", { name: /Quota update failed|Quota awaiting update/ })).not.toBeInTheDocument();
   });
 
+  it("keeps quota details inside the window when the warning is near an edge or the page scrolls", async () => {
+    vi.stubGlobal("innerWidth", 700);
+    vi.stubGlobal("innerHeight", 520);
+    let anchor = new DOMRect(665, 480, 22, 22);
+    const originalRect = HTMLElement.prototype.getBoundingClientRect;
+    const measure = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      if (this.classList.contains("quota-alert")) return anchor;
+      if (this.classList.contains("quota-alert-tooltip")) {
+        return new DOMRect(anchor.x + parseFloat(this.style.left || "-4"), anchor.y + parseFloat(this.style.top || "26"), 250, 130);
+      }
+      return originalRect.call(this);
+    });
+    try {
+      mocks.listAccounts.mockResolvedValue([chatAccount]);
+      mocks.accountQuota.mockResolvedValue(staleQuota);
+      mocks.refreshAccountQuota.mockRejectedValue({ code: "network" });
+      render(<App />);
+      await userEvent.click(await screen.findByRole("button", { name: "Quota update failed for person@example.com" }));
+      const details = screen.getByRole("tooltip");
+      let bounds = details.getBoundingClientRect();
+      expect(bounds.bottom).toBeLessThan(anchor.top);
+      expect(bounds.right).toBeLessThanOrEqual(window.innerWidth - 8);
+      expect(bounds.left).toBeGreaterThanOrEqual(8);
+
+      anchor = new DOMRect(16, 16, 22, 22);
+      fireEvent.scroll(window);
+      bounds = details.getBoundingClientRect();
+      expect(bounds.top).toBeGreaterThan(anchor.bottom);
+      expect(bounds.bottom).toBeLessThanOrEqual(window.innerHeight - 8);
+      expect(bounds.left).toBeGreaterThanOrEqual(8);
+
+      anchor = new DOMRect(665, 480, 22, 22);
+      fireEvent.resize(window);
+      bounds = details.getBoundingClientRect();
+      expect(bounds.bottom).toBeLessThanOrEqual(window.innerHeight - 8);
+      expect(bounds.right).toBeLessThanOrEqual(window.innerWidth - 8);
+    } finally {
+      measure.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("describes stale data without a failure as awaiting an update and omits an invalid last-success time", async () => {
     mocks.listAccounts.mockResolvedValue([chatAccount]);
     mocks.accountQuota.mockResolvedValue({
