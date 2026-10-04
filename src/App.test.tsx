@@ -9,6 +9,14 @@ import type { AccountView, QuotaRefreshFailureCode, QuotaView, SwitchFailureCode
 // The second click of a two-click confirmation is ignored for 300 ms.
 const pastConfirmGuard = () => new Promise((resolve) => window.setTimeout(resolve, 320));
 
+async function confirmResetRow(row = 0) {
+  await userEvent.click(await screen.findByRole("button", { name: "Details" }));
+  const use = (await screen.findAllByRole("button", { name: /^Use the reset credit expiring/ }))[row]!;
+  await userEvent.click(use);
+  await pastConfirmGuard();
+  await userEvent.click(screen.getByRole("button", { name: /^Confirm the reset credit expiring/ }));
+}
+
 const mocks = vi.hoisted(() => ({
   runtimeInfo: vi.fn(),
   codexCliInfo: vi.fn(),
@@ -579,9 +587,23 @@ describe("GSwitch account workspace", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
   });
 
-  it("renders stale quota and requires a second explicit reset-credit confirmation", async () => {
+  it("lists each reset credit with its own button that needs a second click", async () => {
     mocks.listAccounts.mockResolvedValue([chatAccount]);
-    mocks.accountQuota.mockResolvedValue(staleQuota);
+    const withTitles: QuotaView = {
+      ...staleQuota,
+      snapshot: {
+        ...staleQuota.snapshot!,
+        reset_credits: {
+          ...staleQuota.snapshot!.reset_credits!,
+          usable_credits: [
+            { expires_at: 1893456000, title: "Full reset (Weekly + 5 hr)" },
+            { expires_at: 1894060800 },
+          ],
+        },
+      },
+    };
+    mocks.accountQuota.mockResolvedValue(withTitles);
+    mocks.refreshAccountQuota.mockResolvedValue(withTitles);
     render(<App />);
 
     expect(await screen.findByText("Personal")).toBeInTheDocument();
@@ -589,15 +611,46 @@ describe("GSwitch account workspace", () => {
     expect(screen.getByText("Last 30%")).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: "Details" }));
-    expect(await screen.findByRole("dialog", { name: "Use a reset credit · person@example.com" })).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Use reset credit" }));
-    expect(mocks.redeemResetCredit).not.toHaveBeenCalled();
-    expect(screen.getByText("Use the earliest eligible reset credit for person@example.com?")).toBeInTheDocument();
+    const dialog = await screen.findByRole("dialog", { name: "Reset credits · person@example.com" });
+    expect(within(dialog).getByText("2 available")).toBeInTheDocument();
+    expect(within(dialog).getByText("Full reset (Weekly + 5 hr)")).toBeInTheDocument();
+    expect(within(dialog).getByText("Usage limit reset")).toBeInTheDocument();
+    expect(within(dialog).queryByText("Personal")).not.toBeInTheDocument();
 
-    await userEvent.click(screen.getByRole("button", { name: "Use earliest credit" }));
+    const [first] = within(dialog).getAllByRole("button", { name: /^Use the reset credit expiring/ });
+    await userEvent.click(first!);
+    expect(mocks.redeemResetCredit).not.toHaveBeenCalled();
+    expect(within(dialog).getByRole("button", { name: /^Confirm the reset credit expiring/ })).toHaveTextContent("Confirm");
+
+    await pastConfirmGuard();
+    await userEvent.click(within(dialog).getByRole("button", { name: /^Confirm the reset credit expiring/ }));
     await waitFor(() =>
-      expect(mocks.redeemResetCredit).toHaveBeenCalledWith("account-1", { expires_at: 1893456000 }),
+      expect(mocks.redeemResetCredit).toHaveBeenCalledWith("account-1", { expires_at: 1893456000, title: "Full reset (Weekly + 5 hr)" }),
     );
+  });
+
+  it("redeems the credit on the row the user picks, not the earliest", async () => {
+    mocks.listAccounts.mockResolvedValue([chatAccount]);
+    mocks.accountQuota.mockResolvedValue(staleQuota);
+    render(<App />);
+
+    await confirmResetRow(1);
+
+    await waitFor(() =>
+      expect(mocks.redeemResetCredit).toHaveBeenCalledWith("account-1", { expires_at: 1894060800 }),
+    );
+  });
+
+  it("adds the workspace to the reset title only when the email alone is ambiguous", async () => {
+    const teamAccount = { ...chatAccount, id: "account-2", workspace_name: "Team" };
+    mocks.listAccounts.mockResolvedValue([chatAccount, teamAccount]);
+    mocks.accountQuota.mockImplementation(async (accountId: string) => ({ ...staleQuota, account_id: accountId }));
+    render(<App />);
+
+    const [details] = await screen.findAllByRole("button", { name: "Details" });
+    await userEvent.click(details!);
+
+    expect(await screen.findByRole("dialog", { name: "Reset credits · person@example.com · Personal" })).toBeInTheDocument();
   });
 
   it("shows the quota a reset returns on the card without a manual refresh", async () => {
@@ -630,21 +683,13 @@ describe("GSwitch account workspace", () => {
       expect(container.querySelector(".credit-count strong")?.textContent).toBe("2"),
     );
 
-    await userEvent.click(screen.getByRole("button", { name: "Details" }));
-    await userEvent.click(await screen.findByRole("button", { name: "Use reset credit" }));
-    await userEvent.click(screen.getByRole("button", { name: "Use earliest credit" }));
+    await confirmResetRow();
 
     await waitFor(() =>
       expect(container.querySelector(".credit-count strong")?.textContent).toBe("1"),
     );
     expect(mocks.refreshAccountQuota).not.toHaveBeenCalledWith("account-1", false);
   });
-
-  async function confirmFirstReset() {
-    await userEvent.click(await screen.findByRole("button", { name: "Details" }));
-    await userEvent.click(await screen.findByRole("button", { name: "Use reset credit" }));
-    await userEvent.click(screen.getByRole("button", { name: "Use earliest credit" }));
-  }
 
   it("names the account and the credit a reset used", async () => {
     mocks.listAccounts.mockResolvedValue([chatAccount]);
@@ -656,7 +701,7 @@ describe("GSwitch account workspace", () => {
     });
     render(<App />);
 
-    await confirmFirstReset();
+    await confirmResetRow();
 
     expect(await screen.findByText(/^Used the reset credit expiring .+ for person@example.com\.$/)).toBeInTheDocument();
   });
@@ -667,7 +712,7 @@ describe("GSwitch account workspace", () => {
     mocks.redeemResetCredit.mockResolvedValue({ account_id: "account-1", outcome: "nothing_to_reset" });
     render(<App />);
 
-    await confirmFirstReset();
+    await confirmResetRow();
 
     expect(await screen.findByText("person@example.com doesn't need a reset right now. No credit was used.")).toBeInTheDocument();
   });
@@ -678,7 +723,7 @@ describe("GSwitch account workspace", () => {
     mocks.redeemResetCredit.mockRejectedValue({ code: "result_unknown" });
     render(<App />);
 
-    await confirmFirstReset();
+    await confirmResetRow();
 
     expect(await screen.findByText(
       "GSwitch couldn't confirm whether the reset went through. The request is saved; retrying uses the same credit and won't use another.",
@@ -694,7 +739,7 @@ describe("GSwitch account workspace", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "Refresh" }));
     await userEvent.click(screen.getByRole("button", { name: "Details" }));
-    const dialog = await screen.findByRole("dialog", { name: "Use a reset credit · person@example.com" });
+    const dialog = await screen.findByRole("dialog", { name: "Reset credits · person@example.com" });
 
     expect(within(dialog).queryByText("Working…")).not.toBeInTheDocument();
     const close = within(dialog).getByRole("button", { name: /^Close / });
@@ -721,9 +766,7 @@ describe("GSwitch account workspace", () => {
     render(<App />);
 
     expect(await screen.findByText("Personal")).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Details" }));
-    await userEvent.click(await screen.findByRole("button", { name: "Use reset credit" }));
-    await userEvent.click(screen.getByRole("button", { name: "Use earliest credit" }));
+    await confirmResetRow();
 
     expect(await screen.findByText("A reset hasn't been confirmed")).toBeInTheDocument();
   });

@@ -333,6 +333,9 @@ pub struct ResetCreditDetailView {
     /// the provider's credit ID to the WebView.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub granted_at: Option<i64>,
+    /// The provider's display title for the credit, such as "Full reset".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
 }
 
 /// Rust-owned reset-credit data. The opaque ID is never part of a Tauri
@@ -360,6 +363,8 @@ pub struct StoredResetCredit {
     pub reset_type: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub granted_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]

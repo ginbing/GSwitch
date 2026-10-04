@@ -1267,6 +1267,7 @@ fn normalize_stored_reset_credits(result: &Value) -> Option<StoredResetCredits> 
                             .get("grantedAt")
                             .or_else(|| value.get("granted_at"))
                             .and_then(unix_seconds_at),
+                        title: string_at(value.get("title")),
                     })
                 })
                 .collect(),
@@ -1291,6 +1292,7 @@ fn reset_credits_view(credits: &StoredResetCredits, now_seconds: i64) -> ResetCr
                 .map(|credit| ResetCreditDetailView {
                     expires_at: credit.expires_at,
                     granted_at: credit.granted_at,
+                    title: credit.title.clone(),
                 })
                 .collect::<Vec<_>>()
         })
@@ -1857,6 +1859,7 @@ mod tests {
                     expires_at: Some(99),
                     reset_type: None,
                     granted_at: None,
+                    title: None,
                 },
                 StoredResetCredit {
                     id: "later".into(),
@@ -1864,6 +1867,7 @@ mod tests {
                     expires_at: Some(300),
                     reset_type: None,
                     granted_at: None,
+                    title: None,
                 },
                 StoredResetCredit {
                     id: "without-expiry".into(),
@@ -1871,6 +1875,7 @@ mod tests {
                     expires_at: None,
                     reset_type: None,
                     granted_at: None,
+                    title: None,
                 },
                 StoredResetCredit {
                     id: "first".into(),
@@ -1878,6 +1883,7 @@ mod tests {
                     expires_at: Some(200),
                     reset_type: None,
                     granted_at: None,
+                    title: None,
                 },
             ]),
             details_read_at_unix_ms: None,
@@ -1911,6 +1917,7 @@ mod tests {
                     expires_at: Some(200),
                     reset_type: None,
                     granted_at: Some(10),
+                    title: None,
                 },
                 StoredResetCredit {
                     id: "later".into(),
@@ -1918,6 +1925,7 @@ mod tests {
                     expires_at: Some(300),
                     reset_type: None,
                     granted_at: Some(20),
+                    title: None,
                 },
             ]),
             details_read_at_unix_ms: None,
@@ -1939,6 +1947,7 @@ mod tests {
             vec![ResetCreditDetailView {
                 expires_at: Some(300),
                 granted_at: Some(20),
+                title: None,
             }]
         );
         assert_eq!(current.nearest_expiry, Some(300));
@@ -1953,6 +1962,7 @@ mod tests {
                 expires_at: Some(4_000_000_000),
                 reset_type: None,
                 granted_at: None,
+                title: None,
             }]),
             details_read_at_unix_ms: read_at,
         }
@@ -2014,6 +2024,30 @@ mod tests {
         assert!(view.details_available);
         assert!(view.can_redeem);
         assert_eq!(view.usable_credits.len(), 1);
+    }
+
+    #[test]
+    fn the_provider_title_of_a_credit_reaches_the_view() {
+        let normalized = normalize_rate_limits_data(
+            &json!({
+                "rateLimits": {"limitId": "codex"},
+                "rateLimitResetCredits": {
+                    "availableCount": 1,
+                    "credits": [{
+                        "id": "opaque",
+                        "status": "available",
+                        "expiresAt": 900,
+                        "title": "Full reset (Weekly + 5 hr)"
+                    }]
+                }
+            }),
+            100_000,
+        );
+        let view = normalized.snapshot.reset_credits.expect("credit view");
+        assert_eq!(
+            view.usable_credits[0].title.as_deref(),
+            Some("Full reset (Weekly + 5 hr)")
+        );
     }
 
     #[test]

@@ -223,6 +223,9 @@ as applicable:
 - a dialog staying closable while unrelated work such as a full refresh runs;
 - two-click confirmations ignoring a double-click and disarming on an outside
   click;
+- the reset dialog listing each credit with its provider title and its own
+  two-click button, redeeming the picked row, and naming the workspace only
+  for an ambiguous email;
 - the card showing the quota a reset returns without a manual refresh, and a
   failed reset reloading state so the recovery prompt appears;
 - browser-login cancellation, selected-file import boundaries, account-space

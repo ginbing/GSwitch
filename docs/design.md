@@ -56,9 +56,13 @@ action bar. It remains a card-grid interaction. Export always opens a focused
 warning before the native save dialog because its portable JSON contains
 unencrypted credentials.
 
-Reset credits remain compact in the row. Details and the destructive
-**Use reset** confirmation appear only on demand, with the earliest-expiring
-eligible credit presented first.
+Reset credits remain compact in the row. **Details** opens a list like Codex's
+own usage resets: an available count, then one row per credit with the
+provider's title, its expiry and relative time, and its own **Use** button that
+becomes **Confirm** on the first click. The user picks which credit to use;
+credits are listed soonest-expiring first, and a note counts any the provider
+did not list. The dialog title names the account email, adding the workspace
+only when the email alone is ambiguous.
 
 The empty state is two deliberate choices: import one or more export files the
 user selects, or add an account manually. The add dialog groups the normal path

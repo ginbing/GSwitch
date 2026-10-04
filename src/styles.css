@@ -1564,17 +1564,39 @@ textarea {
   list-style: none;
 }
 
+.credit-list-head {
+  display: flex;
+  justify-content: flex-end;
+}
+
 .credit-list {
-  max-height: 150px;
+  max-height: 300px;
   overflow: auto;
-  margin: 17px 0 0;
+  margin: 12px 0 0;
   border: 1px solid var(--border);
   border-radius: 10px;
 }
 
+.credit-copy {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.credit-copy small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.credit-unlisted {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .credit-list li {
   display: flex;
-  min-height: 39px;
+  min-height: 56px;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
