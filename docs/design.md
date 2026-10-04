@@ -67,11 +67,13 @@ credits are listed soonest-expiring first, and a note counts any the provider
 did not list. The dialog title names the account email, adding the workspace
 only when the email alone is ambiguous.
 
-The empty state is two deliberate choices: import one or more export files the
-user selects, or add an account manually. The add dialog groups the normal path
-as **Import existing** (Find on this computer and Choose files) then **Add
-new** (official Codex sign-in). Pasted auth JSON and API key remain an **Other
-methods** disclosure. One concise privacy note says that GSwitch reads only
+The empty state and the add dialog share the same choices: a prominent
+**Sign in** action starts official Codex browser sign-in directly, followed by
+**Find on this computer** and **Choose files**. Pasted auth JSON and API key
+remain an **Other methods** disclosure. Browser actions use a tabbed-window
+icon; the globe belongs only to the language menu. The notice for an unsaved
+current account retains its **Save current account** shortcut. One concise
+privacy note says that GSwitch reads only
 accounts the user chooses to import and does not change their source. The local
 preview explains its allowlist before scanning and keeps already-saved
 identities disabled.

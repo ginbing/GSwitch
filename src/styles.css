@@ -1054,8 +1054,8 @@ summary:focus-visible {
 }
 
 .first-run {
-  display: grid;
-  grid-template-columns: minmax(0, 1.25fr) minmax(250px, 0.75fr);
+  width: min(100%, 600px);
+  margin-inline: auto;
   overflow: hidden;
   border: 1px solid var(--border);
   border-radius: 15px;
@@ -1064,7 +1064,7 @@ summary:focus-visible {
 }
 
 .first-run-primary {
-  padding: clamp(28px, 4vw, 44px);
+  padding: clamp(24px, 3vw, 32px);
 }
 
 .first-run h2 {
@@ -1082,39 +1082,9 @@ summary:focus-visible {
   line-height: 1.55;
 }
 
-.first-run-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 9px;
+.first-run .add-methods {
   margin-top: 23px;
-}
-
-.first-run-methods {
-  display: grid;
-  align-content: center;
-  gap: 0;
-  padding: 18px clamp(20px, 3vw, 32px);
-  border-left: 1px solid var(--border);
-  background: var(--surface-soft);
-}
-
-.first-run-methods div {
-  display: flex;
-  min-height: 72px;
-  align-items: center;
-  gap: 11px;
-  border-bottom: 1px solid var(--border);
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 620;
-}
-
-.first-run-methods div:last-child {
-  border-bottom: 0;
-}
-
-.first-run-methods svg {
-  color: var(--accent);
+  padding: 0;
 }
 
 .modal-backdrop {
@@ -1225,21 +1195,7 @@ summary:focus-visible {
 
 .add-methods {
   display: grid;
-  gap: 14px;
-}
-
-.add-method-group {
-  display: grid;
-  gap: 8px;
-}
-
-.add-method-group h3 {
-  margin: 0 2px;
-  color: var(--soft-muted);
-  font-size: 10.5px;
-  font-weight: 760;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  gap: 10px;
 }
 
 .add-other-methods {
@@ -1275,7 +1231,7 @@ summary:focus-visible {
   text-align: left;
 }
 
-.add-method-card:hover {
+.add-method-card:hover:not(:disabled) {
   border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
   background: var(--surface-hover);
 }
@@ -1309,6 +1265,29 @@ summary:focus-visible {
 
 .add-method-card > svg {
   color: var(--soft-muted);
+}
+
+.add-method-sign-in {
+  --accent: #535fe7;
+  --accent-hover: #434ed6;
+  border-color: var(--accent);
+  color: white;
+  background: var(--accent);
+}
+
+.add-method-sign-in:hover:not(:disabled) {
+  border-color: var(--accent-hover);
+  background: var(--accent-hover);
+}
+
+.add-method-sign-in small,
+.add-method-sign-in > svg {
+  color: white;
+}
+
+.add-method-sign-in .method-icon {
+  color: white;
+  background: rgba(255, 255, 255, 0.16);
 }
 
 .dialog-footnote {
@@ -1861,14 +1840,6 @@ textarea {
     justify-content: flex-start;
   }
 
-  .first-run {
-    grid-template-columns: 1fr;
-  }
-
-  .first-run-methods {
-    border-top: 1px solid var(--border);
-    border-left: 0;
-  }
 }
 
 @media (max-width: 510px) {

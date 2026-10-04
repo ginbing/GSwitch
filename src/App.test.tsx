@@ -291,8 +291,9 @@ describe("GSwitch account workspace", () => {
 
     expect(await screen.findByRole("heading", { name: "已保存 0 个账户" })).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "添加账户" }));
-    expect(await screen.findByRole("dialog", { name: "添加 Codex 账户" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /粘贴 auth JSON/ })).toBeInTheDocument();
+    const dialog = await screen.findByRole("dialog", { name: "添加 Codex 账户" });
+    await userEvent.click(within(dialog).getByText("其他方式"));
+    expect(within(dialog).getByRole("button", { name: /粘贴 auth JSON/ })).toBeVisible();
   });
 
   it("applies and remembers a manual language choice immediately", async () => {
@@ -315,28 +316,76 @@ describe("GSwitch account workspace", () => {
     expect(screen.getByRole("button", { name: "完成" })).toHaveAttribute("aria-pressed", "true");
   });
 
-  it("guides a first-time user to an explicit import or manual add", async () => {
+  it("offers the same sign-in and import choices on first use and in Add account", async () => {
     render(<App />);
 
     expect(await screen.findByRole("heading", { name: "0 saved accounts" })).toBeInTheDocument();
-    expect(screen.getByText(/scans this computer only when you choose to/i)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Import account files" })).toBeInTheDocument();
+    const firstRun = screen.getByRole("heading", { name: "Add your Codex accounts" }).closest("section")!;
+    expect(within(firstRun).getAllByRole("button").slice(0, 3).map((button) => button.querySelector("strong")?.textContent))
+      .toEqual(["Sign in", "Find on this computer", "Choose files"]);
+    expect(within(firstRun).getByText("Paste auth JSON")).not.toBeVisible();
+    expect(screen.queryByText("Add manually")).not.toBeInTheDocument();
 
-    await userEvent.click(screen.getByRole("button", { name: "Add manually" }));
+    await userEvent.click(screen.getByRole("button", { name: "Add account" }));
     const dialog = await screen.findByRole("dialog", { name: "Add a Codex account" });
-    expect(dialog).toBeInTheDocument();
+    expect(within(dialog).getAllByRole("button").slice(1, 4).map((button) => button.querySelector("strong")?.textContent))
+      .toEqual(["Sign in", "Find on this computer", "Choose files"]);
+    expect(within(dialog).getByText("Paste auth JSON")).not.toBeVisible();
+    await userEvent.click(within(dialog).getByText("Other methods"));
     expect(within(dialog).getByRole("button", { name: /Paste auth JSON/ })).toBeInTheDocument();
-    expect(within(dialog).getByText("Import existing")).toBeInTheDocument();
-    expect(within(dialog).getByText("Add new")).toBeInTheDocument();
+    expect(within(dialog).queryByText("Import existing")).not.toBeInTheDocument();
+    expect(within(dialog).queryByText("Add new")).not.toBeInTheDocument();
     expect(within(dialog).getByRole("button", { name: /Choose files/ })).toBeInTheDocument();
     expect(within(dialog).getByText(/Select one or more account files/i)).toBeInTheDocument();
+  });
+
+  it("starts browser sign-in directly from first use and blocks another start while pending", async () => {
+    let finishStart!: (value: { login_id: string; auth_url: string }) => void;
+    mocks.startOAuth.mockImplementation(() => new Promise((resolve) => { finishStart = resolve; }));
+    render(<App />);
+    const signIn = await screen.findByRole("button", { name: /^Sign in / });
+    await userEvent.dblClick(signIn);
+    expect(mocks.startOAuth).toHaveBeenCalledExactlyOnceWith(undefined);
+    expect(signIn).toBeDisabled();
+    expect(screen.getByRole("button", { name: /^Find on this computer/ })).toBeDisabled();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+
+    finishStart({ login_id: "login-1", auth_url: "https://example.com/sign-in" });
+    expect(await screen.findByText("Finish sign-in in your browser")).toBeInTheDocument();
+    expect(mocks.openOAuth).not.toHaveBeenCalled();
+    expect(mocks.discoverLocalAccounts).not.toHaveBeenCalled();
+    expect(mocks.importAuthFiles).not.toHaveBeenCalled();
+  });
+
+  it("keeps first-use choices available when browser sign-in cannot start", async () => {
+    mocks.startOAuth.mockRejectedValue("network");
+    render(<App />);
+    await userEvent.click(await screen.findByRole("button", { name: /^Sign in / }));
+    expect(await screen.findByRole("alert")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Sign in / })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /^Choose files/ })).toBeEnabled();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("opens other methods directly from the Chinese first-use screen", async () => {
+    Object.defineProperty(window.navigator, "language", { configurable: true, value: "zh-CN" });
+    render(<App />);
+    expect(await screen.findByRole("heading", { name: "添加你的 Codex 账户" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^登录 / })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^从本机查找/ })).toBeInTheDocument();
+    await userEvent.click(screen.getByText("其他方式"));
+    await userEvent.click(screen.getByRole("button", { name: /^粘贴 auth JSON/ }));
+    const dialog = await screen.findByRole("dialog", { name: "添加 Codex 账户" });
+    expect(within(dialog).getByRole("textbox", { name: "auth.json" })).toBeInTheDocument();
+    expect(mocks.startOAuth).not.toHaveBeenCalled();
+    expect(mocks.discoverLocalAccounts).not.toHaveBeenCalled();
   });
 
   it("keeps keyboard focus in a dialog and returns it to the launcher", async () => {
     const user = userEvent.setup();
     render(<App />);
     await screen.findByRole("heading", { name: "0 saved accounts" });
-    const launcher = screen.getByRole("button", { name: "Add manually" });
+    const launcher = screen.getByRole("button", { name: "Add account" });
     await user.click(launcher);
     const dialog = screen.getByRole("dialog", { name: "Add a Codex account" });
     expect(dialog).toHaveFocus();
@@ -430,7 +479,6 @@ describe("GSwitch account workspace", () => {
     expect(await screen.findByRole("heading", { name: "0 saved accounts" })).toBeInTheDocument();
     expect(mocks.discoverLocalAccounts).not.toHaveBeenCalled();
 
-    await userEvent.click(screen.getByRole("button", { name: "Add manually" }));
     await userEvent.click(screen.getByRole("button", { name: /Find on this computer/ }));
     expect(screen.getByText(/Nothing is imported until you select accounts/i)).toBeInTheDocument();
     expect(mocks.discoverLocalAccounts).not.toHaveBeenCalled();
@@ -463,8 +511,7 @@ describe("GSwitch account workspace", () => {
     });
     render(<App />);
 
-    await userEvent.click(await screen.findByRole("button", { name: "Add manually" }));
-    await userEvent.click(screen.getByRole("button", { name: /Find on this computer/ }));
+    await userEvent.click(await screen.findByRole("button", { name: /Find on this computer/ }));
     await userEvent.click(screen.getByRole("button", { name: "Scan supported locations" }));
 
     expect(await screen.findByText("person@example.com")).toBeInTheDocument();
@@ -485,8 +532,7 @@ describe("GSwitch account workspace", () => {
     mocks.discoverLocalAccounts.mockResolvedValue({ candidates: [] });
     render(<App />);
 
-    await userEvent.click(await screen.findByRole("button", { name: "Add manually" }));
-    await userEvent.click(screen.getByRole("button", { name: /Find on this computer/ }));
+    await userEvent.click(await screen.findByRole("button", { name: /Find on this computer/ }));
     await userEvent.click(screen.getByRole("button", { name: "Choose another Cockpit folder" }));
 
     await waitFor(() => expect(mocks.discoverLocalAccounts).toHaveBeenCalledWith("C:\\custom\\cockpit"));
@@ -503,7 +549,7 @@ describe("GSwitch account workspace", () => {
     });
     render(<App />);
 
-    await userEvent.click(await screen.findByRole("button", { name: "Import account files" }));
+    await userEvent.click(await screen.findByRole("button", { name: /^Choose files/ }));
     await waitFor(() =>
       expect(mocks.importAuthFiles).toHaveBeenCalledWith([
         "C:\\exports\\one.json",
@@ -518,7 +564,7 @@ describe("GSwitch account workspace", () => {
     vi.mocked(open).mockResolvedValue(["C:\\exports\\one.json"]);
     render(<App />);
 
-    await userEvent.click(await screen.findByRole("button", { name: "Import account files" }));
+    await userEvent.click(await screen.findByRole("button", { name: /^Choose files/ }));
     await waitFor(() => expect(mocks.importAuthFiles).toHaveBeenCalledWith(["C:\\exports\\one.json"]));
   });
 
@@ -538,7 +584,7 @@ describe("GSwitch account workspace", () => {
     mocks.refreshAccountQuota.mockRejectedValue(new Error("quota cache unavailable"));
     render(<App />);
 
-    await userEvent.click(await screen.findByRole("button", { name: "Import account files" }));
+    await userEvent.click(await screen.findByRole("button", { name: /^Choose files/ }));
     expect(await screen.findByRole("heading", { name: "person@example.com" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Switch to person@example.com" })).toBeEnabled();
   });
@@ -1644,7 +1690,7 @@ describe("GSwitch account workspace", () => {
 
     await userEvent.click(screen.getByRole("button", { name: /^Add account$/ }));
     const dialog = await screen.findByRole("dialog", { name: "Add a Codex account" });
-    await userEvent.click(within(dialog).getByRole("button", { name: /Sign in to add an account/ }));
+    await userEvent.click(within(dialog).getByRole("button", { name: /^Sign in / }));
     expect(await screen.findByText("Finish sign-in in your browser")).toBeInTheDocument();
     expect(mocks.openOAuth).not.toHaveBeenCalled();
 
@@ -1659,7 +1705,7 @@ describe("GSwitch account workspace", () => {
       .mockResolvedValue({ status: "complete", account: chatAccount });
     render(<App />);
     await userEvent.click(await screen.findByRole("button", { name: /^Add account$/ }));
-    await userEvent.click(screen.getByRole("button", { name: /Sign in to add an account/ }));
+    await userEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: /^Sign in / }));
 
     expect(await screen.findByText(/cannot check the sign-in result right now/i)).toBeInTheDocument();
     expect(screen.getByRole("dialog", { name: "Add a Codex account" })).toBeInTheDocument();
@@ -1676,7 +1722,7 @@ describe("GSwitch account workspace", () => {
       .mockResolvedValue({ status: "complete", account: { ...chatAccount, needs_apply: true }, cleanup_warning: false });
     render(<App />);
     await userEvent.click(await screen.findByRole("button", { name: /^Add account$/ }));
-    await userEvent.click(screen.getByRole("button", { name: /Sign in to add an account/ }));
+    await userEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: /^Sign in / }));
     expect(await screen.findByText("Finishing sign-in…")).toBeInTheDocument();
     await userEvent.click(await screen.findByRole("button", { name: "Retry saving" }));
     expect(mocks.retryOAuth).toHaveBeenCalledWith("login-1");
