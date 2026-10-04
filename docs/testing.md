@@ -221,6 +221,8 @@ as applicable:
 - frontend clearing secret inputs, confirming reset consumption, and disabling
   conflicting actions;
 - a dialog staying closable while unrelated work such as a full refresh runs;
+- two-click confirmations ignoring a double-click and disarming on an outside
+  click;
 - the card showing the quota a reset returns without a manual refresh, and a
   failed reset reloading state so the recovery prompt appears;
 - browser-login cancellation, selected-file import boundaries, account-space

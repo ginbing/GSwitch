@@ -170,7 +170,11 @@ filesystem, protocol, or token details do not belong in the primary UI.
 When completion is unknown, say so and keep checking the existing operation;
 do not call it failed or stopped solely because a status query failed. A
 reset-credit confirmation names the account email, and an unencrypted export
-warns about credential access before the first Continue action. Unknown quota
+warns about credential access before anything is written. Irreversible
+actions (using a reset credit, exporting unencrypted accounts, clearing a
+damaged account store) take two clicks on the same button, as Codex's own
+reset button does: the first click changes it to a confirm label, a second
+click within 300 ms is ignored, and pressing anywhere else disarms it. Unknown quota
 shows an actionable Refresh control rather than a disabled Wake action whose
 only explanation is a tooltip. Update copy names the available version and
 each actual phase without promising that signing protects account data.

@@ -434,6 +434,43 @@ function wakeSummary(wake: WakeOperationView, t: Translator) {
   ] as const).filter(([, count]) => count > 0).map(([key, count]) => t(key, { count })).join(" · ");
 }
 
+// Irreversible actions take two clicks on the same button, as Codex's own
+// reset button does. A second click within 300 ms of the first is ignored so a
+// double-click cannot act on its own, and pressing anywhere else disarms it.
+const CONFIRM_GUARD_MS = 300;
+
+function useConfirmClick() {
+  const [armed, setArmed] = useState<string | null>(null);
+  const armedAt = useRef(0);
+
+  useEffect(() => {
+    if (armed === null) return;
+    const disarmElsewhere = (event: PointerEvent) => {
+      const target = event.target instanceof Element ? event.target : null;
+      if (target?.closest("[data-confirm]")?.getAttribute("data-confirm") !== armed) {
+        setArmed(null);
+      }
+    };
+    document.addEventListener("pointerdown", disarmElsewhere, true);
+    return () => document.removeEventListener("pointerdown", disarmElsewhere, true);
+  }, [armed]);
+
+  const click = (id: string, action: () => void) => {
+    if (armed !== id) {
+      setArmed(id);
+      armedAt.current = Date.now();
+      return;
+    }
+    if (Date.now() - armedAt.current < CONFIRM_GUARD_MS) {
+      return;
+    }
+    setArmed(null);
+    action();
+  };
+
+  return { armed, click, disarm: () => setArmed(null) };
+}
+
 function Modal({
   title,
   children,
@@ -1017,7 +1054,7 @@ export default function App() {
   const [addMethod, setAddMethod] = useState<AddMethod>("start");
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedAccountIds, setSelectedAccountIds] = useState<string[]>([]);
-  const [exportConfirmation, setExportConfirmation] = useState(false);
+  const confirm = useConfirmClick();
   const [migrationPreview, setMigrationPreview] = useState<MigrationPreview | null>(null);
   const [migrationRoot, setMigrationRoot] = useState<string | undefined>();
   const [migrationSelection, setMigrationSelection] = useState<string[]>([]);
@@ -1032,7 +1069,6 @@ export default function App() {
   const [removeAccount, setRemoveAccount] = useState<AccountView | null>(null);
   const [removeError, setRemoveError] = useState<string | null>(null);
   const [resetConfirmation, setResetConfirmation] = useState(false);
-  const [storageResetConfirmation, setStorageResetConfirmation] = useState(false);
   const [pendingUpdate, setPendingUpdate] = useState<PendingUpdate | null>(null);
   const [cliInfo, setCliInfo] = useState<CodexCliInfo | null>(null);
   const [cliChecking, setCliChecking] = useState(false);
@@ -1835,17 +1871,13 @@ export default function App() {
   };
 
   const exportSelectedAccounts = async () => {
-    if (!exportConfirmation) {
-      setExportConfirmation(true);
-      return;
-    }
     const result = await runTask(
       "export-accounts",
       () => api.exportAccounts(selectedAccountIds),
       false,
     );
     if (result) {
-      setExportConfirmation(false);
+      confirm.disarm();
       setDialog(null);
       if (!result.cancelled) {
         setNotice({
@@ -1971,16 +2003,12 @@ export default function App() {
   };
 
   const resetDamagedAccountStore = async () => {
-    if (!storageResetConfirmation) {
-      setStorageResetConfirmation(true);
-      return;
-    }
     const completed = await runVoidTask(
       "reset-damaged-store",
       api.resetDamagedAccountStore,
     );
     if (completed) {
-      setStorageResetConfirmation(false);
+      confirm.disarm();
       setDialog(null);
       setNotice({
         kind: "success",
@@ -2022,7 +2050,7 @@ export default function App() {
         body: t("safety.storageBody"),
         action: t("safety.reviewRecovery"),
         onAction: () => {
-          setStorageResetConfirmation(false);
+          confirm.disarm();
           setDialog("storage-recovery");
         },
       };
@@ -2245,7 +2273,7 @@ export default function App() {
                   className="button button-primary"
                   disabled={busy !== null || selectedAccountIds.length === 0}
                   onClick={() => {
-                    setExportConfirmation(false);
+                    confirm.disarm();
                     setDialog("export");
                   }}
                   type="button"
@@ -2269,7 +2297,7 @@ export default function App() {
               <button
                 className="button button-primary"
                 onClick={() => {
-                  setStorageResetConfirmation(false);
+                  confirm.disarm();
                   setDialog("storage-recovery");
                 }}
                 type="button"
@@ -2595,29 +2623,21 @@ export default function App() {
         <Modal
           dismissible={!runningAny("export-accounts")}
           onClose={() => {
-            setExportConfirmation(false);
+            confirm.disarm();
             setDialog(null);
           }}
           t={t}
-          title={t("export.title")}
+          title={t(selectedAccountIds.length === 1 ? "export.headingOne" : "export.headingMany", { count: formatNumber(selectedAccountIds.length, locale.formatLocale) })}
         >
           <div className="confirm-panel">
             <ShieldAlert size={26} />
-            <h3>{t(selectedAccountIds.length === 1 ? "export.headingOne" : "export.headingMany", { count: formatNumber(selectedAccountIds.length, locale.formatLocale) })}</h3>
             <p>{t("export.body")}</p>
-            {!exportConfirmation ? <p className="inline-warning"><CircleAlert size={17} />{t("export.warning")}</p> : null}
-            {exportConfirmation ? (
-              <div className="confirm-copy">
-                <strong>{t("export.question", { count: formatNumber(selectedAccountIds.length, locale.formatLocale) })}</strong>
-                <p>{t("export.warning")}</p>
-              </div>
-            ) : null}
             <div className="modal-actions">
               <button
                 className="button button-secondary"
                 disabled={busy !== null}
                 onClick={() => {
-                  setExportConfirmation(false);
+                  confirm.disarm();
                   setDialog(null);
                 }}
                 type="button"
@@ -2626,12 +2646,13 @@ export default function App() {
               </button>
               <button
                 className="button button-danger"
+                data-confirm="export"
                 disabled={busy !== null || selectedAccountIds.length === 0}
-                onClick={() => void exportSelectedAccounts()}
+                onClick={() => confirm.click("export", () => void exportSelectedAccounts())}
                 type="button"
               >
                 {busy === "export-accounts" ? <LoaderCircle className="spin" size={16} /> : <Download size={16} />}
-                {exportConfirmation ? t("export.write") : t("common.continue")}
+                {confirm.armed === "export" ? t("export.confirm") : t("export.write")}
               </button>
             </div>
           </div>
@@ -2642,7 +2663,7 @@ export default function App() {
         <Modal
           dismissible={!runningAny("reset-damaged-store")}
           onClose={() => {
-            setStorageResetConfirmation(false);
+            confirm.disarm();
             setDialog(null);
           }}
           t={t}
@@ -2650,30 +2671,28 @@ export default function App() {
         >
           <div className="confirm-panel">
             <ShieldAlert size={26} />
-            <h3>{t("recovery.keepCodex")}</h3>
             <p>{t("recovery.storageBody")}</p>
-            <p>{t("recovery.storageExplanation")}</p>
-            {storageResetConfirmation ? (
-              <div className="confirm-copy">
-                <strong>{t("recovery.resetQuestion")}</strong>
-                <p>{t("recovery.resetExplanation")}</p>
-              </div>
-            ) : null}
             <div className="modal-actions">
               <button
                 className="button button-secondary"
                 disabled={busy !== null}
                 onClick={() => {
-                  setStorageResetConfirmation(false);
+                  confirm.disarm();
                   setDialog(null);
                 }}
                 type="button"
               >
                 {t("common.cancel")}
               </button>
-              <button className="button button-danger" disabled={busy !== null} onClick={() => void resetDamagedAccountStore()} type="button">
+              <button
+                className="button button-danger"
+                data-confirm="reset-storage"
+                disabled={busy !== null}
+                onClick={() => confirm.click("reset-storage", () => void resetDamagedAccountStore())}
+                type="button"
+              >
                 {busy === "reset-damaged-store" ? <LoaderCircle className="spin" size={16} /> : <ShieldAlert size={16} />}
-                {storageResetConfirmation ? t("recovery.resetStorage") : t("common.continue")}
+                {confirm.armed === "reset-storage" ? t("recovery.confirmResetStorage") : t("recovery.resetStorage")}
               </button>
             </div>
           </div>
