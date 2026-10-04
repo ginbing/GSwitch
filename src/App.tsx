@@ -53,6 +53,7 @@ import {
   type LanguagePreference,
   type Translator,
 } from "./i18n";
+import { RefreshLanes } from "./refreshLanes";
 import type {
   AccountView,
   CodexCliInfo,
@@ -92,6 +93,14 @@ type Dialog =
 
 type AddMethod = "start" | "oauth" | "json" | "api-key" | "migration";
 type AccountBusyAction = "refresh" | "wake" | "switch";
+
+interface QuotaRefreshEntry {
+  promise: Promise<QuotaView>;
+  // A user's refresh, as opposed to an automatic read.
+  manual: boolean;
+  // Whether its provider request has begun, so it can no longer be replaced.
+  started: boolean;
+}
 
 interface Notice {
   kind: "success" | "error" | "info";
@@ -1025,8 +1034,12 @@ export default function App() {
   const apiKeyRef = useRef<HTMLInputElement>(null);
   const dismissedUpdateVersions = useRef(new Set<string>());
   const updateCheckInFlight = useRef(false);
-  const quotaRefreshes = useRef(new Map<string, Promise<QuotaView>>());
-  const quotaRefreshQueue = useRef<Promise<void>>(Promise.resolve());
+  const quotaRefreshes = useRef(new Map<string, QuotaRefreshEntry>());
+  // Automatic reads go one at a time; a user's refresh gets its own lane of
+  // up to three read-only reads; only a saved sign-in that needs the official
+  // token refresh takes the credential lock, one account at a time.
+  const refreshLanes = useRef(new RefreshLanes({ background: 1, manual: 3, signIn: 1 }));
+  const [refreshProgress, setRefreshProgress] = useState<{ done: number; total: number } | null>(null);
   const accountOperations = useRef(new Set<string>());
   const snapshotSequence = useRef(0);
   const initialSnapshotLoaded = useRef(false);
@@ -1103,12 +1116,31 @@ export default function App() {
   };
 
   const requestQuotaRefresh = useCallback((accountId: string, background = false): Promise<QuotaView> => {
-    const inFlight = quotaRefreshes.current.get(accountId);
-    if (inFlight) {
-      return inFlight;
+    const current = quotaRefreshes.current.get(accountId);
+    // A started read, or any read an automatic caller can share, is joined. A
+    // user's refresh replaces an automatic read that is still waiting.
+    if (current && (background || current.started || current.manual)) {
+      return current.promise;
     }
 
-    const request = quotaRefreshQueue.current.then(() => api.refreshAccountQuota(accountId, background)).then(
+    const lanes = refreshLanes.current;
+    const entry: QuotaRefreshEntry = { manual: !background, started: false, promise: Promise.resolve() as never };
+    const read = () => {
+      entry.started = true;
+      return api.refreshAccountQuota(accountId, true);
+    };
+    const attempt = background
+      ? lanes.run("background", () => {
+        const replacement = quotaRefreshes.current.get(accountId);
+        return replacement && replacement !== entry ? replacement.promise : read();
+      })
+      : lanes.run("manual", read).catch((error: unknown) => {
+        if (quotaFailureCode(error) !== "manual_refresh_needed") {
+          throw error;
+        }
+        return lanes.run("signIn", () => api.refreshAccountQuota(accountId, false));
+      });
+    const request = attempt.then(
       (quota) => {
         setQuotas((current) => ({ ...current, [accountId]: quota }));
         setQuotaFailures((current) => {
@@ -1135,12 +1167,14 @@ export default function App() {
         throw error;
       },
     );
-    quotaRefreshQueue.current = request.then(() => undefined, () => undefined);
-    quotaRefreshes.current.set(accountId, request);
-    void request.then(
-      () => quotaRefreshes.current.get(accountId) === request && quotaRefreshes.current.delete(accountId),
-      () => quotaRefreshes.current.get(accountId) === request && quotaRefreshes.current.delete(accountId),
-    );
+    entry.promise = request;
+    quotaRefreshes.current.set(accountId, entry);
+    const forget = () => {
+      if (quotaRefreshes.current.get(accountId) === entry) {
+        quotaRefreshes.current.delete(accountId);
+      }
+    };
+    void request.then(forget, forget);
     return request;
   }, []);
 
@@ -1650,27 +1684,31 @@ export default function App() {
     }
   };
 
+  // A full refresh shows progress on the toolbar and each card; it does not
+  // lock the rest of the workspace.
   const refreshAll = async () => {
-    await runVoidTask(
-      "refresh-all",
-      async () => {
-        const results = await Promise.allSettled(
-          accounts
-            .filter((account) => account.kind === "chat_gpt")
-            .map((account) => requestQuotaRefresh(account.id)),
-        );
-        const failures = results.filter((result) => result.status === "rejected").length;
-        if (failures) {
-          setNotice({
-            kind: "info",
-            text: t("notice.quotaUnavailable", {
-              count: formatNumber(failures, locale.formatLocale),
-            }),
-          });
-        }
-      },
-      false,
+    const targets = accounts.filter((account) => account.kind === "chat_gpt");
+    if (!targets.length || refreshProgress) {
+      return;
+    }
+    setRefreshProgress({ done: 0, total: targets.length });
+    const results = await Promise.allSettled(
+      targets.map((account) =>
+        requestQuotaRefresh(account.id).finally(() =>
+          setRefreshProgress((current) => current && { ...current, done: current.done + 1 }),
+        ),
+      ),
     );
+    setRefreshProgress(null);
+    const failures = results.filter((result) => result.status === "rejected").length;
+    if (failures) {
+      setNotice({
+        kind: "info",
+        text: t("notice.quotaUnavailable", {
+          count: formatNumber(failures, locale.formatLocale),
+        }),
+      });
+    }
   };
 
   const switchAccount = async (account: AccountView) => {
@@ -1695,11 +1733,9 @@ export default function App() {
     }
   };
 
+  // The card itself shows the refreshed quota; only failures need a notice.
   const refreshAccount = async (account: AccountView) => {
-    const result = await runAccountTask(account.id, "refresh", () => requestQuotaRefresh(account.id));
-    if (result) {
-      setNotice({ kind: "success", text: t("notice.quotaRefreshed", { name: accountPrimaryName(account) }) });
-    }
+    await runAccountTask(account.id, "refresh", () => requestQuotaRefresh(account.id));
   };
 
   const startWake = async (accountId?: string, alternateModel = false) => {
@@ -1984,9 +2020,14 @@ export default function App() {
           </div>
         </div>
         <div className="toolbar-actions">
-          <button className="button button-quiet" disabled={loading || busy !== null || storageRecovery} onClick={() => void refreshAll()} type="button">
-            <RefreshCw className={busy === "refresh-all" ? "spin" : ""} size={16} />
-            {t("common.refresh")}
+          <button className="button button-quiet" disabled={loading || busy !== null || refreshProgress !== null || storageRecovery} onClick={() => void refreshAll()} type="button">
+            <RefreshCw className={refreshProgress ? "spin" : ""} size={16} />
+            {refreshProgress
+              ? t("toolbar.refreshing", {
+                done: formatNumber(refreshProgress.done, locale.formatLocale),
+                total: formatNumber(refreshProgress.total, locale.formatLocale),
+              })
+              : t("common.refresh")}
           </button>
           <button
             className="button button-secondary"

@@ -175,9 +175,11 @@ as applicable:
 - delayed filesystem, provider, process, and App Server command paths running
   through the asynchronous blocking-work boundary rather than the Tauri main
   thread;
-- quota requests across startup and manual refresh sharing one serial queue,
-  same-account refresh coalescing, six-account continuation after partial
-  failure, and stale or unavailable state on each failed card;
+- quota refresh lanes: automatic reads one at a time, a user's refresh not
+  waiting behind them, up to three read-only reads in a full refresh, the
+  official sign-in refresh only after a read shows it is needed, same-account
+  refresh coalescing, six-account continuation after partial failure, toolbar
+  progress, and stale or unavailable state on each failed card;
 - a one-account quota refresh updating its own projection without rebuilding
   the workspace, and that account's busy state leaving unrelated cards usable;
 - quota bucket normalization, zero remaining, and stale-cache labeling;
