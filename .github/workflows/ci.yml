@@ -2,6 +2,7 @@ name: CI
 
 on:
   pull_request:
+  merge_group:
   push:
     branches:
       - main
@@ -40,7 +41,7 @@ jobs:
             echo "platform=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          if [[ "$BASE_SHA" =~ ^0+$ ]]; then
+          if [[ "$EVENT_NAME" == "merge_group" || "$BASE_SHA" =~ ^0+$ ]]; then
             echo "frontend=true" >> "$GITHUB_OUTPUT"
             echo "rust=true" >> "$GITHUB_OUTPUT"
             echo "platform=true" >> "$GITHUB_OUTPUT"
@@ -74,7 +75,7 @@ jobs:
   frontend:
     name: Frontend
     needs: changes
-    if: github.event_name == 'push' || (github.event_name == 'pull_request' && needs.changes.outputs.frontend == 'true')
+    if: github.event_name == 'push' || ((github.event_name == 'pull_request' || github.event_name == 'merge_group') && needs.changes.outputs.frontend == 'true')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -89,13 +90,13 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm run ci:source frontend
         env:
-          GSWITCH_DIFF_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
-          GSWITCH_DIFF_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+          GSWITCH_DIFF_BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
+          GSWITCH_DIFF_HEAD: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}
 
   platform-build:
     name: ${{ matrix.check_name }}
     needs: changes
-    if: github.event_name == 'push' || (github.event_name == 'pull_request' && needs.changes.outputs.platform == 'true')
+    if: github.event_name == 'push' || ((github.event_name == 'pull_request' || github.event_name == 'merge_group') && needs.changes.outputs.platform == 'true')
     strategy:
       fail-fast: false
       matrix:
@@ -132,13 +133,13 @@ jobs:
       - name: Check platform Rust targets
         run: pnpm run ci:source platform
         env:
-          GSWITCH_DIFF_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
-          GSWITCH_DIFF_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+          GSWITCH_DIFF_BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
+          GSWITCH_DIFF_HEAD: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}
 
   linux:
     name: Linux build
     needs: changes
-    if: github.event_name == 'push' || (github.event_name == 'pull_request' && needs.changes.outputs.rust == 'true')
+    if: github.event_name == 'push' || ((github.event_name == 'pull_request' || github.event_name == 'merge_group') && needs.changes.outputs.rust == 'true')
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -175,8 +176,8 @@ jobs:
             ${{ runner.os }}-cargo-${{ hashFiles('rust-toolchain.toml', 'src-tauri/Cargo.lock') }}-
       - run: pnpm run ci:source linux
         env:
-          GSWITCH_DIFF_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
-          GSWITCH_DIFF_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+          GSWITCH_DIFF_BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
+          GSWITCH_DIFF_HEAD: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}
 
   dependency-review:
     name: Dependency review

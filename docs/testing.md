@@ -47,9 +47,12 @@ production frontend build. Rust changes call its Linux mode for version,
 frontend build, Rust formatting, Clippy, and the full Rust test suite. Frontend
 only changes do not start the Rust or platform workers. Changes to application
 or build inputs also compile all Rust targets on Windows and macOS; those jobs
-do not repeat tests or create installer bundles. Node and Cargo dependencies
-use runner caches, and newer runs cancel older runs for the same pull request
-or branch.
+do not repeat tests or create installer bundles. A merge-queue entry runs every
+source job regardless of paths, because its commit, the queued pull request on
+top of the current `main` and any entries ahead of it, is the commit that
+becomes `main`. Node and Cargo dependencies use runner caches, and newer runs
+cancel older runs for the same pull request or branch; each queue entry has its
+own branch, so entries never cancel each other.
 
 `CI gate` reports whether the scoped source jobs and security checks succeeded.
 It runs even when a scoped source job is skipped and fails if scope detection
@@ -67,14 +70,17 @@ The CI workflow has read-only repository permissions. A passing CI run proves
 that the checked-in revision passed those commands on those runners; it does
 not publish or release anything.
 
-The `main` ruleset is the authority for current required checks, strict update
-requirements, and resolved review conversations. Read the live ruleset when
+The `main` ruleset is the authority for current required checks, the merge
+queue and its settings, strict update requirements, and resolved review
+conversations. Read the live ruleset when
 changing or reporting those requirements; this document describes workflow
 behavior and migration steps only.
 
 CI runs GitHub dependency review on every pull request (moderate-or-higher
 advisories in runtime, development, or unknown scopes) and RustSec's
-`cargo-audit` on pull requests and main pushes, with a weekly scheduled audit.
+`cargo-audit` on pull requests, merge-queue entries, and main pushes, with a
+weekly scheduled audit. Dependency review does not run in the queue: a queued
+combination adds no dependency that its pull requests did not.
 The dependency check deliberately does not impose a license policy. Both checks
 use a read-only token; the release workflow grants write access only to its
 draft-upload job. External Actions use full commit SHAs with version comments.
@@ -92,10 +98,16 @@ directly records the bot as a commit author and lists it as a contributor.
 Recreate its change in a maintainer-authored commit and pull request, run the
 checks for the changed paths there, then close Renovate's pull request.
 
-GitHub CodeQL default setup, rather than a repository workflow, scans Actions,
-JavaScript/TypeScript, and Rust. Its effective language list and the
-repository's SHA-pinning policy must be read from GitHub when making a claim
-about current protection; these settings are not inferred from this document.
+The repository's CodeQL workflow scans Actions, JavaScript/TypeScript, and Rust
+with the default query suite on pull requests, merge-queue entries, main pushes,
+and weekly. Its jobs report the required `Analyze (actions)`,
+`Analyze (javascript-typescript)`, and `Analyze (rust)` checks. It replaces
+CodeQL default setup, which does not analyze merge-queue commits and would
+leave those required checks pending in the queue. Default setup must stay off:
+GitHub rejects a repository workflow's results while it is on. The effective
+code scanning configuration and the repository's SHA-pinning policy must be
+read from GitHub when making a claim about current protection; these settings
+are not inferred from this document.
 
 ## Required regression areas
 
