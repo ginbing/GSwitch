@@ -653,10 +653,11 @@ function QuotaResetTime({ timestamp, t, formatLocale }: {
   formatLocale: string;
 }) {
   const [nowMs, setNowMs] = useState(Date.now);
-  useEffect(() => {
+  useLayoutEffect(() => {
+    setNowMs(Date.now());
     const interval = window.setInterval(() => setNowMs(Date.now()), 60_000);
     return () => window.clearInterval(interval);
-  }, []);
+  }, [timestamp]);
 
   const fullTime = formatDateTime(timestamp, formatLocale);
   const passed = timestamp * 1000 <= nowMs;
