@@ -67,4 +67,15 @@ describe("GSwitch language settings", () => {
     expect(formatQuotaResetTime(now / 1000 + 1, "en-US", now)).toContain("1m · ");
     expect(formatQuotaResetTime(now / 1000 - 1, "zh-CN", now)).toBe("待刷新");
   });
+
+  it("rounds quota countdowns up without capping a real duration longer than five hours", () => {
+    const now = new Date(2026, 9, 5, 12, 10).getTime();
+    const fiveHours = now / 1000 + 5 * 60 * 60;
+    expect(formatQuotaResetTime(fiveHours, "zh-CN", now)).toBe("5小时 · 10/05 17:10");
+    expect(formatQuotaResetTime(fiveHours, "en-US", now)).toBe("5h · 10/05 17:10");
+    expect(formatQuotaResetTime(fiveHours + 30, "zh-CN", now)).toBe("5小时1分 · 10/05 17:10");
+    expect(formatQuotaResetTime(fiveHours + 30, "en-US", now)).toBe("5h 1m · 10/05 17:10");
+    expect(formatQuotaResetTime(fiveHours - 30, "zh-CN", now)).toBe("5小时 · 10/05 17:09");
+    expect(formatQuotaResetTime(fiveHours - 30, "en-US", now)).toBe("5h · 10/05 17:09");
+  });
 });

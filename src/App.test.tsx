@@ -1,5 +1,6 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { open } from "@tauri-apps/plugin-dialog";
 
@@ -896,6 +897,102 @@ describe("GSwitch account workspace", () => {
     expect(resetTime).toHaveAttribute("tabindex", "0");
     expect(card).not.toHaveTextContent("重置于");
     expect(screen.getByRole("button", { name: "唤醒 person@example.com" })).toBeEnabled();
+  });
+
+  describe("quota countdown updates", () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date(2026, 9, 5, 12, 10));
+      Object.defineProperty(window.navigator, "language", { configurable: true, value: "zh-CN" });
+      mocks.listAccounts.mockResolvedValue([chatAccount]);
+    });
+
+    afterEach(() => {
+      cleanup();
+      vi.restoreAllMocks();
+      vi.useRealTimers();
+    });
+
+    function quotaAt(resetsAt: number): QuotaView {
+      return {
+        account_id: chatAccount.id,
+        status: "fresh",
+        snapshot: {
+          fetched_at_unix_ms: Date.now(),
+          buckets: [{
+            limit_id: "codex",
+            kind: "codex",
+            windows: [{ kind: "five_hour", window_duration_mins: 300, remaining_percent: 100, used_percent: 0, resets_at: resetsAt }],
+          }],
+        },
+      };
+    }
+
+    it.each(["refresh", "wake"] as const)("synchronizes a new reset time after %s while preserving focus and one timer", async (action) => {
+      const setInterval = vi.spyOn(window, "setInterval");
+      const clearInterval = vi.spyOn(window, "clearInterval");
+      const activeCountdownTimers = () => setInterval.mock.calls.flatMap(([, delay], index) => {
+        const id = setInterval.mock.results[index]!.value as number;
+        return delay === 60_000 && !clearInterval.mock.calls.some(([cleared]) => cleared === id) ? [id] : [];
+      });
+      mocks.accountQuota.mockResolvedValue(quotaAt(Date.now() / 1000 + 30 * 60));
+      let resolveRefresh!: (quota: QuotaView) => void;
+      mocks.refreshAccountQuota.mockImplementation(() => new Promise<QuotaView>((resolve) => { resolveRefresh = resolve; }));
+      mocks.wakeOperation.mockResolvedValue({
+        id: "wake-1",
+        status: "completed",
+        results: [{ account_id: chatAccount.id, result: "reply_received", request_state: "sent" }],
+      });
+      let view!: ReturnType<typeof render>;
+      await act(async () => { view = render(<StrictMode><App /></StrictMode>); });
+      const card = screen.getByRole("heading", { name: "person@example.com" }).closest(".account-card")!;
+      const resetTime = card.querySelector<HTMLTimeElement>("time.quota-reset-time")!;
+      expect(resetTime).toHaveTextContent(/^30分 · /);
+      expect(activeCountdownTimers()).toHaveLength(1);
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: `${action === "wake" ? "唤醒" : "刷新"} person@example.com` }));
+      });
+      if (action === "wake") {
+        await act(async () => { await vi.advanceTimersByTimeAsync(500); });
+        const dialog = screen.getByRole("dialog", { name: "唤醒" });
+        await act(async () => { fireEvent.click(within(dialog).getByRole("button", { name: "完成" })); });
+      }
+      expect(mocks.refreshAccountQuota).toHaveBeenCalledTimes(1);
+      resetTime.focus();
+      const resetAt = Math.floor(Date.now() / 1000) + 5 * 60 * 60;
+      await act(async () => { resolveRefresh(quotaAt(resetAt)); });
+
+      expect(card.querySelector("time.quota-reset-time")).toBe(resetTime);
+      expect(resetTime).toHaveFocus();
+      expect(resetTime).toHaveTextContent(/^5小时 · /);
+      expect(resetTime).toHaveAttribute("datetime", new Date(resetAt * 1000).toISOString());
+      expect(activeCountdownTimers()).toHaveLength(1);
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+      expect(resetTime).toHaveTextContent(/^4小时59分 · /);
+      expect(resetTime).toHaveFocus();
+      view.unmount();
+      expect(activeCountdownTimers()).toHaveLength(0);
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it("immediately marks a replacement reset time that has already passed", async () => {
+      mocks.accountQuota.mockResolvedValue(quotaAt(Date.now() / 1000 + 30 * 60));
+      await act(async () => { render(<App />); });
+      const card = screen.getByRole("heading", { name: "person@example.com" }).closest(".account-card")!;
+      const resetTime = card.querySelector<HTMLTimeElement>("time.quota-reset-time")!;
+      await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+      const resetAt = Date.now() / 1000 - 1;
+      mocks.refreshAccountQuota.mockResolvedValue(quotaAt(resetAt));
+      await act(async () => { fireEvent.click(screen.getByRole("button", { name: "刷新 person@example.com" })); });
+
+      expect(card.querySelector("time.quota-reset-time")).toBe(resetTime);
+      expect(resetTime).toHaveTextContent("待刷新");
+      expect(resetTime).toHaveAttribute("datetime", new Date(resetAt * 1000).toISOString());
+      expect(resetTime).toHaveAttribute("aria-label", expect.stringContaining("待刷新"));
+    });
   });
 
   it("allows the same account to Wake again after an earlier completed request", async () => {
