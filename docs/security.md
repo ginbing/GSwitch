@@ -72,7 +72,9 @@ when the operation ends.
 
 GSwitch reads the installed CLI version from the same executable it uses for
 App Server. It updates the CLI only after a user selects **Update CLI**, with
-the GSwitch operation lock held and no external Codex runtime active. The CLI
+the GSwitch operation lock held and no external Codex runtime active. When
+GSwitch's own work, such as a quota refresh, holds that lock, the update waits
+for it to finish instead of failing. The CLI
 itself chooses its supported installation method; GSwitch does not download or
 replace CLI files or change account credentials. A completed update is followed
 by a fresh version read. Missing or unsupported update commands use official
