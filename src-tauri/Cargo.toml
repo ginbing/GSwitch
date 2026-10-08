@@ -1,6 +1,6 @@
 [package]
 name = "gswitch"
-version = "1.0.24"
+version = "1.0.25"
 description = "A focused local Codex account switcher"
 authors = ["Ginbing"]
 edition = "2021"
