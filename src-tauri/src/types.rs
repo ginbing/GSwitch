@@ -23,7 +23,6 @@ pub enum CodexCliUpdateStatus {
 pub enum CodexCliUpdateFailure {
     NotInstalled,
     Unsupported,
-    Busy,
     CodexOpen,
     UpdateFailed,
     VerificationFailed,

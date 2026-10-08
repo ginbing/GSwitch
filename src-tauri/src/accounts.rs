@@ -778,6 +778,10 @@ impl AppState {
     /// the short quota commit still uses the cross-process storage boundary.
     pub(crate) fn acquire_quota_commit_operation(&self) -> Result<OperationGuard<'_>, String> {
         self.ensure_store_ready()?;
+        self.wait_for_operation_lock()
+    }
+
+    fn wait_for_operation_lock(&self) -> Result<OperationGuard<'_>, String> {
         let in_process = self
             .operation_lock
             .lock()
@@ -804,12 +808,12 @@ impl AppState {
     }
 
     /// Updating the installed CLI must not overlap a GSwitch operation that
-    /// may launch App Server. This remains available when account storage
-    /// needs recovery because it never reads or changes saved accounts.
-    pub(crate) fn acquire_cli_update_operation(
-        &self,
-    ) -> Result<OperationGuard<'_>, OperationAcquireFailure> {
-        self.acquire_operation_lock()
+    /// may launch App Server. It waits for GSwitch's own running work, such as
+    /// a quota refresh, instead of reporting it as a conflict. This remains
+    /// available when account storage needs recovery because it never reads
+    /// or changes saved accounts.
+    pub(crate) fn acquire_cli_update_operation(&self) -> Result<OperationGuard<'_>, String> {
+        self.wait_for_operation_lock()
     }
 
     pub(crate) fn acquire_operation_for_switch(
@@ -2864,6 +2868,32 @@ mod tests {
             Err(error) => assert_eq!(error, "Another GSwitch operation is already in progress"),
         }
         drop(first);
+        let _ = fs::remove_dir_all(path.parent().expect("parent"));
+    }
+
+    #[test]
+    fn cli_update_waits_for_a_running_operation_instead_of_failing() {
+        use std::{sync::mpsc, thread, time::Duration};
+
+        let path = temp_path("cli-update-waits");
+        let state = AppState::new(path.clone()).expect("state");
+        let refresh = state.acquire_operation().expect("running operation");
+
+        let (result_tx, result_rx) = mpsc::channel();
+        let waiting = state.clone();
+        let worker = thread::spawn(move || {
+            let acquired = waiting.acquire_cli_update_operation().is_ok();
+            result_tx.send(acquired).expect("send result");
+        });
+        assert!(matches!(
+            result_rx.recv_timeout(Duration::from_millis(100)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+        drop(refresh);
+        assert!(result_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("update proceeded after the operation finished"));
+        worker.join().expect("worker finished");
         let _ = fs::remove_dir_all(path.parent().expect("parent"));
     }
 

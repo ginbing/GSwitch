@@ -6,7 +6,7 @@ use std::{
 };
 
 use crate::{
-    accounts::{AppState, OperationAcquireFailure},
+    accounts::AppState,
     app_server, runtime,
     types::{CodexCliInfo, CodexCliUpdateFailure, CodexCliUpdateStatus},
 };
@@ -118,10 +118,7 @@ fn newer_than(latest: &str, installed: &str) -> bool {
 pub fn update(state: &AppState) -> Result<CodexCliInfo, CodexCliUpdateFailure> {
     let _operation = state
         .acquire_cli_update_operation()
-        .map_err(|error| match error {
-            OperationAcquireFailure::Busy => CodexCliUpdateFailure::Busy,
-            OperationAcquireFailure::Failed(_) => CodexCliUpdateFailure::UpdateFailed,
-        })?;
+        .map_err(|_| CodexCliUpdateFailure::UpdateFailed)?;
     let before = inspect();
     if before.version.is_none() {
         return Err(CodexCliUpdateFailure::NotInstalled);

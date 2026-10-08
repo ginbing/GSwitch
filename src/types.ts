@@ -36,7 +36,6 @@ export interface CodexCliInfo {
 export type CodexCliUpdateFailure =
   | "not_installed"
   | "unsupported"
-  | "busy"
   | "codex_open"
   | "update_failed"
   | "verification_failed";
