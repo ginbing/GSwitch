@@ -407,26 +407,31 @@ pub async fn recover_pending_reset_credit(
     run_reset_blocking(move || quota::recover_pending_reset_credit(&state)).await
 }
 
+// Starting Wake reads saved accounts, which can wait behind a storage write;
+// a synchronous command would hold the window's main thread meanwhile.
 #[tauri::command]
-pub fn start_wake(
+pub async fn start_wake(
     state: State<'_, AppState>,
     id: String,
     alternate_model: bool,
 ) -> Result<WakeStart, String> {
-    wake::start_one(state.inner().clone(), id, alternate_model)
+    let state = state.inner().clone();
+    run_blocking(move || wake::start_one(state, id, alternate_model)).await
 }
 
 #[tauri::command]
-pub fn start_wake_all(state: State<'_, AppState>) -> Result<WakeStart, String> {
-    wake::start_all(state.inner().clone())
+pub async fn start_wake_all(state: State<'_, AppState>) -> Result<WakeStart, String> {
+    let state = state.inner().clone();
+    run_blocking(move || wake::start_all(state)).await
 }
 
 #[tauri::command]
-pub fn start_wake_selected(
+pub async fn start_wake_selected(
     state: State<'_, AppState>,
     selected_ids: Vec<String>,
 ) -> Result<WakeStart, String> {
-    wake::start_selected(state.inner().clone(), selected_ids)
+    let state = state.inner().clone();
+    run_blocking(move || wake::start_selected(state, selected_ids)).await
 }
 
 #[tauri::command]

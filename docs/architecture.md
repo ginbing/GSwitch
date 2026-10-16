@@ -117,7 +117,9 @@ synchronous domain operation to Tauri's blocking worker pool. This keeps the
 window able to repaint, scroll, and accept unrelated input without weakening
 the Rust operation mutex or cross-process lock. Automatic quota reads release
 that lock during network waiting and reacquire it only to commit a projection
-after checking the saved credential generation. Startup reads account secrets
+after checking the saved credential generation. Wake requests likewise hold no
+lock; Wake waits for it only to run an isolated refresh or to mark the rejected
+credential generation as needing sign-in. Startup reads account secrets
 from one Stronghold session instead of reopening the snapshot for every card.
 React keeps point-operation state local: a single-account quota refresh
 replaces only that account's quota projection, while a full workspace reload is

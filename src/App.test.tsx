@@ -1582,6 +1582,31 @@ describe("GSwitch account workspace", () => {
     resolveRefresh?.(staleQuota);
   });
 
+  it("lets a card start Wake while its own refresh is still running", async () => {
+    mocks.listAccounts.mockResolvedValue([chatAccount]);
+    mocks.accountQuota.mockResolvedValue({ ...staleQuota, status: "fresh" });
+    let resolveRefresh: ((quota: QuotaView) => void) | undefined;
+    mocks.refreshAccountQuota.mockImplementation(
+      () => new Promise<QuotaView>((resolve) => { resolveRefresh = resolve; }),
+    );
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "person@example.com" });
+    await userEvent.click(screen.getByRole("button", { name: "Refresh person@example.com" }));
+    await waitFor(() => expect(mocks.refreshAccountQuota).toHaveBeenCalledWith("account-1", true));
+
+    const wake = screen.getByRole("button", { name: "Wake person@example.com" });
+    expect(wake).toBeEnabled();
+    await userEvent.click(wake);
+    await waitFor(() => expect(mocks.startWake).toHaveBeenCalledWith("account-1", false));
+    // Starting Wake does not end the refresh that is still running.
+    expect(screen.getByRole("button", { name: "Refresh person@example.com" })).toBeDisabled();
+
+    resolveRefresh?.(staleQuota);
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Refresh person@example.com" })).toBeEnabled());
+  });
+
   it("keeps account actions available when the live Codex account cannot be identified", async () => {
     mocks.listAccounts.mockResolvedValue([chatAccount]);
     mocks.accountQuota.mockResolvedValue({ account_id: "account-1", status: "unknown" });

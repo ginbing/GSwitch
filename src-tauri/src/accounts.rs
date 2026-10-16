@@ -781,6 +781,14 @@ impl AppState {
         self.wait_for_operation_lock()
     }
 
+    /// Wake sends its requests without this lock. Only an isolated refresh
+    /// after an authentication failure, and marking a rejected credential,
+    /// wait here, so GSwitch's own short work never makes Wake fail as busy.
+    pub(crate) fn acquire_wake_operation(&self) -> Result<OperationGuard<'_>, String> {
+        self.ensure_store_ready()?;
+        self.wait_for_operation_lock()
+    }
+
     fn wait_for_operation_lock(&self) -> Result<OperationGuard<'_>, String> {
         let in_process = self
             .operation_lock
