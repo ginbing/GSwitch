@@ -314,9 +314,12 @@ transport, TLS, DNS, timeout, parse, or provider-server failure never starts a
 managed refresh. Reset-credit detail failure does not erase a successful usage
 result; its detailed rows remain unavailable until a later successful detail
 read. A refresh reads credit details only when the usage response's credit
-count differs from the saved list, or the saved list is missing or over an hour
-old. Otherwise it keeps the saved list, which is filtered for expiry when read;
-redemption still matches the pick against a fresh provider read.
+count differs from the saved list, the saved list is missing, or this GSwitch
+process has not read it in the last hour. Otherwise it keeps the saved list,
+which is filtered for expiry when read; redemption still matches the pick
+against a fresh provider read. That read time stays in memory: the protected
+vault is rewritten only when the count or the list itself changes, never to
+confirm an unchanged list.
 
 ## Reset credits
 

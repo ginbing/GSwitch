@@ -339,16 +339,29 @@ pub struct ResetCreditDetailView {
 
 /// Rust-owned reset-credit data. The opaque ID is never part of a Tauri
 /// command response or WebView state.
-#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct StoredResetCredits {
     pub available_count: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credits: Option<Vec<StoredResetCredit>>,
-    /// When the credit list was last read from the usage endpoint's detail
-    /// lookup; absent when it came from elsewhere or is unknown.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// When this GSwitch process last read the credit list from the usage
+    /// endpoint's detail lookup; absent when it came from elsewhere or is
+    /// unknown. It only spaces out detail reads, so it stays in memory: every
+    /// protected-vault write costs seconds, and confirming an unchanged list
+    /// must not cause one. Older vault entries may still carry it.
+    #[serde(default, skip_serializing)]
     pub details_read_at_unix_ms: Option<i64>,
 }
+
+/// The saved credit state is the count and the list. When they were last read
+/// is not part of it, so the same list read later is not a change to save.
+impl PartialEq for StoredResetCredits {
+    fn eq(&self, other: &Self) -> bool {
+        self.available_count == other.available_count && self.credits == other.credits
+    }
+}
+
+impl Eq for StoredResetCredits {}
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StoredResetCredit {

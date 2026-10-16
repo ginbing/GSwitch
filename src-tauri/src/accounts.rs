@@ -2830,6 +2830,77 @@ mod tests {
     }
 
     #[test]
+    fn rereading_an_unchanged_credit_list_does_not_rewrite_the_vault() {
+        let path = temp_path("unchanged-credit-list");
+        let state = AppState::new(path.clone()).expect("state");
+        let saved = save(
+            &state,
+            draft("workspace", stable_credential("workspace", "token")),
+        );
+        let vault_path = path.parent().expect("parent").join("credentials.hold");
+        let quota = |fetched_at_unix_ms| crate::types::QuotaSnapshot {
+            fetched_at_unix_ms,
+            account_id: None,
+            ordinary_usage_allowed: None,
+            buckets: Vec::new(),
+            reset_credits: None,
+        };
+        let credits = |credit_id: &str, read_at| StoredResetCredits {
+            available_count: 1,
+            credits: Some(vec![crate::types::StoredResetCredit {
+                id: credit_id.into(),
+                status: "available".into(),
+                expires_at: Some(4_000_000_000),
+                reset_type: None,
+                granted_at: None,
+                title: None,
+            }]),
+            details_read_at_unix_ms: Some(read_at),
+        };
+        let operation = state.acquire_operation().expect("operation");
+        state
+            .update_quota_under_operation(&operation, &saved.id, quota(1), Some(credits("a", 1)))
+            .expect("first credit read");
+        let vault = fs::read(&vault_path).expect("vault");
+        let generation = state
+            .account_by_id(&saved.id)
+            .expect("account")
+            .credential_generation;
+
+        state
+            .update_quota_under_operation(&operation, &saved.id, quota(2), Some(credits("a", 2)))
+            .expect("same list read later");
+        assert_eq!(fs::read(&vault_path).expect("vault"), vault);
+        let account = state.account_by_id(&saved.id).expect("account");
+        assert_eq!(account.credential_generation, generation);
+        assert_eq!(account.quota.map(|quota| quota.fetched_at_unix_ms), Some(2));
+        // The newer read time still spaces out the next detail read.
+        assert_eq!(
+            account
+                .reset_credits
+                .and_then(|credits| credits.details_read_at_unix_ms),
+            Some(2)
+        );
+
+        state
+            .update_quota_under_operation(&operation, &saved.id, quota(3), Some(credits("b", 3)))
+            .expect("changed list");
+        assert_ne!(fs::read(&vault_path).expect("vault"), vault);
+        drop(operation);
+        drop(state);
+
+        let reopened = AppState::new(path.clone()).expect("reopen");
+        let credits = reopened
+            .account_by_id(&saved.id)
+            .expect("account")
+            .reset_credits
+            .expect("saved credits");
+        assert_eq!(credits.credits.expect("credit list")[0].id, "b");
+        assert_eq!(credits.details_read_at_unix_ms, None);
+        let _ = fs::remove_dir_all(path.parent().expect("parent"));
+    }
+
+    #[test]
     fn removing_a_saved_account_does_not_touch_the_live_codex_file() {
         let path = temp_path("remove-account-live-file");
         let state = AppState::new(path.clone()).expect("state");
