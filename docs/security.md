@@ -177,7 +177,10 @@ retains sole refresh-token ownership: GSwitch rereads its live file-backed token
 once before sending and never writes live `auth.json` or starts a second App
 Server. A safely inactive identity may use one isolated refresh only after an
 authentication failure; an unidentifiable running process is never a reason to
-skip Wake, but prevents that refresh fallback. The one standard-tier text
+skip Wake, but prevents that refresh fallback. Because the request itself holds
+no operation lock, that refresh first takes the lock, rereads the saved
+credential, and repeats the running-process check, and a sign-in mark applies
+only to the credential generation that was rejected. The one standard-tier text
 request has no tools, project or file context, locally saved conversation,
 reset credit, or Reserve use. It sets `store: false` and does not retain the
 prompt or model reply. Once it may have reached the provider, GSwitch reports

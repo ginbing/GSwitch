@@ -996,7 +996,7 @@ function AccountCard({
             <button
               aria-label={t("account.wake", { name: primaryName })}
               className="button button-secondary"
-              disabled={controlsBusy}
+              disabled={globalBusy || (busyAction !== undefined && busyAction !== "refresh")}
               onClick={onWake}
               type="button"
             >
@@ -1518,13 +1518,16 @@ export default function App() {
     [loadSnapshot, t],
   );
 
+  // A refresh only reads quota, so the same account can start Wake while it
+  // runs; a second request for an action already running is ignored.
   const runAccountTask = useCallback(
     async <T,>(accountId: string, action: Exclude<AccountBusyAction, "switch">, task: () => Promise<T>): Promise<T | undefined> => {
-      if (accountOperations.current.has(accountId)) {
+      const key = accountId + ":" + action;
+      if (accountOperations.current.has(key)) {
         return undefined;
       }
 
-      accountOperations.current.add(accountId);
+      accountOperations.current.add(key);
       setAccountBusy((current) => ({ ...current, [accountId]: action }));
       try {
         return await task();
@@ -1532,10 +1535,16 @@ export default function App() {
         setNotice({ kind: "error", text: friendlyError(t, error) });
         return undefined;
       } finally {
-        accountOperations.current.delete(accountId);
+        accountOperations.current.delete(key);
+        const stillRunning = (["refresh", "wake"] as const).find((other) =>
+          accountOperations.current.has(accountId + ":" + other));
         setAccountBusy((current) => {
           const remaining = { ...current };
-          delete remaining[accountId];
+          if (stillRunning) {
+            remaining[accountId] = stillRunning;
+          } else {
+            delete remaining[accountId];
+          }
           return remaining;
         });
       }

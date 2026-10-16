@@ -417,7 +417,14 @@ operational records. A card's quota reset countdown is unrelated to whether
 Wake sent a request or received a reply.
 
 Wake all, one-account Wake, and selected-account Wake run sequentially and are
-cancellable between accounts. They return one result per ChatGPT account:
+cancellable between accounts. One Wake operation runs at a time. Its requests
+hold no credential-operation lock, so quota refresh, switching, and other
+GSwitch work continue during a Wake and never make it fail as busy; a card can
+start Wake while its own quota refresh runs. Only the managed refresh after an
+authentication failure waits for that lock, then rereads the saved account and
+checks again that no running Codex owns or hides the identity. Needs sign-in
+marks only the saved credential generation that ChatGPT rejected, so a
+credential saved while the request was in flight stays usable. They return one result per ChatGPT account:
 Reply received, Rate limited, Needs sign-in, Sent but not confirmed, Model
 unavailable, Invalid request, Service unavailable, Request rejected, Failed,
 or Cancelled. Rust records each account's request state as not sent, possibly
