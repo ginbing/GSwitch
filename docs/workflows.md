@@ -433,8 +433,12 @@ and credentials stay in Rust. The focused result dialog resolves each result to
 the saved account's email and workspace and shows a localized status. The
 heading counts replies, uncertain requests, failures, and cancellations. If the WebView temporarily cannot read
 progress, it retains the operation ID and retries status reads without
-restarting the request. The dialog remains open during the operation, then
-closes with Done; there is no persistent result entry or history dashboard.
+restarting the request. Batch Wake starts in the background. The toolbar shows
+the processed count and opens details on demand; closing running details does
+not cancel the operation or its status reads. Completion leaves the workspace
+and focus in place and changes the toolbar entry to Wake results. Done or
+closing completed details clears the one-time results and restores Wake all;
+there is no result history dashboard.
 One account's failure does not stop the remaining queue.
 
 ## Recovery

@@ -18,6 +18,11 @@ async function confirmResetRow(row = 0) {
   await userEvent.click(screen.getByRole("button", { name: /^Confirm the reset credit expiring/ }));
 }
 
+async function openWakeDetails() {
+  expect(screen.queryByRole("dialog", { name: /^(Wake|唤醒)$/ })).not.toBeInTheDocument();
+  await userEvent.click(await screen.findByRole("button", { name: /^Waking ·|^Wake results$|^唤醒中 ·|^唤醒结果$/ }));
+}
+
 const mocks = vi.hoisted(() => ({
   runtimeInfo: vi.fn(),
   codexCliInfo: vi.fn(),
@@ -892,7 +897,7 @@ describe("GSwitch account workspace", () => {
 
     const card = (await screen.findByRole("heading", { name: "person@example.com" })).closest(".account-card");
     const resetTime = card?.querySelector("time.quota-reset-time");
-    expect(resetTime).toHaveTextContent(/5小时 · \d{2}\/\d{2} \d{2}:\d{2}/);
+    expect(resetTime).toHaveTextContent(/4小时59分 · \d{2}\/\d{2} \d{2}:\d{2}/);
     expect(resetTime).toHaveAttribute("aria-label", expect.stringContaining("重置于"));
     expect(resetTime).toHaveAttribute("tabindex", "0");
     expect(card).not.toHaveTextContent("重置于");
@@ -961,7 +966,7 @@ describe("GSwitch account workspace", () => {
       }
       expect(mocks.refreshAccountQuota).toHaveBeenCalledTimes(1);
       resetTime.focus();
-      const resetAt = Math.floor(Date.now() / 1000) + 5 * 60 * 60;
+      const resetAt = Math.floor(Date.now() / 1000) + 5 * 60 * 60 + 30;
       await act(async () => { resolveRefresh(quotaAt(resetAt)); });
 
       expect(card.querySelector("time.quota-reset-time")).toBe(resetTime);
@@ -2005,7 +2010,7 @@ describe("GSwitch account workspace", () => {
     );
   });
 
-  it("keeps Wake visible until completion and shows only this operation's result", async () => {
+  it("opens batch Wake details on demand and shows only this operation's result", async () => {
     mocks.listAccounts.mockResolvedValue([chatAccount]);
     mocks.accountQuota.mockResolvedValue({ ...staleQuota, status: "fresh" });
     let resolveWake: ((result: { id: string; status: "completed"; results: Array<{ account_id: string; label: string; result: "failed"; request_state: "not_sent"; message: string }> }) => void) | undefined;
@@ -2014,9 +2019,10 @@ describe("GSwitch account workspace", () => {
     await screen.findByRole("heading", { name: "person@example.com" });
 
     await userEvent.click(screen.getByRole("button", { name: "Wake all" }));
+    await openWakeDetails();
     const dialog = await screen.findByRole("dialog", { name: "Wake" });
     expect(within(dialog).queryByRole("button", { name: "Done" })).not.toBeInTheDocument();
-    expect(within(dialog).getByRole("button", { name: /Close Wake/ })).toBeDisabled();
+    expect(within(dialog).getByRole("button", { name: /Close Wake/ })).toBeEnabled();
     expect(within(dialog).getByText("Waking…")).toBeInTheDocument();
     expect(within(dialog).getByText("Processed 0")).toBeInTheDocument();
     expect(within(dialog).queryByText("Working…")).not.toBeInTheDocument();
@@ -2038,6 +2044,7 @@ describe("GSwitch account workspace", () => {
     expect(screen.queryByRole("button", { name: "Last result" })).not.toBeInTheDocument();
     expect(screen.queryByRole("dialog", { name: "Wake" })).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Wake all" }));
+    await openWakeDetails();
     expect(await screen.findByRole("dialog", { name: "Wake" })).toBeInTheDocument();
     expect(mocks.startWakeAll).toHaveBeenCalledTimes(2);
   });
@@ -2060,6 +2067,7 @@ describe("GSwitch account workspace", () => {
     render(<App />);
     await screen.findByRole("heading", { name: "3 saved accounts" });
     await userEvent.click(screen.getByRole("button", { name: "Wake all" }));
+    await openWakeDetails();
     const dialog = await screen.findByRole("dialog", { name: "Wake" });
     expect(await within(dialog).findByText("1 succeeded · 1 unconfirmed · 1 failed")).toBeInTheDocument();
     expect(within(dialog).getByText("Unconfirmed. The request may have been sent.")).toBeInTheDocument();
@@ -2080,6 +2088,7 @@ describe("GSwitch account workspace", () => {
     render(<App />);
     await screen.findByRole("heading", { name: "person@example.com" });
     await userEvent.click(screen.getByRole("button", { name: "Wake all" }));
+    await openWakeDetails();
     const dialog = await screen.findByRole("dialog", { name: "Wake" });
     expect(await within(dialog).findByText("Stopped")).toBeInTheDocument();
     expect(within(dialog).getByText("1 not run")).toBeInTheDocument();
@@ -2098,6 +2107,7 @@ describe("GSwitch account workspace", () => {
     render(<App />);
     await screen.findByRole("heading", { name: "person@example.com" });
     await userEvent.click(screen.getByRole("button", { name: "Wake all" }));
+    await openWakeDetails();
     const dialog = await screen.findByRole("dialog", { name: "Wake" });
     expect(await within(dialog).findByText("Request parameters were rejected. (HTTP 400)")).toBeInTheDocument();
     expect(within(dialog).queryByText(/private provider details/)).not.toBeInTheDocument();
@@ -2115,6 +2125,7 @@ describe("GSwitch account workspace", () => {
     render(<App />);
     await screen.findByRole("heading", { name: "person@example.com" });
     await userEvent.click(screen.getByRole("button", { name: "全部唤醒" }));
+    await openWakeDetails();
     expect(await screen.findByText("请求参数未被接受。 (HTTP 400)")).toBeInTheDocument();
   });
 
@@ -2136,6 +2147,7 @@ describe("GSwitch account workspace", () => {
     render(<App />);
     await screen.findByRole("heading", { name: "person@example.com" });
     await userEvent.click(screen.getByRole("button", { name: "全部唤醒" }));
+    await openWakeDetails();
     const dialog = await screen.findByRole("dialog", { name: "唤醒" });
     expect(await within(dialog).findByText("已唤醒 1 · 失败 1")).toBeInTheDocument();
     expect(within(dialog).getByText("已唤醒")).toBeInTheDocument();
@@ -2160,6 +2172,7 @@ describe("GSwitch account workspace", () => {
     render(<App />);
     await screen.findByRole("heading", { name: "person@example.com" });
     await userEvent.click(screen.getByRole("button", { name: "Wake all" }));
+    await openWakeDetails();
     const dialog = await screen.findByRole("dialog", { name: "Wake" });
     expect(await within(dialog).findByText("GPT-6 Luna unavailable.")).toBeInTheDocument();
     await userEvent.click(within(dialog).getByRole("button", { name: "Retry Wake for person@example.com with GPT-5.6 Luna" }));
@@ -2181,6 +2194,7 @@ describe("GSwitch account workspace", () => {
     render(<App />);
     await screen.findByRole("heading", { name: "person@example.com" });
     await userEvent.click(screen.getByRole("button", { name: "Wake all" }));
+    await openWakeDetails();
 
     const dialog = await screen.findByRole("dialog", { name: "Wake" });
     expect(await within(dialog).findByText(/cannot check the Wake result right now/i)).toBeInTheDocument();
@@ -2206,10 +2220,11 @@ describe("GSwitch account workspace", () => {
     render(<App />);
     await screen.findByRole("heading", { name: "5 saved accounts" });
     await userEvent.click(screen.getByRole("button", { name: "Wake all" }));
+    await openWakeDetails();
     const dialog = await screen.findByRole("dialog", { name: "Wake" });
     expect(await within(dialog).findByText("5 succeeded")).toBeInTheDocument();
     expect(within(dialog).getAllByText("Succeeded")).toHaveLength(5);
-    expect(screen.getByRole("button", { name: "Wake all" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Wake results" })).toBeEnabled();
   });
 
   it("opens the affected saved account from a Wake sign-in failure", async () => {
@@ -2222,21 +2237,97 @@ describe("GSwitch account workspace", () => {
     render(<App />);
     await screen.findByRole("heading", { name: "person@example.com" });
     await userEvent.click(screen.getByRole("button", { name: "Wake all" }));
+    await openWakeDetails();
     const dialog = await screen.findByRole("dialog", { name: "Wake" });
     await userEvent.click(await within(dialog).findByRole("button", { name: "Sign in again" }));
     expect(mocks.startOAuth).toHaveBeenCalledWith(chatAccount.id);
     expect(await screen.findByRole("dialog", { name: "Sign in again · person@example.com" })).toBeInTheDocument();
   });
 
-  it("shows a per-operation Wake surface instead of silently running in the background", async () => {
+  it("keeps batch Wake in the background while switching, refreshing, and other dialogs remain usable", async () => {
+    vi.useFakeTimers();
+    try {
+      const currentAccount = { ...chatAccount, id: "account-2", email: "current@example.com", active: true };
+      const switchedAccount = { ...chatAccount, active: true };
+      const result = { account_id: chatAccount.id, label: chatAccount.label, result: "reply_received", request_state: "sent" };
+      mocks.liveAccount.mockResolvedValue({ status: "ready", credential_store: "file", account: currentAccount });
+      mocks.listAccounts.mockResolvedValue([chatAccount, currentAccount]);
+      mocks.accountQuota.mockResolvedValue({ ...staleQuota, status: "fresh" });
+      mocks.wakeOperation.mockResolvedValue({ id: "wake-all", status: "running", results: [] });
+      mocks.switchAccount.mockImplementation(async () => {
+        mocks.listAccounts.mockResolvedValue([switchedAccount, { ...currentAccount, active: false }]);
+        mocks.liveAccount.mockResolvedValue({ status: "ready", credential_store: "file", account: switchedAccount });
+        return { account: switchedAccount };
+      });
+      await act(async () => { render(<App />); });
+      const wakeControl = screen.getByRole("button", { name: "Wake all" });
+      await act(async () => { fireEvent.click(wakeControl); });
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+      expect(wakeControl).toHaveAccessibleName("Waking · 0 processed");
+
+      await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Refresh person@example.com" })); });
+      expect(mocks.refreshAccountQuota).toHaveBeenCalledWith(chatAccount.id, true);
+      await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Switch to person@example.com" })); });
+      expect(mocks.switchAccount).toHaveBeenCalledWith(chatAccount.id);
+
+      wakeControl.focus();
+      await act(async () => { fireEvent.click(wakeControl); });
+      let dialog = screen.getByRole("dialog", { name: "Wake" });
+      await act(async () => { fireEvent.keyDown(dialog, { key: "Escape" }); });
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+      expect(wakeControl).toHaveFocus();
+      mocks.wakeOperation.mockResolvedValue({ id: "wake-all", status: "running", results: [result] });
+      await act(async () => { await vi.advanceTimersByTimeAsync(500); });
+      expect(wakeControl).toHaveAccessibleName("Waking · 1 processed");
+
+      // Reopening the operation does not submit another request, including from a card.
+      await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Wake person@example.com" })); });
+      dialog = screen.getByRole("dialog", { name: "Wake" });
+      expect(within(dialog).getByText("Processed 1")).toBeInTheDocument();
+      expect(mocks.startWake).not.toHaveBeenCalled();
+      await act(async () => { fireEvent.click(within(dialog).getByRole("button", { name: "Run in background" })); });
+      expect(mocks.cancelWake).not.toHaveBeenCalled();
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+
+      await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Add account" })); });
+      const addDialog = screen.getByRole("dialog", { name: "Add a Codex account" });
+      const focused = document.activeElement;
+      mocks.wakeOperation.mockResolvedValue({ id: "wake-all", status: "completed", results: [result] });
+      await act(async () => { await vi.advanceTimersByTimeAsync(500); });
+      expect(screen.getByRole("dialog", { name: "Add a Codex account" })).toBe(addDialog);
+      expect(document.activeElement).toBe(focused);
+      expect(screen.queryByRole("dialog", { name: "Wake" })).not.toBeInTheDocument();
+      expect(wakeControl).toHaveAccessibleName("Wake results");
+      expect(mocks.startWakeAll).toHaveBeenCalledOnce();
+      expect(mocks.wakeOperation).toHaveBeenCalledTimes(2);
+
+      await act(async () => { fireEvent.keyDown(addDialog, { key: "Escape" }); });
+      await act(async () => { fireEvent.click(wakeControl); });
+      dialog = screen.getByRole("dialog", { name: "Wake" });
+      expect(within(dialog).getByText("1 succeeded")).toBeInTheDocument();
+      await act(async () => { fireEvent.click(within(dialog).getByRole("button", { name: "Close Wake" })); });
+      expect(wakeControl).toHaveAccessibleName("Wake all");
+    } finally {
+      cleanup();
+      vi.useRealTimers();
+    }
+  });
+
+  it("cancels the remaining Wake queue from reopened details without blocking the workspace", async () => {
     mocks.listAccounts.mockResolvedValue([chatAccount]);
-    mocks.accountQuota.mockResolvedValue(staleQuota);
+    mocks.accountQuota.mockResolvedValue({ ...staleQuota, status: "fresh" });
+    mocks.wakeOperation.mockResolvedValue({ id: "wake-all", status: "running", results: [] });
     render(<App />);
     await screen.findByText("Personal");
 
     await userEvent.click(screen.getByRole("button", { name: /^Wake all$/ }));
-    expect(await screen.findByRole("dialog", { name: "Wake" })).toBeInTheDocument();
-    expect(screen.getByText("Waking…")).toBeInTheDocument();
+    await openWakeDetails();
+    const dialog = await screen.findByRole("dialog", { name: "Wake" });
+    await userEvent.click(within(dialog).getByRole("button", { name: "Stop remaining" }));
+    expect(mocks.cancelWake).toHaveBeenCalledWith("wake-all");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Close Wake" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Refresh person@example.com" })).toBeEnabled();
     expect(mocks.startWakeAll).toHaveBeenCalledOnce();
   });
 
@@ -2272,6 +2363,7 @@ describe("GSwitch account workspace", () => {
     await userEvent.click(accountChoice);
     await userEvent.click(screen.getByRole("button", { name: "Wake" }));
     await waitFor(() => expect(mocks.startWakeSelected).toHaveBeenCalledWith(["account-1"]));
+    await openWakeDetails();
     expect(await screen.findByRole("dialog", { name: "Wake" })).toBeInTheDocument();
     const wakeDialog = await screen.findByRole("dialog", { name: "Wake" });
     await userEvent.click(await within(wakeDialog).findByRole("button", { name: "Done" }));

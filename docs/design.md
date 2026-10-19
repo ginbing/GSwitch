@@ -123,9 +123,12 @@ is installed without a click.
   the failed reason. The completed header summarizes actual outcomes rather
   than repeating each request's transport steps. Each selected ChatGPT account
   receives one request regardless of its displayed quota or plan window. The
-  result dialog stays in front until the operation finishes or the remaining queue is
-  cancelled. Done dismisses its one-time results. There is no permanent Last
-  result control. Only an explicit default-model rejection offers a compact,
+  batch operation runs in the background, with processed count in its toolbar
+  control. Clicking that control opens details; closing the running details
+  leaves the queue and polling active, so account actions remain available.
+  Completion changes the control to Wake results without opening a dialog or
+  taking focus. Done or closing completed details dismisses the one-time
+  results and restores Wake all. There is no result history. Only an explicit default-model rejection offers a compact,
   account-specific manual retry with the older model in this dialog; cards do
   not carry a model selector. Quota reset times never imply Wake success.
 - Account removal confirms the email and workspace, and says once that it
@@ -169,6 +172,9 @@ is installed without a click.
   such as `4h 55m · 09/27 16:30` or `4小时55分 · 09/27 16:30`, without a visible
   introductory label or trailing “in/后”. Show the year only across years and
   allow wrapping at the separator on narrow cards without truncating the date.
+  Count complete minutes, with a one-minute minimum before the actual reset;
+  leftover seconds must not add a minute. Do not cap a provider's later reset
+  at the nominal quota-window duration.
   Stale data omits the live countdown; an elapsed
   fresh reset marker says to refresh. Hover, keyboard focus, and assistive
   text provide the full reset meaning and date.

@@ -68,14 +68,19 @@ describe("GSwitch language settings", () => {
     expect(formatQuotaResetTime(now / 1000 - 1, "zh-CN", now)).toBe("待刷新");
   });
 
-  it("rounds quota countdowns up without capping a real duration longer than five hours", () => {
+  it("shows complete minutes without rounding seconds into an extra minute or capping longer durations", () => {
     const now = new Date(2026, 9, 5, 12, 10).getTime();
     const fiveHours = now / 1000 + 5 * 60 * 60;
     expect(formatQuotaResetTime(fiveHours, "zh-CN", now)).toBe("5小时 · 10/05 17:10");
     expect(formatQuotaResetTime(fiveHours, "en-US", now)).toBe("5h · 10/05 17:10");
-    expect(formatQuotaResetTime(fiveHours + 30, "zh-CN", now)).toBe("5小时1分 · 10/05 17:10");
-    expect(formatQuotaResetTime(fiveHours + 30, "en-US", now)).toBe("5h 1m · 10/05 17:10");
-    expect(formatQuotaResetTime(fiveHours - 30, "zh-CN", now)).toBe("5小时 · 10/05 17:09");
-    expect(formatQuotaResetTime(fiveHours - 30, "en-US", now)).toBe("5h · 10/05 17:09");
+    for (const seconds of [1, 30, 59]) {
+      expect(formatQuotaResetTime(fiveHours + seconds, "zh-CN", now)).toBe("5小时 · 10/05 17:10");
+      expect(formatQuotaResetTime(fiveHours + seconds, "en-US", now)).toBe("5h · 10/05 17:10");
+    }
+    expect(formatQuotaResetTime(fiveHours + 60, "zh-CN", now)).toBe("5小时1分 · 10/05 17:11");
+    expect(formatQuotaResetTime(fiveHours + 60, "en-US", now)).toBe("5h 1m · 10/05 17:11");
+    expect(formatQuotaResetTime(fiveHours - 30, "zh-CN", now)).toBe("4小时59分 · 10/05 17:09");
+    expect(formatQuotaResetTime(fiveHours - 30, "en-US", now)).toBe("4h 59m · 10/05 17:09");
+    expect(formatQuotaResetTime(now / 1000, "zh-CN", now)).toBe("待刷新");
   });
 });

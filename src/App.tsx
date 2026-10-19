@@ -1964,13 +1964,17 @@ export default function App() {
   };
 
   const startWake = async (accountId?: string, alternateModel = false) => {
+    if (wake?.status === "running") {
+      setDialog("wake");
+      return;
+    }
     const result = accountId
       ? await runAccountTask(accountId, "wake", () => api.startWake(accountId, alternateModel))
       : await runTask("wake-all", api.startWakeAll, false);
     if (result) {
       setWake({ id: result.operation_id, status: "running", alternate_model: alternateModel, results: [] });
       setWakeStatusUnavailable(false);
-      setDialog("wake");
+      if (accountId) setDialog("wake");
     }
   };
 
@@ -1986,7 +1990,6 @@ export default function App() {
     if (result) {
       setWake({ id: result.operation_id, status: "running", alternate_model: false, results: [] });
       setWakeStatusUnavailable(false);
-      setDialog("wake");
     }
   };
 
@@ -2238,12 +2241,15 @@ export default function App() {
           </button>
           <button
             className="button button-secondary"
-            disabled={busy !== null || loading || storageRecovery || chatGptAccounts.length === 0 || wake?.status === "running"}
-            onClick={() => void startWake()}
+            disabled={busy !== null || loading || storageRecovery || (!wake && chatGptAccounts.length === 0)}
+            onClick={() => wake ? setDialog("wake") : void startWake()}
             type="button"
           >
-            <Zap size={16} />
-            {t("toolbar.wakeAll")}
+            {wake?.status === "running" ? <LoaderCircle className="spin" size={16} /> : <Zap size={16} />}
+            {wake ? wake.status === "running"
+              ? t("wake.progress", { count: formatNumber(wake.results.length, locale.formatLocale) })
+              : t("wake.viewResults")
+              : t("toolbar.wakeAll")}
           </button>
           <button
             className="button button-primary"
@@ -2375,7 +2381,7 @@ export default function App() {
                 </button>
                 <button
                   className="button button-secondary"
-                  disabled={busy !== null || selectedChatGptCount === 0}
+                  disabled={busy !== null || selectedChatGptCount === 0 || wake?.status === "running"}
                   onClick={() => void startSelectedWake()}
                   type="button"
                 >
@@ -2959,7 +2965,7 @@ export default function App() {
       ) : null}
 
       {dialog === "wake" && wake ? (
-        <Modal dismissible={wake.status !== "running" && !runningAny("wake-all", "wake-selected", "cancel-wake")} onClose={() => { setDialog(null); setWake(null); }} t={t} title={t("wake.title")}>
+        <Modal onClose={() => { setDialog(null); if (wake.status !== "running") setWake(null); }} t={t} title={t("wake.title")}>
           <div className="wake-panel">
             <div className="wake-status">
               {wake.status === "running" ? <LoaderCircle className="spin" size={21} /> : wake.status === "completed" ? <Info size={21} /> : <CircleAlert size={21} />}
@@ -3004,7 +3010,10 @@ export default function App() {
             </ul> : null}
             <div className="modal-actions">
               {wake.status === "running" ? (
-                <button className="button button-secondary" disabled={busy !== null} onClick={() => void runVoidTask("cancel-wake", () => api.cancelWake(wake.id), false)} type="button">{t("wake.cancelRemaining")}</button>
+                <>
+                  <button className="button button-secondary" disabled={busy !== null} onClick={() => void runVoidTask("cancel-wake", () => api.cancelWake(wake.id), false)} type="button">{t("wake.cancelRemaining")}</button>
+                  <button className="button button-primary" onClick={() => setDialog(null)} type="button">{t("wake.runInBackground")}</button>
+                </>
               ) : null}
               {wake.status !== "running" ? <button className="button button-primary" disabled={busy !== null} onClick={() => {
                 setDialog(null);

@@ -343,6 +343,9 @@ const en = {
   "export.confirm": "Confirm export",
   "wake.title": "Wake",
   "wake.running": "Waking…",
+  "wake.progress": "Waking · {count} processed",
+  "wake.viewResults": "Wake results",
+  "wake.runInBackground": "Run in background",
   "wake.resultsTitle": "Results",
   "wake.stopped": "Stopped",
   "wake.processed": "Processed {count}",
@@ -705,6 +708,9 @@ const zhCN: Record<keyof typeof en, string> = {
   "export.confirm": "确认导出",
   "wake.title": "唤醒",
   "wake.running": "唤醒中…",
+  "wake.progress": "唤醒中 · 已处理 {count}",
+  "wake.viewResults": "唤醒结果",
+  "wake.runInBackground": "后台运行",
   "wake.resultsTitle": "结果",
   "wake.stopped": "已停止",
   "wake.processed": "已处理 {count}",
@@ -819,8 +825,9 @@ export function formatRelativeTime(timestamp: number, formatLocale: string, nowM
 
 export function formatQuotaResetTime(timestamp: number, formatLocale: string, nowMs = Date.now()) {
   const target = new Date(timestamp * 1000);
-  const remainingMinutes = Math.ceil((target.getTime() - nowMs) / 60_000);
-  if (remainingMinutes <= 0) return formatLocale.startsWith("zh") ? "待刷新" : "Refresh to update";
+  const remainingMs = target.getTime() - nowMs;
+  if (remainingMs <= 0) return formatLocale.startsWith("zh") ? "待刷新" : "Refresh to update";
+  const remainingMinutes = Math.max(1, Math.floor(remainingMs / 60_000));
   const days = Math.floor(remainingMinutes / 1_440);
   const hours = Math.floor((remainingMinutes % 1_440) / 60);
   const minutes = remainingMinutes % 60;
