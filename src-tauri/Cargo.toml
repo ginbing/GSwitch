@@ -32,7 +32,12 @@ tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-process = "2.3.1"
 tauri-plugin-single-instance = "2.4.5"
-tauri-plugin-updater = "2.10.1"
+tauri-plugin-updater = { version = "2.12.0", default-features = false, features = ["rustls-tls", "system-proxy"] }
 toml_edit = "0.25"
 uuid = { version = "1", features = ["v4"] }
 zeroize = "1.9"
+
+[patch.crates-io]
+# Upstream 1.24.0 source and signed libsodium archives; only the ZIP build
+# dependency is changed to the security-fixed major. See docs/architecture.md.
+libsodium-sys-stable = { path = "vendor/libsodium-sys-stable" }
