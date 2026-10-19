@@ -165,6 +165,11 @@ updater verifies the downloaded update artifact's signature before installation.
 This verifies the update source; it is not a guarantee about what an installed
 version may do with account data.
 
+The updater enables TLS and system proxy support explicitly. Its optional
+legacy ZIP package support is disabled: GSwitch publishes the standard NSIS
+executable and AppImage directly, and macOS keeps its native tar.gz updater
+bundle. No GSwitch release uses the older Windows ZIP updater format.
+
 After the main view appears, a separate background check reads the installed
 Codex CLI version and OpenAI's latest stable Codex release metadata from GitHub.
 It repeats at most every six hours while the app is open. An unavailable check

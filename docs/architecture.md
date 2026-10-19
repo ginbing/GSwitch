@@ -173,3 +173,13 @@ for its invariants.
 Use official current Codex and Tauri interfaces where they exist. New
 dependencies and abstractions require a present product, platform, or safety
 need. Do not add infrastructure because a future feature might use it.
+
+The Cargo patch for `libsodium-sys-stable` preserves the published 1.24.0
+source (upstream revision `b17dd40bd8ff878a308b79423efc0a086ee2e7d3`,
+crates.io checksum `72b04bf6da2c98b727af37ab62cb505f4d751b975b034a9b9ad491d333b0564e`).
+Its only source change is the build dependency's ZIP version requirement,
+from 8.5 to 9, because released upstream versions still require a vulnerable
+ZIP major. The original signed libsodium archives and their verification code
+stay byte-for-byte intact; no vault format or credential path changes. Cargo's
+lock file owns the resolved dependency versions. Remove this patch when a
+compatible upstream release uses a fixed ZIP dependency.
