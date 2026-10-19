@@ -53,22 +53,6 @@ wasmer-wai = ["wai-bindgen-rust"]
 name = "libsodium_sys"
 path = "src/lib.rs"
 
-[[example]]
-name = "wasi_component_test"
-path = "examples/wasi_component_test.rs"
-
-[[example]]
-name = "wasmer_wai_test"
-path = "examples/wasmer_wai_test.rs"
-
-[[test]]
-name = "test"
-path = "tests/test.rs"
-
-[[test]]
-name = "wasi_component_test"
-path = "tests/wasi_component_test.rs"
-
 [dependencies.libc]
 version = "0.2"
 default-features = false
