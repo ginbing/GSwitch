@@ -107,9 +107,9 @@ normal release sequence for that change. Unless the maintainer specifies a
 version, choose the next unused patch version; after the required checks, tag
 the exact merged `main` commit, run the existing production updater-signing
 workflow, inspect the draft assets and notes, and publish the verified Release.
-For a release that changes account behavior, the required checks include the
-real-account acceptance in `docs/release.md`, which only the maintainer can
-perform or waive.
+Real-account checks in `docs/release.md` are optional and performed only by the
+maintainer. They require no waiver when omitted and do not block a release.
+Record their results only when actually performed.
 An authorization in the current conversation persists across its turns. Do not
 ask again solely because the version has been chosen or the workflow reaches
 signing or publication. A review-only or stop request takes precedence and
@@ -124,8 +124,11 @@ release gates stop publication rather than expanding the authorized scope.
 
 OAuth browser sign-in, a user-selected credential import, and a GitHub branch
 or PR action may proceed when the maintainer has directly requested that flow.
-Never use a user's existing private Cockpit Tools storage as an import source:
-only import files the user explicitly exports or selects.
+Explicit **Find on this computer** discovery may read the documented local
+Codex/Cockpit allowlist once, including an existing supported decryption key.
+Keep it read-only: no automatic inspection, recursive search, source writes,
+key creation or rotation, watcher, or background synchronization. Selected
+export files remain the manual import path.
 
 ## Issues and completion
 

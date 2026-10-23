@@ -14,8 +14,10 @@ relevant document from [the documentation router](docs/README.md).
 - Keep credentials, complete auth documents, API keys, reset-credit IDs, and
   raw provider payloads in Rust-owned boundaries. Never add them to WebView
   state, fixtures, logs, issues, or commits.
-- Do not read another application's private account storage. Import only a file
-  that the user explicitly selected or exported.
+- Import selected export files, or read the documented local Codex/Cockpit
+  allowlist only after the user starts **Find on this computer**. Discovery is
+  one-shot and read-only; never search recursively, modify source files,
+  create or rotate source keys, or add automatic inspection or synchronization.
 - Make one pull request per problem, shared root cause, or acceptance goal,
   with its tests and documentation. Split out a part only when it needs its
   own review or rollback. Explain the user-visible result and the local proof
