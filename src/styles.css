@@ -1012,6 +1012,22 @@ summary:focus-visible {
   margin-top: 13px;
 }
 
+.quota-updated {
+  flex: 1 1 0;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.4;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+
+.card-footer > .icon-button,
+.card-footer-actions {
+  flex-shrink: 0;
+}
+
 .card-footer-actions {
   justify-content: flex-end;
   gap: 7px;
