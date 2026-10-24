@@ -84,6 +84,8 @@ export function useAccountQuota({ accounts, activeId, enabled }: Input) {
     lastAttempt.current.delete(id);
   }, []);
 
+  // A new revision (a changed credential or saved reset-credit list) supersedes
+  // earlier requests and errors. The account's last reading stays current.
   useLayoutEffect(() => {
     const retained = new Set(accounts.filter(account => account.kind === "chat_gpt").map(account => account.id));
     const changed = new Set<string>();
@@ -102,7 +104,7 @@ export function useAccountQuota({ accounts, activeId, enabled }: Input) {
     if (!enabled) for (const member of members.current.values()) member.epoch = ++epoch.current;
     if (!enabled) requests.current.clear();
     const next: View = {
-      quotas: Object.fromEntries(Object.entries(held.current.quotas).filter(([id]) => retained.has(id)).map(([id, quota]): [string, QuotaView] => [id, changed.has(id) ? { ...quota, status: quota.snapshot ? "stale" : "unknown" } : quota])),
+      quotas: Object.fromEntries(Object.entries(held.current.quotas).filter(([id]) => retained.has(id))),
       failures: Object.fromEntries(Object.entries(held.current.failures).filter(([id]) => retained.has(id) && !changed.has(id))),
     };
     held.current = next; setView(next);
@@ -211,7 +213,14 @@ export function useAccountQuota({ accounts, activeId, enabled }: Input) {
   const applyReset = useCallback((id: string, quota?: QuotaView) => {
     invalidate(id);
     const member = members.current.get(id);
-    if (quota && member) receive({ kind: "reset", id, epoch: member.epoch, quota });
+    if (!member) return;
+    if (quota) { receive({ kind: "reset", id, epoch: member.epoch, quota }); return; }
+    // A confirmed reset without its follow-up reading leaves the last one unread.
+    const previous = held.current.quotas[id];
+    if (!previous) return;
+    const unread: QuotaView = { ...previous, status: previous.snapshot ? "stale" : "unknown" };
+    const next: View = { ...held.current, quotas: { ...held.current.quotas, [id]: unread } };
+    held.current = next; setView(next);
   }, [invalidate, receive]);
 
   const refreshAll = useCallback(async () => {

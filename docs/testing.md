@@ -260,8 +260,11 @@ as applicable:
 - a dialog staying closable while unrelated work such as a full refresh runs;
 - one quota acceptance owner rejecting old cache/point/reset results, errors
   superseded by newer data, removed/re-added memberships and changed credential
-  revisions; queued removed accounts never reaching the provider, and post-login
-  reads waiting for the matching revision;
+  revisions; a changed revision alone keeping the last reading current without
+  another read; queued removed accounts never reaching the provider, and
+  post-login reads waiting for the matching revision;
+- the reread after a switch, Wake or repeated sign-in that saves new tokens
+  keeping the card's reading current until its result arrives;
 - pending login dismissal cancelling, accepted completion saving with its dialog
   closed, and OAuth/Wake polling retaining their intervals across same-phase
   status renders;
@@ -270,8 +273,10 @@ as applicable:
 - the reset dialog listing each credit with its provider title and its own
   two-click button, redeeming the picked row, and naming the workspace only
   for an ambiguous email;
-- the card showing the quota a reset returns without a manual refresh, and a
-  failed reset reloading state so the recovery prompt appears;
+- the card showing the quota a reset returns without a manual refresh or
+  another read, also when the reset changes the account revision; a confirmed
+  reset that returns no reading leaving the last one unread until it is read
+  again; and a failed reset reloading state so the recovery prompt appears;
 - browser-login cancellation, selected-file import boundaries, account-space
   empty state, quota stale state, and visible Wake progress in English and
   Simplified Chinese at the minimum and default window sizes in light and dark

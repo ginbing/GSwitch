@@ -128,6 +128,25 @@ const staleQuota: QuotaView = {
   },
 };
 
+// A current reading whose five-hour window has the given remaining percent.
+function currentQuota(fiveHourRemaining: number, fetchedAt = Date.now()): QuotaView {
+  const bucket = staleQuota.snapshot!.buckets[0]!;
+  return {
+    ...staleQuota,
+    status: "fresh",
+    snapshot: {
+      ...staleQuota.snapshot!,
+      fetched_at_unix_ms: fetchedAt,
+      buckets: [{
+        ...bucket,
+        windows: bucket.windows.map((window) => window.kind === "five_hour"
+          ? { ...window, remaining_percent: fiveHourRemaining, used_percent: 100 - fiveHourRemaining }
+          : window),
+      }],
+    },
+  };
+}
+
 function prepareDefaults() {
   mocks.runtimeInfo.mockResolvedValue({
     codex_home: "C:\\Codex",
@@ -715,6 +734,74 @@ describe("GSwitch account workspace", () => {
     expect(mocks.refreshAccountQuota).not.toHaveBeenCalledWith("account-1", false);
   });
 
+  it("keeps the confirmed reading current when a reset changes the account revision", async () => {
+    // Rust advances an account's revision whenever its saved reset credits change.
+    const before = currentQuota(30, Date.now() - 60_000);
+    let afterReset: QuotaView | undefined;
+    let cacheReadsAfterReset = 0;
+    mocks.listAccounts.mockImplementation(async () => [{ ...chatAccount, revision: afterReset ? 2 : 1 }]);
+    mocks.accountQuota.mockImplementation(async () => {
+      if (!afterReset) return before;
+      cacheReadsAfterReset += 1;
+      return afterReset;
+    });
+    mocks.redeemResetCredit.mockImplementation(async () => {
+      const reading = currentQuota(100);
+      afterReset = {
+        ...reading,
+        snapshot: {
+          ...reading.snapshot!,
+          reset_credits: { available_count: 1, nearest_expiry: 1894060800, details_available: true, can_redeem: true, usable_credits: [{ expires_at: 1894060800 }] },
+        },
+      };
+      return { account_id: "account-1", outcome: "reset", quota: afterReset };
+    });
+    render(<App />);
+    const card = (await screen.findByRole("heading", { name: "person@example.com" })).closest("article")!;
+    await within(card).findByText("30%");
+
+    await confirmResetRow();
+    expect(await screen.findByText("Used a reset credit for person@example.com.")).toBeInTheDocument();
+    await waitFor(() => expect(cacheReadsAfterReset).toBeGreaterThan(0));
+    // Let the reloaded cache read reach its automatic refresh check.
+    await act(() => new Promise((resolve) => window.setTimeout(resolve, 20)));
+
+    expect(within(card).getByText("100%")).toBeInTheDocument();
+    expect(within(card).queryByText(/^Last \d/)).not.toBeInTheDocument();
+    expect(card.querySelector(".quota-meter-stale, .quota-alert")).toBeNull();
+    expect(card.querySelectorAll("time.quota-reset-time")).toHaveLength(2);
+    expect(mocks.refreshAccountQuota).not.toHaveBeenCalled();
+  });
+
+  it("marks the last reading unread when a confirmed reset returns no reading", async () => {
+    const before = currentQuota(30, Date.now() - 60_000);
+    let redeemed = false;
+    mocks.listAccounts.mockImplementation(async () => [{ ...chatAccount, revision: redeemed ? 2 : 1 }]);
+    // Rust keeps the pre-reset reading but marks it unread with time zero.
+    mocks.accountQuota.mockImplementation(async () => redeemed
+      ? { ...before, status: "stale", snapshot: { ...before.snapshot!, fetched_at_unix_ms: 0 } }
+      : before);
+    mocks.redeemResetCredit.mockImplementation(async () => {
+      redeemed = true;
+      return { account_id: "account-1", outcome: "reset", refresh_warning: "The refreshed quota is not available yet" };
+    });
+    let resolveRead!: (quota: QuotaView) => void;
+    mocks.refreshAccountQuota.mockImplementation(() => new Promise<QuotaView>((resolve) => { resolveRead = resolve; }));
+    render(<App />);
+    const card = (await screen.findByRole("heading", { name: "person@example.com" })).closest("article")!;
+    await within(card).findByText("30%");
+
+    await confirmResetRow();
+    expect(await screen.findByText("The reset went through, but the updated quota isn't available yet. It will update shortly.")).toBeInTheDocument();
+    expect(await within(card).findByText("Last 30%")).toBeInTheDocument();
+    await waitFor(() => expect(mocks.refreshAccountQuota).toHaveBeenCalledWith("account-1", true));
+
+    await act(async () => { resolveRead(currentQuota(100)); });
+    expect(await within(card).findByText("100%")).toBeInTheDocument();
+    expect(card.querySelector(".quota-meter-stale")).toBeNull();
+    expect(mocks.refreshAccountQuota).toHaveBeenCalledTimes(1);
+  });
+
   it("names the account and the credit a reset used", async () => {
     mocks.listAccounts.mockResolvedValue([chatAccount]);
     mocks.accountQuota.mockResolvedValue(staleQuota);
@@ -845,8 +932,8 @@ describe("GSwitch account workspace", () => {
     render(<App />);
 
     const card = (await screen.findByRole("heading", { name: "person@example.com" })).closest(".account-card");
+    await waitFor(() => expect(card?.querySelector("time.quota-reset-time")).toHaveTextContent(/4小时59分 · \d{2}\/\d{2} \d{2}:\d{2}/));
     const resetTime = card?.querySelector("time.quota-reset-time");
-    expect(resetTime).toHaveTextContent(/4小时59分 · \d{2}\/\d{2} \d{2}:\d{2}/);
     expect(resetTime).toHaveAttribute("aria-label", expect.stringContaining("重置于"));
     expect(resetTime).toHaveAttribute("tabindex", "0");
     expect(card).not.toHaveTextContent("重置于");
@@ -1016,7 +1103,7 @@ describe("GSwitch account workspace", () => {
     render(<App />);
 
     const card = (await screen.findByRole("heading", { name: "person@example.com" })).closest(".account-card");
-    expect(card?.querySelector("time.quota-reset-time")).toHaveTextContent("Refresh to update");
+    await waitFor(() => expect(card?.querySelector("time.quota-reset-time")).toHaveTextContent("Refresh to update"));
   });
   it("uses ChatGPT email as the primary identity and workspace as context", async () => {
     mocks.listAccounts.mockResolvedValue([chatAccount]);
@@ -1812,6 +1899,63 @@ describe("GSwitch account workspace", () => {
 
     await waitFor(() => expect(screen.getByRole("button", { name: "Current account: other@example.com" })).toBeDisabled());
     expect(mocks.appSnapshot).toHaveBeenCalledOnce();
+  });
+
+  it.each(["switch", "wake"] as const)("keeps a card's reading current while it is reread after a %s saves refreshed tokens", async (action) => {
+    const reading = currentQuota(30, Date.now() - 60_000);
+    let saved = false;
+    mocks.listAccounts.mockImplementation(async () => [{ ...chatAccount, revision: saved ? 2 : 1 }]);
+    mocks.accountQuota.mockResolvedValue(reading);
+    mocks.switchAccount.mockImplementation(async () => {
+      saved = true;
+      return { account: { ...chatAccount, revision: 2, active: true } };
+    });
+    mocks.wakeOperation.mockImplementation(async () => {
+      saved = true;
+      return { id: "wake-1", status: "completed", results: [{ account_id: chatAccount.id, label: chatAccount.label, result: "reply_received", request_state: "sent" }] };
+    });
+    let resolveRead!: (quota: QuotaView) => void;
+    mocks.refreshAccountQuota.mockImplementation(() => new Promise<QuotaView>((resolve) => { resolveRead = resolve; }));
+    render(<App />);
+    const card = (await screen.findByRole("heading", { name: "person@example.com" })).closest("article")!;
+    await within(card).findByText("30%");
+
+    await userEvent.click(screen.getByRole("button", { name: `${action === "switch" ? "Switch to" : "Wake"} person@example.com` }));
+    await waitFor(() => expect(mocks.refreshAccountQuota).toHaveBeenCalledWith("account-1", true), { timeout: 2500 });
+    expect(within(card).getByText("30%")).toBeInTheDocument();
+    expect(within(card).queryByText(/^Last \d/)).not.toBeInTheDocument();
+    expect(card.querySelector(".quota-meter-stale, .quota-alert")).toBeNull();
+
+    await act(async () => { resolveRead(currentQuota(80)); });
+    expect(await within(card).findByText("80%")).toBeInTheDocument();
+    expect(mocks.refreshAccountQuota).toHaveBeenCalledTimes(1);
+  });
+
+  it("rereads an account that signs in again while keeping its reading current", async () => {
+    const reading = currentQuota(30, Date.now() - 60_000);
+    let signedIn = false;
+    mocks.listAccounts.mockImplementation(async () => [{ ...chatAccount, revision: signedIn ? 2 : 1 }]);
+    mocks.accountQuota.mockResolvedValue(reading);
+    mocks.oauthStatus.mockImplementation(async () => {
+      signedIn = true;
+      return { status: "complete", account: { ...chatAccount, revision: 2 } };
+    });
+    let resolveRead!: (quota: QuotaView) => void;
+    mocks.refreshAccountQuota.mockImplementation(() => new Promise<QuotaView>((resolve) => { resolveRead = resolve; }));
+    render(<App />);
+    const card = (await screen.findByRole("heading", { name: "person@example.com" })).closest("article")!;
+    await within(card).findByText("30%");
+
+    await userEvent.click(within(card).getByRole("button", { name: "More actions for person@example.com" }));
+    await userEvent.click(within(card).getByRole("button", { name: "Sign in again" }));
+    expect(await screen.findByText("person@example.com was signed in again.", undefined, { timeout: 2500 })).toBeInTheDocument();
+    await waitFor(() => expect(mocks.refreshAccountQuota).toHaveBeenCalledWith("account-1", true));
+    expect(within(card).getByText("30%")).toBeInTheDocument();
+    expect(within(card).queryByText(/^Last \d/)).not.toBeInTheDocument();
+
+    await act(async () => { resolveRead(currentQuota(80)); });
+    expect(await within(card).findByText("80%")).toBeInTheDocument();
+    expect(mocks.refreshAccountQuota).toHaveBeenCalledTimes(1);
   });
 
   it("lets the user cancel a browser OAuth flow", async () => {

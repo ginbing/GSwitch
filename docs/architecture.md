@@ -113,7 +113,9 @@ refresh and reset projections share one acceptance path: current membership and
 credential revision, request identity and timestamps decide which results can
 apply. Removed/superseded work cannot restore data or errors. Reset and re-login
 invalidate earlier requests; post-login reads wait for the matching account
-revision. This is a projection of Rust facts, not another persisted account store.
+revision. A new revision, which Rust also issues when saved reset credits
+change, supersedes requests and errors but leaves the last reading current.
+This is a projection of Rust facts, not another persisted account store.
 
 `AccountCard` owns presentation and its menu/tooltip interactions, and reports
 intent through callbacks. Shared popover behavior remains a local component.
