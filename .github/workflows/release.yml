@@ -51,6 +51,9 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Verify Windows installer helper with synthetic downloads
+        if: matrix.id == 'windows'
+        run: pwsh -NoProfile -File scripts/test-install-helper.ps1
       - name: Install Linux bundle prerequisites
         if: matrix.id == 'linux'
         run: >-

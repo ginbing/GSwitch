@@ -20,6 +20,11 @@ const commands = {
   ],
   platform: [
     ["cargo", ["check", "--manifest-path", "src-tauri/Cargo.toml", "--all-targets", "--locked"]],
+    ["cargo", ["test", "--manifest-path", "src-tauri/Cargo.toml", "--locked", "--lib", "owned_process::tests"]],
+    ["cargo", ["test", "--manifest-path", "src-tauri/Cargo.toml", "--locked", "--lib", "cli_update::tests"]],
+    ["cargo", ["test", "--manifest-path", "src-tauri/Cargo.toml", "--locked", "--lib", "isolated_profile::tests"]],
+    ["cargo", ["test", "--manifest-path", "src-tauri/Cargo.toml", "--locked", "--test", "crypto_dependency"]],
+    ["cargo", ["test", "--manifest-path", "src-tauri/Cargo.toml", "--locked", "--lib", "vault::tests"]],
   ],
 };
 

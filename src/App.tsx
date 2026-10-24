@@ -326,7 +326,7 @@ function accountGridHasGlobalMutation(busy: string | null) {
 
 function cliUpdateFailureCode(error: unknown): CodexCliUpdateFailure {
   const code = String(error);
-  if (["not_installed", "unsupported", "codex_open", "update_failed", "verification_failed"].includes(code)) {
+  if (["not_installed", "unsupported", "codex_open", "update_failed", "launch_failed", "timed_out", "cleanup_failed", "verification_failed"].includes(code)) {
     return code as CodexCliUpdateFailure;
   }
   return "update_failed";
@@ -1288,11 +1288,11 @@ export default function App() {
       return current.promise;
     }
 
-    lastQuotaAttempt.current.set(accountId, Date.now());
     const lanes = refreshLanes.current;
     const entry: QuotaRefreshEntry = { manual: !background, started: false, promise: Promise.resolve() as never };
     const read = () => {
       entry.started = true;
+      lastQuotaAttempt.current.set(accountId, Date.now());
       return api.refreshAccountQuota(accountId, true);
     };
     const attempt = background
@@ -1337,6 +1337,7 @@ export default function App() {
     quotaRefreshes.current.set(accountId, entry);
     const forget = () => {
       if (quotaRefreshes.current.get(accountId) === entry) {
+        if (entry.started) lastQuotaAttempt.current.set(accountId, Date.now());
         quotaRefreshes.current.delete(accountId);
       }
     };
@@ -2175,6 +2176,15 @@ export default function App() {
         },
       };
     }
+    if (storage?.isolated_profile_status) {
+      return {
+        icon: <ShieldAlert size={20} />,
+        title: t("safety.isolatedTitle"),
+        body: t(`safety.isolated.${storage.isolated_profile_status}`),
+        action: t("safety.recoverSignIns"),
+        onAction: () => void runTask("recover-sign-ins", api.recoverPendingCredentials),
+      };
+    }
     if (pendingResetCredit) {
       return {
         icon: <CircleAlert size={20} />,
@@ -2507,6 +2517,9 @@ export default function App() {
               unsupported: "cli.error.unsupported",
               codex_open: "cli.error.codexOpen",
               update_failed: "cli.error.updateFailed",
+              launch_failed: "cli.error.launchFailed",
+              timed_out: "cli.error.timedOut",
+              cleanup_failed: "cli.error.cleanupFailed",
               verification_failed: "cli.error.verificationFailed",
               inspect_failed: "cli.error.inspectFailed",
               open_guide: "cli.error.openGuide",

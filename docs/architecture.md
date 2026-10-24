@@ -63,6 +63,8 @@ Keep the backend flat and organized by concrete responsibility:
   state;
 - `app_server.rs`: lifecycle and protocol boundary for the official Codex App
   Server;
+- `isolated_profile.rs`: isolated-home intent, activity leases, protected
+  credential handoff, and cleanup shared by normal completion and startup;
 - `chatgpt.rs`: read-only ChatGPT quota and account-metadata HTTP boundary;
 - `codex.rs`: `CODEX_HOME`, effective storage mode, and live auth-file access;
 - `cli_update.rs`: version inspection and explicit handoff to the installed
@@ -80,6 +82,8 @@ Keep the backend flat and organized by concrete responsibility:
 - `wake.rs`: Wake policy, narrow Responses transport, sequential Wake All,
   cancellation, and per-account outcomes;
 - `runtime.rs`: external Codex process detection;
+- `owned_process.rs`: scoped helper process groups/jobs, bounded termination,
+  and the fail-closed state after unconfirmed cleanup;
 - `storage.rs`: versioned JSON persistence and atomic/private writes;
 - `vault.rs`: Rust-only Stronghold snapshot and native root-key boundary for
   credential and recovery secrets;
@@ -185,3 +189,16 @@ only as a library. The original signed libsodium archives and their verification
 code stay byte-for-byte intact; no vault format or credential path changes. Cargo's
 lock file owns the resolved dependency versions. Remove this patch when a
 compatible upstream release uses a fixed ZIP dependency.
+
+The maintainer-approved `iota-crypto` patch retains the published 0.23.2 source
+(upstream `8c13125541e762206e2dc57b8bfde89c7f6ce8e3`, crate SHA-256
+`98a38db844c910d78825e173c083f2ef416b69cb091bba8ac1055763c6db065b`).
+Its k256 dependency moves to 0.14 so the locked graph can use crypto-bigint
+0.7.6 or newer. Only the secp256k1 and SLIP10 API call sites adapt to the new
+upstream names, return types, and RNG trait; key generation and cryptographic
+arithmetic remain upstream implementations. The RNG bridge preserves the old
+caller interface and forwards bytes without changing the entropy source.
+Stronghold, snapshot encryption, credential metadata, and key derivation are
+unchanged. Published upstream vectors and a synthetic snapshot generated with
+unmodified Stronghold verify the boundary. Remove this patch when a compatible
+published IOTA release adopts the fixed dependency chain.

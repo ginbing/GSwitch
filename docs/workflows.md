@@ -259,6 +259,13 @@ unknown. The card renders whichever Codex windows the provider actually supplies
 including a five-week Free-plan window, with its reset time. It does not
 invent a five-hour or weekly window for a plan that lacks one.
 
+Before normalization, Rust validates the consumed usage-response structure:
+the plan marker, optional quota containers, and supplied windows and reset
+summary. Absent/null optional windows and unknown plan names remain valid;
+unrecognized JSON and wrongly typed containers are invalid responses. A failed
+read preserves the last successful quota, reset details, and reading time.
+It never becomes an authentication failure merely because parsing failed.
+
 The supported minimum is Codex 0.144.5. GSwitch sends its rate-limit request
 with a null parameter payload for that version and retries once with an empty
 object only when a newer server explicitly rejects the parameter shape. It
@@ -281,7 +288,9 @@ visible it reads the current Codex account every two minutes, or one minute
 after the window regains focus; another account after thirty minutes, or as
 soon as one of its quota windows passes its reset time; an unread account at
 once; and an account right after the user switches to it, wakes it, or signs
-in again. A hidden window makes no reads. Retries count from the last attempt,
+in again. A hidden window makes no reads. Retries count from the actual attempt
+and its completion, so time spent waiting in a lane cannot consume the retry
+interval. Manual refresh remains available,
 and a failure only the user can fix (a rejected sign-in, a sign-in that needs
 a manual refresh, or an identity mismatch) waits for the user.
 Quota is operational account state, not usage analytics.

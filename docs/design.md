@@ -140,7 +140,9 @@ is installed without a click.
   waiting behind automatic reads. Refresh all shows "Refreshing n/total" on the
   toolbar and leaves the workspace usable; a successful card refresh needs no
   notice because the card itself updates. Each card shows how long ago its
-  quota was read next to its refresh button. Automatic reads leave switching
+  quota was read next to its refresh button, in muted 12px text that wraps
+  within the remaining footer space without shrinking its action buttons.
+  Switching alone never changes that last successful read time. Automatic reads leave switching
   available while waiting for the provider and never refresh a saved
   credential. A failed card has one compact warning icon beside its first quota
   title, with no permanent failure sentence or stale badge. Hover, keyboard

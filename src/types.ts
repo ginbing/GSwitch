@@ -38,11 +38,15 @@ export type CodexCliUpdateFailure =
   | "unsupported"
   | "codex_open"
   | "update_failed"
+  | "launch_failed"
+  | "timed_out"
+  | "cleanup_failed"
   | "verification_failed";
 
 export type StorageStatus = "ready" | "recovery_required";
 
 export interface StorageView {
+  isolated_profile_status?: "recovery_available" | "restricted" | "protection_failed" | "cleanup_failed";
   status: StorageStatus;
   message?: string;
 }

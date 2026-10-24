@@ -31,6 +31,7 @@ const mocks = vi.hoisted(() => ({
   appSnapshot: vi.fn(),
   listAccounts: vi.fn(),
   resetDamagedAccountStore: vi.fn(),
+  recoverPendingCredentials: vi.fn(),
   liveAccount: vi.fn(),
   startOAuth: vi.fn(),
   oauthStatus: vi.fn(),
@@ -151,6 +152,7 @@ function prepareDefaults() {
     live: await mocks.liveAccount(),
   }));
   mocks.resetDamagedAccountStore.mockResolvedValue(undefined);
+  mocks.recoverPendingCredentials.mockResolvedValue(0);
   mocks.accountQuota.mockResolvedValue({
     account_id: "unused",
     status: "unknown",
@@ -216,6 +218,23 @@ function prepareDefaults() {
 }
 
 describe("GSwitch account workspace", () => {
+  it.each(["recovery_available", "restricted", "cleanup_failed", "protection_failed"] as const)("shows sanitized isolated-storage status %s without replaying an operation", async (status) => {
+    mocks.appSnapshot.mockResolvedValueOnce({
+      storage: { status: "ready", isolated_profile_status: status },
+      accounts: [chatAccount], live: { status: "not_signed_in", credential_store: "file" },
+    });
+    render(<App />);
+    expect(await screen.findByText("An interrupted sign-in needs attention")).toBeInTheDocument();
+    expect(mocks.recoverPendingCredentials).not.toHaveBeenCalled();
+    expect(mocks.redeemResetCredit).not.toHaveBeenCalled();
+    expect(mocks.startOAuth).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: "Recover saved sign-ins" }));
+    await waitFor(() => expect(mocks.recoverPendingCredentials).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.queryByText("An interrupted sign-in needs attention")).not.toBeInTheDocument());
+    expect(mocks.resetDamagedAccountStore).not.toHaveBeenCalled();
+    expect(mocks.redeemResetCredit).not.toHaveBeenCalled();
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     window.localStorage.clear();
@@ -1246,6 +1265,33 @@ describe("GSwitch account workspace", () => {
     fireEvent.focus(window);
 
     await waitFor(() => expect(mocks.refreshAccountQuota).toHaveBeenCalledWith("account-1", true));
+  });
+
+  it("spaces automatic retries from the actual queued attempt instead of its enqueue time", async () => {
+    vi.useFakeTimers();
+    try {
+      const started = Date.now();
+      const second = { ...chatAccount, id: "account-2", email: "queued@example.com" };
+      mocks.listAccounts.mockResolvedValue([chatAccount, second]);
+      mocks.accountQuota.mockImplementation(async (id: string) => ({ account_id: id, status: "unknown" }));
+      let releaseFirst!: (quota: QuotaView) => void;
+      mocks.refreshAccountQuota.mockImplementation((id: string) => id === chatAccount.id
+        ? new Promise<QuotaView>((resolve) => { releaseFirst = resolve; })
+        : Promise.reject({ code: "network" }));
+      await act(async () => { render(<App />); });
+      expect(mocks.refreshAccountQuota.mock.calls).toEqual([[chatAccount.id, true]]);
+      vi.setSystemTime(started + 31 * 60_000);
+      await act(async () => { releaseFirst({ ...staleQuota, status: "fresh", snapshot: { ...staleQuota.snapshot!, fetched_at_unix_ms: Date.now() } }); });
+      expect(mocks.refreshAccountQuota.mock.calls).toEqual([[chatAccount.id, true], [second.id, true]]);
+      await act(async () => { fireEvent.focus(window); fireEvent.focus(window); });
+      expect(mocks.refreshAccountQuota).toHaveBeenCalledTimes(2);
+      // User intent bypasses automatic spacing and remains usable.
+      await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Refresh queued@example.com" })); });
+      expect(mocks.refreshAccountQuota).toHaveBeenCalledTimes(3);
+    } finally {
+      cleanup();
+      vi.useRealTimers();
+    }
   });
 
   it("starts a user's refresh without waiting behind automatic refreshes", async () => {

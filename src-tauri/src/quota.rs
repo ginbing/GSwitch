@@ -237,7 +237,24 @@ pub(crate) fn refresh_quota_snapshot(
     identity: &AccountIdentity,
     credential: &Value,
 ) -> Result<QuotaSnapshot, ReadOnlyRefreshFailure> {
-    let normalized = fetch_quota_projection(identity, credential, account.reset_credits.as_ref())?;
+    let client = ChatGptClient::new().map_err(ReadOnlyRefreshFailure::Message)?;
+    refresh_quota_snapshot_with_client(state, operation, account, identity, credential, &client)
+}
+
+fn refresh_quota_snapshot_with_client(
+    state: &AppState,
+    operation: &OperationGuard<'_>,
+    account: &StoredAccount,
+    identity: &AccountIdentity,
+    credential: &Value,
+    client: &ChatGptClient,
+) -> Result<QuotaSnapshot, ReadOnlyRefreshFailure> {
+    let normalized = fetch_quota_projection_with_client(
+        identity,
+        credential,
+        account.reset_credits.as_ref(),
+        client,
+    )?;
     let snapshot = normalized.snapshot;
     state
         .update_quota_under_operation(
@@ -262,6 +279,15 @@ fn fetch_quota_projection(
     saved: Option<&StoredResetCredits>,
 ) -> Result<NormalizedRateLimits, ReadOnlyRefreshFailure> {
     let client = ChatGptClient::new().map_err(ReadOnlyRefreshFailure::Message)?;
+    fetch_quota_projection_with_client(identity, credential, saved, &client)
+}
+
+fn fetch_quota_projection_with_client(
+    identity: &AccountIdentity,
+    credential: &Value,
+    saved: Option<&StoredResetCredits>,
+    client: &ChatGptClient,
+) -> Result<NormalizedRateLimits, ReadOnlyRefreshFailure> {
     let usage = client
         .usage(credential)
         .map_err(ReadOnlyRefreshFailure::Provider)?;
@@ -352,7 +378,7 @@ impl ReadOnlyRefreshFailure {
                 RequestFailureKind::Transport => {
                     "Unable to reach ChatGPT quota service".to_string()
                 }
-                RequestFailureKind::InvalidJson => {
+                RequestFailureKind::InvalidJson | RequestFailureKind::InvalidResponse => {
                     "ChatGPT returned an invalid quota response".to_string()
                 }
             },
@@ -406,18 +432,20 @@ pub(crate) fn refresh_saved_sign_in(
     identity: &AccountIdentity,
 ) -> Result<Value, ManagedRefreshFailure> {
     let unavailable = ManagedRefreshFailure::Unavailable;
-    let temporary = TempCodexHome::create(&state.isolated_profile_root().map_err(unavailable)?)
-        .map_err(unavailable)?;
+    let temporary =
+        TempCodexHome::managed(state, Some(identity.clone()), None).map_err(unavailable)?;
     temporary
         .write_auth(&account.credential)
         .map_err(unavailable)?;
-    let mut server = AppServer::start(&temporary.path).map_err(unavailable)?;
+    let mut server = AppServer::start_isolated(&temporary).map_err(unavailable)?;
     let attempt = server.account_refresh(1);
+    drop(server);
 
     // Codex may have rotated the token chain even when its reply never
     // arrived, so keep a newer credential before reporting that failure.
     let refreshed = temporary.read_auth().map_err(unavailable)?;
     let credential = keep_refreshed_credential(state, operation, account, identity, refreshed)?;
+    temporary.cleanup().map_err(unavailable)?;
     attempt.map_err(unavailable)?;
     Ok(credential)
 }
@@ -599,9 +627,11 @@ struct AppServerResetSession {
 
 impl AppServerResetSession {
     fn start(state: &AppState, credential: &Value) -> Result<Self, String> {
-        let temporary = TempCodexHome::create(&state.isolated_profile_root()?)?;
+        let kind = document_kind(credential)?;
+        let temporary =
+            TempCodexHome::managed(state, Some(derive_identity(&kind, credential)?), None)?;
         temporary.write_auth(credential)?;
-        let server = AppServer::start(&temporary.path)?;
+        let server = AppServer::start_isolated(&temporary)?;
         Ok(Self {
             server,
             temporary,
@@ -1118,7 +1148,7 @@ pub(crate) fn normalize_rate_limits_data(
     result: &Value,
     fetched_at_unix_ms: i64,
 ) -> NormalizedRateLimits {
-    if result.get("rate_limit").is_some() {
+    if result.get("rate_limit").is_some() || result.get("plan_type").is_some() {
         return normalize_chatgpt_rate_limits_data(result, fetched_at_unix_ms);
     }
     let buckets = rate_limit_sources(result)
@@ -2106,6 +2136,112 @@ mod tests {
         use crate::accounts::AccountDraft;
 
         const FUTURE: i64 = 4_000_000_000;
+
+        #[test]
+        fn failed_usage_reads_preserve_the_last_success_and_protected_credentials() {
+            let (state, accounts, root) = state_with_accounts(&["synthetic"]);
+            let account = &accounts[0];
+            let operation = state.acquire_operation().expect("operation");
+            let good =
+                normalize_rate_limits_data(&rate_limits(&[("fake-credit", FUTURE)]), 123_000);
+            state
+                .update_quota_under_operation(
+                    &operation,
+                    &account.id,
+                    good.snapshot,
+                    good.reset_credits,
+                )
+                .expect("good cache");
+            let account = state
+                .account_by_id_under_operation(&operation, &account.id)
+                .expect("cached account");
+            let metadata = fs::read(root.join("accounts.json")).expect("metadata");
+            let vault = fs::read(root.join("credentials.hold")).expect("vault");
+            let identity = account.identity.as_ref().expect("identity");
+            for (status, body, code) in [
+                (429, "{}", QuotaRefreshFailureCode::RateLimited),
+                (503, "{}", QuotaRefreshFailureCode::Service),
+                (200, "not-json", QuotaRefreshFailureCode::InvalidResponse),
+                (
+                    200,
+                    r#"{"unexpected":true}"#,
+                    QuotaRefreshFailureCode::InvalidResponse,
+                ),
+                (
+                    200,
+                    r#"{"plan_type":"plus","rate_limit":[]}"#,
+                    QuotaRefreshFailureCode::InvalidResponse,
+                ),
+            ] {
+                let (url, server) = chatgpt::tests::fixture(status, body);
+                let client = ChatGptClient::with_base_url(&url).expect("client");
+                let error = refresh_quota_snapshot_with_client(
+                    &state,
+                    &operation,
+                    &account,
+                    identity,
+                    &account.credential,
+                    &client,
+                )
+                .expect_err("invalid read");
+                assert_eq!(refresh_failure(&error.message()).code, code);
+                server.join().expect("fixture");
+                assert_eq!(fs::read(root.join("accounts.json")).unwrap(), metadata);
+                assert_eq!(fs::read(root.join("credentials.hold")).unwrap(), vault);
+            }
+            let client =
+                ChatGptClient::with_base_url("http://127.0.0.1:0").expect("unreachable client");
+            let error = refresh_quota_snapshot_with_client(
+                &state,
+                &operation,
+                &account,
+                identity,
+                &account.credential,
+                &client,
+            )
+            .expect_err("transport");
+            assert_eq!(
+                refresh_failure(&error.message()).code,
+                QuotaRefreshFailureCode::Network
+            );
+            assert_eq!(fs::read(root.join("accounts.json")).unwrap(), metadata);
+            assert_eq!(fs::read(root.join("credentials.hold")).unwrap(), vault);
+            drop(operation);
+            fs::remove_dir_all(root).expect("cleanup");
+        }
+
+        #[test]
+        fn valid_usage_survives_an_unavailable_separate_credit_detail_request() {
+            let (state, accounts, root) = state_with_accounts(&["synthetic"]);
+            let account = &accounts[0];
+            let operation = state.acquire_operation().expect("operation");
+            let usage = json!({"plan_type":"plus","rate_limit":{"allowed":true,"limit_reached":false,"primary_window":{"used_percent":17,"limit_window_seconds":18000,"reset_after_seconds":60,"reset_at":FUTURE}},"rate_limit_reset_credits":{"available_count":2}});
+            // This fixture handles usage once then closes. The separate details
+            // connection fails; a good usage result must still be committed.
+            let (url, server) = chatgpt::tests::fixture(200, &usage.to_string());
+            let client = ChatGptClient::with_base_url(&url).expect("client");
+            let snapshot = refresh_quota_snapshot_with_client(
+                &state,
+                &operation,
+                account,
+                account.identity.as_ref().unwrap(),
+                &account.credential,
+                &client,
+            )
+            .unwrap_or_else(|error| panic!("{}", error.message()));
+            server.join().expect("fixture");
+            assert_eq!(snapshot.buckets[0].windows[0].used_percent, Some(17));
+            let credits = snapshot.reset_credits.expect("summary");
+            assert_eq!(credits.available_count, 2);
+            assert!(!credits.details_available);
+            assert!(state
+                .account_by_id_under_operation(&operation, &account.id)
+                .unwrap()
+                .quota
+                .is_some());
+            drop(operation);
+            fs::remove_dir_all(root).expect("cleanup");
+        }
 
         fn credential(user: &str) -> Value {
             let claims = json!({

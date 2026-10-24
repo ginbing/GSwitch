@@ -11,6 +11,12 @@ export interface ResolvedLocale {
 type TranslationValues = Record<string, string | number>;
 
 const en = {
+  "safety.isolatedTitle": "An interrupted sign-in needs attention",
+  "safety.isolated.recovery_available": "An interrupted operation left a protected sign-in copy. Recover it to finish saving; reset credits and other provider operations will not be replayed.",
+  "safety.isolated.restricted": "Temporary sign-in storage could not be confirmed inactive and safe. Close Codex and retry recovery. Operations requiring isolated storage remain blocked.",
+  "safety.isolated.cleanup_failed": "Temporary sign-in storage could not be removed. Close Codex and retry recovery. Operations requiring isolated storage remain blocked.",
+  "safety.isolated.protection_failed": "An interrupted sign-in could not be retained safely. Temporary credentials were removed; you may need to sign in again.",
+  "safety.recoverSignIns": "Recover saved sign-ins",
   "file.accountExports": "Account exports",
   "common.unknown": "Unknown",
   "common.cancel": "Cancel",
@@ -110,6 +116,9 @@ const en = {
   "cli.error.unsupported": "This CLI cannot update itself. Use its installer or package manager.",
   "cli.error.codexOpen": "Quit Codex, then try the update again.",
   "cli.error.updateFailed": "The official Codex update did not finish. Try updating from a terminal or use the install guide.",
+  "cli.error.launchFailed": "GSwitch could not start the official updater safely. Use the install guide.",
+  "cli.error.timedOut": "The Codex update timed out and its helper processes were stopped. Check the installation before retrying.",
+  "cli.error.cleanupFailed": "GSwitch could not confirm that the updater stopped. Close its processes and restart GSwitch before changing accounts.",
   "cli.error.verificationFailed": "The update command finished, but GSwitch could not read the installed CLI version. Check the installation.",
   "cli.error.inspectFailed": "GSwitch could not check the Codex CLI. Try again.",
   "cli.error.openGuide": "GSwitch could not open the guide. Visit developers.openai.com/codex/cli/ in your browser.",
@@ -376,6 +385,12 @@ const en = {
 } as const;
 
 const zhCN: Record<keyof typeof en, string> = {
+  "safety.isolatedTitle": "中断的登录需要处理",
+  "safety.isolated.recovery_available": "已加密保留中断操作的登录信息。恢复后可继续保存；不会重放额度重置等服务商操作。",
+  "safety.isolated.restricted": "暂时无法确认临时登录存储无人使用且安全。请关闭 Codex 后重试恢复。需要隔离存储的操作暂不可用。",
+  "safety.isolated.cleanup_failed": "临时登录存储未能删除。请关闭 Codex 后重试恢复。需要隔离存储的操作暂不可用。",
+  "safety.isolated.protection_failed": "未能安全保留中断的登录信息。临时凭据已删除，可能需要重新登录。",
+  "safety.recoverSignIns": "恢复已保存的登录",
   "file.accountExports": "账户导出文件",
   "common.unknown": "未知",
   "common.cancel": "取消",
@@ -475,6 +490,9 @@ const zhCN: Record<keyof typeof en, string> = {
   "cli.error.unsupported": "此 CLI 不支持自行更新。请通过原安装程序或包管理器更新。",
   "cli.error.codexOpen": "请退出 Codex 后再更新。",
   "cli.error.updateFailed": "Codex 官方更新未完成。请在终端中更新，或查看安装指南。",
+  "cli.error.launchFailed": "GSwitch 无法安全启动官方更新程序。请查看安装指南。",
+  "cli.error.timedOut": "Codex 更新超时，相关辅助进程已停止。请检查安装后再重试。",
+  "cli.error.cleanupFailed": "GSwitch 无法确认更新程序已停止。请关闭相关进程并重启 GSwitch 后再更改账号。",
   "cli.error.verificationFailed": "更新命令已结束，但 GSwitch 无法读取已安装的 CLI 版本。请检查安装。",
   "cli.error.inspectFailed": "GSwitch 无法检查 Codex CLI。请重试。",
   "cli.error.openGuide": "GSwitch 无法打开指南。请在浏览器访问 developers.openai.com/codex/cli/。",
