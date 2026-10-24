@@ -101,6 +101,25 @@ instead of copies, props for controlled child views, and local state for dialogs
 and forms. A global store, router, component framework, or generic API client
 requires a demonstrated current need.
 
+`App` owns the workspace snapshot/account topology, current account, selection,
+dialog entry points and notices. `AccountIntake.tsx` owns login/import/discovery
+state, requests, errors, drag-and-drop registration and the add-account view.
+`Wake.tsx` owns Wake starts, cancellation, polling and per-account outcomes.
+Their hooks stay mounted independently of their dialogs. Polling is keyed by
+operation ID and phase. Closing a pending login cancels it; an accepted login
+continues saving. Wake continues when its details close.
+
+`useAccountQuota` owns the transient quota/error view, request coalescing,
+concurrency lanes, attempt timing, automatic checks and batch progress. Cache,
+refresh and reset projections share one acceptance path: current membership and
+credential revision, request identity and timestamps decide which results can
+apply. Removed/superseded work cannot restore data or errors. Reset and re-login
+invalidate earlier requests; post-login reads wait for the matching account
+revision. This is a projection of Rust facts, not another persisted account store.
+
+`AccountCard` owns presentation and its menu/tooltip interactions, and reports
+intent through callbacks. Shared popover behavior remains a local component.
+
 The native dialog is used to choose account-export paths or, after an explicit
 user action, one documented Cockpit data folder. Rust reads selected import
 paths and owns portable export lookup, serialization, destination, and write;

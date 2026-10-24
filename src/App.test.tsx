@@ -25,9 +25,6 @@ async function openWakeDetails() {
 
 const mocks = vi.hoisted(() => ({
   runtimeInfo: vi.fn(),
-  codexCliInfo: vi.fn(),
-  updateCodexCli: vi.fn(),
-  openCodexCliGuide: vi.fn(),
   appSnapshot: vi.fn(),
   listAccounts: vi.fn(),
   resetDamagedAccountStore: vi.fn(),
@@ -132,9 +129,6 @@ const staleQuota: QuotaView = {
 };
 
 function prepareDefaults() {
-  mocks.codexCliInfo.mockResolvedValue({ version: "0.156.1", latest_version: "0.157.0", update_status: "available", supports_update: true });
-  mocks.updateCodexCli.mockResolvedValue({ version: "0.157.0", update_status: "unknown", supports_update: true });
-  mocks.openCodexCliGuide.mockResolvedValue(undefined);
   mocks.runtimeInfo.mockResolvedValue({
     codex_home: "C:\\Codex",
     auth_file_exists: false,
@@ -244,70 +238,6 @@ describe("GSwitch account workspace", () => {
 
   afterEach(() => {
     delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
-  });
-
-  it("shows and updates the same Codex CLI without touching accounts", async () => {
-    let updated = false;
-    mocks.codexCliInfo.mockImplementation(async () => updated
-      ? { version: "0.157.0", latest_version: "0.157.0", update_status: "current", supports_update: true }
-      : { version: "0.156.1", latest_version: "0.157.0", update_status: "available", supports_update: true });
-    mocks.updateCodexCli.mockImplementation(async () => {
-      updated = true;
-      return { version: "0.157.0", update_status: "unknown", supports_update: true };
-    });
-    render(<App />);
-    await userEvent.click(await screen.findByRole("button", { name: "Codex CLI 0.157.0 available" }, { timeout: 5_000 }));
-    const dialog = await screen.findByRole("dialog", { name: "Codex CLI" });
-    expect(await within(dialog).findByText("Codex CLI 0.156.1 · 0.157.0 available")).toBeInTheDocument();
-    expect(within(dialog).getByText(/updates only the CLI/)).toBeInTheDocument();
-    await userEvent.click(within(dialog).getByRole("button", { name: "Update" }));
-    expect(await within(dialog).findByText("Update complete.")).toBeInTheDocument();
-    // The version appears once, in the status line.
-    expect(within(dialog).getByText("Codex CLI 0.157.0 · up to date")).toBeInTheDocument();
-    expect(within(dialog).getAllByText(/0\.157\.0/)).toHaveLength(1);
-    expect(within(dialog).queryByText(/updates only the CLI/)).not.toBeInTheDocument();
-    expect(mocks.updateCodexCli).toHaveBeenCalledOnce();
-    expect(mocks.switchAccount).not.toHaveBeenCalled();
-    expect(screen.queryByRole("button", { name: /Codex CLI .* available/ })).not.toBeInTheDocument();
-  });
-
-  it("keeps CLI update failures in the Chinese dialog with a next step", async () => {
-    Object.defineProperty(window.navigator, "language", { configurable: true, value: "zh-CN" });
-    mocks.updateCodexCli.mockRejectedValue("codex_open");
-    render(<App />);
-    await userEvent.click(await screen.findByRole("button", { name: "Codex CLI 0.157.0 可更新" }, { timeout: 5_000 }));
-    const dialog = await screen.findByRole("dialog", { name: "Codex CLI" });
-    expect(await within(dialog).findByText("Codex CLI 0.156.1 · 可更新到 0.157.0")).toBeInTheDocument();
-    await userEvent.click(within(dialog).getByRole("button", { name: "更新" }));
-    expect(await within(dialog).findByRole("alert")).toHaveTextContent("请退出 Codex 后再更新");
-    expect(within(dialog).getByText("Codex CLI 0.156.1 · 可更新到 0.157.0")).toBeInTheDocument();
-  });
-
-  it("does not offer an update to a CLI without the official command", async () => {
-    mocks.codexCliInfo.mockResolvedValue({ version: "0.100.0", latest_version: "0.157.0", update_status: "available", supports_update: false });
-    render(<App />);
-    await userEvent.click(await screen.findByRole("button", { name: "Codex CLI 0.157.0 available" }, { timeout: 5_000 }));
-    const dialog = await screen.findByRole("dialog", { name: "Codex CLI" });
-    expect(await within(dialog).findByText("Codex CLI 0.100.0")).toBeInTheDocument();
-    expect(within(dialog).getByText(/can't update itself/)).toBeInTheDocument();
-    expect(within(dialog).queryByRole("button", { name: "Update" })).not.toBeInTheDocument();
-    expect(within(dialog).getByRole("button", { name: "Official install guide" })).toBeInTheDocument();
-  });
-
-  it("keeps current and offline CLI checks out of the toolbar", async () => {
-    mocks.codexCliInfo.mockResolvedValue({ version: "0.157.0", latest_version: "0.157.0", update_status: "current", supports_update: true });
-    render(<App />);
-    await screen.findByRole("heading", { name: "0 saved accounts" });
-    await waitFor(() => expect(mocks.codexCliInfo).toHaveBeenCalled(), { timeout: 5_000 });
-    expect(screen.queryByRole("button", { name: /Codex CLI .* available/ })).not.toBeInTheDocument();
-  });
-
-  it("keeps a failed CLI release check quiet", async () => {
-    mocks.codexCliInfo.mockResolvedValue({ version: "0.157.0", update_status: "unknown", supports_update: true });
-    render(<App />);
-    await waitFor(() => expect(mocks.codexCliInfo).toHaveBeenCalled(), { timeout: 5_000 });
-    expect(screen.queryByRole("button", { name: /Codex CLI/ })).not.toBeInTheDocument();
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
   it("uses the Simplified Chinese system locale and keeps the main account flow localized", async () => {
@@ -884,7 +814,7 @@ describe("GSwitch account workspace", () => {
     render(<App />);
 
     const card = (await screen.findByRole("heading", { name: "person@example.com" })).closest(".account-card");
-    expect(card).toHaveTextContent("5 weeks");
+    await waitFor(() => expect(card).toHaveTextContent("5 weeks"));
     expect(card).toHaveTextContent("100%");
     const resetTime = card?.querySelector("time.quota-reset-time");
     expect(resetTime).toHaveTextContent(/\d+d/);
@@ -1872,6 +1802,44 @@ describe("GSwitch account workspace", () => {
     expect(await screen.findByText("Sign-in cancelled")).toBeInTheDocument();
   });
 
+  it("cancels a pending sign-in when its dialog closes", async () => {
+    render(<App />);
+    await userEvent.click(await screen.findByRole("button", { name: /^Add account$/ }));
+    await userEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: /^Sign in / }));
+    await userEvent.click(screen.getByRole("button", { name: "Close Add a Codex account" }));
+    expect(mocks.cancelOAuth).toHaveBeenCalledWith("login-1");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("finishes saving after the OAuth dialog is dismissed", async () => {
+    mocks.oauthStatus.mockResolvedValue({ status: "finishing" });
+    render(<App />);
+    await userEvent.click(await screen.findByRole("button", { name: /^Add account$/ }));
+    await userEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: /^Sign in / }));
+    await screen.findByText("Finishing sign-in…");
+    await userEvent.click(screen.getByRole("button", { name: "Close Add a Codex account" }));
+    mocks.listAccounts.mockResolvedValue([chatAccount]);
+    mocks.oauthStatus.mockResolvedValue({ status: "complete", account: chatAccount });
+    await screen.findByRole("heading", { name: "person@example.com" }, { timeout: 2500 });
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(mocks.cancelOAuth).not.toHaveBeenCalled();
+  });
+
+  it("keeps the OAuth polling interval across same-phase status renders", async () => {
+    vi.useFakeTimers();
+    try {
+      await act(async () => { render(<App />); });
+      await act(async () => { fireEvent.click(screen.getByRole("button", { name: /^Add account$/ })); });
+      await act(async () => { fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: /^Sign in / })); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(500); });
+      expect(mocks.oauthStatus).toHaveBeenCalledTimes(1);
+      await act(async () => { await vi.advanceTimersByTimeAsync(500); });
+      expect(mocks.oauthStatus).toHaveBeenCalledTimes(1);
+      await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+      expect(mocks.oauthStatus).toHaveBeenCalledTimes(2);
+    } finally { cleanup(); vi.useRealTimers(); }
+  });
+
   it("keeps a browser sign-in pending after a temporary status read failure", async () => {
     mocks.oauthStatus
       .mockRejectedValueOnce(new Error("temporary status outage"))
@@ -2340,6 +2308,8 @@ describe("GSwitch account workspace", () => {
       const focused = document.activeElement;
       mocks.wakeOperation.mockResolvedValue({ id: "wake-all", status: "completed", results: [result] });
       await act(async () => { await vi.advanceTimersByTimeAsync(500); });
+      expect(mocks.wakeOperation).toHaveBeenCalledTimes(1);
+      await act(async () => { await vi.advanceTimersByTimeAsync(350); });
       expect(screen.getByRole("dialog", { name: "Add a Codex account" })).toBe(addDialog);
       expect(document.activeElement).toBe(focused);
       expect(screen.queryByRole("dialog", { name: "Wake" })).not.toBeInTheDocument();
