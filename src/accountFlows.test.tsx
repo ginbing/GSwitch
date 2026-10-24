@@ -24,6 +24,24 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.useRealTimers(); });
 
 describe("quota acceptance owner", () => {
+  it("does not report a discarded failure to a manual refresh caller", async () => {
+    const cache = deferred<QuotaView>();
+    const refresh = deferred<QuotaView>();
+    mocks.accountQuota.mockReturnValue(cache.promise);
+    mocks.refreshAccountQuota.mockReturnValue(refresh.promise);
+    const { result } = renderHook(() => useAccountQuota({ accounts, enabled: true }));
+    let request!: Promise<QuotaView | undefined>;
+    act(() => { request = result.current.refresh("synthetic"); });
+    const current = quota(Date.now() + 100, 9);
+    await act(async () => { cache.resolve(current); await cache.promise; });
+    await act(async () => {
+      refresh.reject({ code: "service" });
+      await expect(request).resolves.toBeUndefined();
+    });
+    expect(result.current.quotas.synthetic).toEqual(current);
+    expect(result.current.failures).toEqual({});
+  });
+
   it.each([false, true])("a newer cache defeats an older point read or its error (failure=%s)", async failure => {
     const cache = deferred<QuotaView>();
     const refresh = deferred<QuotaView>();

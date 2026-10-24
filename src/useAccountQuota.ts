@@ -5,7 +5,7 @@ import { quotaRefreshDue } from "./refreshPolicy";
 import type { AccountView, QuotaRefreshFailureCode, QuotaView } from "./types";
 
 interface Membership { revision: number; epoch: number; accepted: number }
-interface Request { promise: Promise<QuotaView>; manual: boolean; started: boolean; epoch: number; accepted: number }
+interface Request { promise: Promise<QuotaView | undefined>; manual: boolean; started: boolean; epoch: number; accepted: number }
 interface View { quotas: Readonly<Record<string, QuotaView>>; failures: Readonly<Record<string, QuotaRefreshFailureCode>> }
 type Input = { accounts: AccountView[]; activeId?: string; enabled: boolean };
 type Incoming = { id: string; epoch: number } & (
@@ -48,23 +48,23 @@ export function useAccountQuota({ accounts, activeId, enabled }: Input) {
   // the same transient view React renders; no second account/quota store exists.
   const receive = useCallback((incoming: Incoming) => {
     const member = members.current.get(incoming.id);
-    if (!mounted.current || !member || member.epoch !== incoming.epoch) return;
-    if ("request" in incoming && requests.current.get(incoming.id) !== incoming.request) return;
+    if (!mounted.current || !member || member.epoch !== incoming.epoch) return false;
+    if ("request" in incoming && requests.current.get(incoming.id) !== incoming.request) return false;
     const current = held.current;
     const previous = current.quotas[incoming.id];
     if (incoming.kind === "failure") {
-      if (member.accepted !== incoming.request.accepted) return;
+      if (member.accepted !== incoming.request.accepted) return false;
       const next: View = {
         quotas: { ...current.quotas, [incoming.id]: { account_id: incoming.id, status: previous?.snapshot ? "stale" : "unknown", snapshot: previous?.snapshot } },
         failures: { ...current.failures, [incoming.id]: failureCode(incoming.error) },
       };
       held.current = next; setView(next);
-      return;
+      return true;
     }
-    if (incoming.quota.account_id !== incoming.id) return;
+    if (incoming.quota.account_id !== incoming.id) return false;
     const timestamp = incoming.quota.snapshot?.fetched_at_unix_ms ?? 0;
     const previousTime = previous?.snapshot?.fetched_at_unix_ms ?? 0;
-    if (timestamp < previousTime || (incoming.kind === "cache" && previous && timestamp === previousTime)) return;
+    if (timestamp < previousTime || (incoming.kind === "cache" && previous && timestamp === previousTime)) return false;
     const failures = { ...current.failures };
     // An empty initial cache is not a newer successful read.
     if (incoming.kind !== "cache" || timestamp > previousTime) {
@@ -73,6 +73,7 @@ export function useAccountQuota({ accounts, activeId, enabled }: Input) {
     }
     const next = { quotas: { ...current.quotas, [incoming.id]: incoming.quota }, failures };
     held.current = next; setView(next);
+    return true;
   }, []);
 
   const invalidate = useCallback((id: string) => {
@@ -107,9 +108,9 @@ export function useAccountQuota({ accounts, activeId, enabled }: Input) {
     held.current = next; setView(next);
   }, [accounts, enabled]);
 
-  const refresh = useCallback((id: string, background = false): Promise<QuotaView> => {
+  const refresh = useCallback((id: string, background = false): Promise<QuotaView | undefined> => {
     const member = members.current.get(id);
-    if (!member || !inputs.current.enabled || !mounted.current) return Promise.reject(cancelled());
+    if (!member || !inputs.current.enabled || !mounted.current) return Promise.resolve(undefined);
     const current = requests.current.get(id);
     if (current && (background || current.started || current.manual)) return current.promise;
     const request: Request = { manual: !background, started: false, epoch: member.epoch, accepted: member.accepted, promise: Promise.resolve() as never };
@@ -131,8 +132,15 @@ export function useAccountQuota({ accounts, activeId, enabled }: Input) {
         return lanes.current.run("signIn", () => valid() ? api.refreshAccountQuota(id, false) : Promise.reject(cancelled()));
       });
     request.promise = attempt.then(
-      quota => { receive({ kind: "refresh", id, epoch: request.epoch, request, quota }); return quota; },
-      error => { receive({ kind: "failure", id, epoch: request.epoch, request, error }); throw error; },
+      quota => {
+        if (quota) receive({ kind: "refresh", id, epoch: request.epoch, request, quota });
+        return quota;
+      },
+      error => {
+        // A discarded failure must not reappear as a caller's toast/batch error.
+        if (receive({ kind: "failure", id, epoch: request.epoch, request, error })) throw error;
+        return undefined;
+      },
     );
     const forget = () => {
       if (requests.current.get(id) === request) {
