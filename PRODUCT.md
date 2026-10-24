@@ -26,8 +26,6 @@ GSwitch may:
 - consume an eligible reset credit only after an explicit user action;
 - Wake one or more eligible accounts only after an explicit user action;
 - expose the minimum settings and recovery actions required by those jobs.
-- show the Codex CLI that GSwitch uses and request its official update when a
-  local CLI problem prevents those jobs.
 
 Multiple intake paths still end in one local saved-account model. They do not
 create a general provider platform.
@@ -52,7 +50,8 @@ GSwitch does not become:
 - an MCP, Skills, thread, or session-management platform;
 - a cloud account control plane;
 - a background scheduler that mutates account state or capacity;
-- a telemetry or account-analytics product.
+- a telemetry or account-analytics product;
+- a Codex CLI version or installation manager.
 
 A capability belongs only when it directly reduces the time, steps, or
 uncertainty involved in understanding account state, switching or migrating an
