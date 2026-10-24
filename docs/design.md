@@ -166,7 +166,9 @@ explicit reset preserves GSwitch's damaged file without touching Codex.
   allow wrapping at the separator on narrow cards without truncating the date.
   Count complete minutes, with a one-minute minimum before the actual reset;
   leftover seconds must not add a minute. Do not cap a provider's later reset
-  at the nominal quota-window duration.
+  at the nominal quota-window duration. A window that has not started says
+  `Not started · starts on next use` or `未开始 · 下次使用时开始计时` in
+  place of that line.
   Stale data omits the live countdown; an elapsed
   fresh reset marker says to refresh. Hover, keyboard focus, and assistive
   text provide the full reset meaning and date.

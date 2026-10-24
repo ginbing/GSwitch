@@ -853,6 +853,36 @@ describe("GSwitch account workspace", () => {
     expect(screen.getByRole("button", { name: "唤醒 person@example.com" })).toBeEnabled();
   });
 
+  it.each([
+    ["en-US", "Not started · starts on next use", "Wake person@example.com"],
+    ["zh-CN", "未开始 · 下次使用时开始计时", "唤醒 person@example.com"],
+  ])("shows an unstarted five-hour window without a countdown (%s)", async (language, text, wake) => {
+    Object.defineProperty(window.navigator, "language", { configurable: true, value: language });
+    const resetAt = Math.floor(Date.now() / 1000) + 5 * 60 * 60;
+    mocks.listAccounts.mockResolvedValue([chatAccount]);
+    mocks.accountQuota.mockResolvedValue({
+      account_id: chatAccount.id,
+      status: "fresh",
+      snapshot: {
+        fetched_at_unix_ms: Date.now(),
+        buckets: [{
+          limit_id: "codex",
+          kind: "codex",
+          windows: [
+            { kind: "five_hour", window_duration_mins: 300, remaining_percent: 100, used_percent: 0, resets_at: resetAt, not_started: true },
+            { kind: "weekly", window_duration_mins: 10_080, remaining_percent: 84, used_percent: 16, resets_at: resetAt + 86_400 },
+          ],
+        }],
+      },
+    });
+    render(<App />);
+
+    const card = (await screen.findByRole("heading", { name: "person@example.com" })).closest(".account-card");
+    await waitFor(() => expect(card).toHaveTextContent(text));
+    expect(card?.querySelectorAll("time.quota-reset-time")).toHaveLength(1);
+    expect(screen.getByRole("button", { name: wake })).toBeEnabled();
+  });
+
   describe("quota countdown updates", () => {
     beforeEach(() => {
       vi.useFakeTimers();

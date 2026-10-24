@@ -246,7 +246,9 @@ function QuotaMeter({
       {status !== "stale" || value === undefined ? <small>
         {!known || value === undefined
           ? t("quota.notAvailable")
-          : window?.resets_at
+          : window?.not_started
+            ? t("quota.notStarted")
+            : window?.resets_at
               ? <QuotaResetTime timestamp={window.resets_at} formatLocale={formatLocale} t={t} />
               : t("quota.resetTimeUnavailable")}
       </small> : null}
