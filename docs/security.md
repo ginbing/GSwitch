@@ -221,28 +221,16 @@ separate user-initiated alternate-model request.
   retried. A document that fails the intended identity check remains protected
   but cannot be applied as another account. IPC receives only a count, never a
   credential or vault reference.
-- Isolated operations record their original identity/account generations before
-  writing credentials or starting the provider flow. The App Server retains its
-  profile owner until its owned process group/job has stopped. Unix helpers
-  inherit the activity lease across exec; Windows uses the kill-on-close job.
-  Cleanup uses the same protected handoff on normal completion and startup.
-  It never derives a new authorization baseline from a later login.
-- Startup protects valid interrupted material in the existing encrypted pending
-  queue, verifies readback, then removes the isolated files. It does not apply a
-  credential or replay OAuth, credit redemption, or another provider operation.
-  Only explicit recovery can finish a save. Cancellation remains distinct from
-  an accepted OAuth completion. Identity, account deletion and generation checks
-  still govern recovery; repeated handoff uses one operation reference.
-- Active leases, possible Codex activity, unknown ownership, symlinks and Windows
-  reparse points prevent automatic recovery/deletion. Verified inactive legacy
-  homes without intent may be cleaned but cannot authorize credential recovery.
-  This conservative check may require closing an unrelated Codex runtime before
-  cleanup. No process is killed by startup recovery.
-- Protected handoff failure does not retain plaintext as a backup. Actual
-  deletion failure is separate and visible, keeps the intent until secret files
-  have been removed, and blocks new isolated operations. IPC exposes only a
-  bounded recovery status. A forced stop can still leave material until the next
-  successful cleanup; this does not promise secure disk erasure.
+- An isolated profile is removed when its operation ends, after the App Server
+  holding it has stopped its owned process group/job. Removal does not follow
+  links, so the helper links Codex creates inside the profile are deleted
+  without touching their targets. A profile that cannot be removed then, such
+  as one a helper still holds open on Windows, stays until the next start.
+- A forced stop can leave a profile behind. Each start removes leftover
+  `gswitch-*` profiles unless a running GSwitch holds a profile's owner lock.
+  Nothing in a leftover is read, applied, or kept for recovery. If Codex had
+  rotated a token during the interrupted operation, that account may need
+  **Sign in again**. This does not promise secure disk erasure.
 - A damaged metadata store, unavailable/locked vault, missing metadata secret
   reference, or incomplete legacy migration blocks mutation. None becomes an
   empty library or plaintext fallback. Metadata reset preserves the damaged

@@ -63,8 +63,8 @@ Keep the backend flat and organized by concrete responsibility:
   state;
 - `app_server.rs`: lifecycle and protocol boundary for the official Codex App
   Server;
-- `isolated_profile.rs`: isolated-home intent, activity leases, protected
-  credential handoff, and cleanup shared by normal completion and startup;
+- `isolated_profile.rs`: short-lived isolated Codex homes, removed when their
+  operation ends and, after a forced stop, at the next start;
 - `chatgpt.rs`: read-only ChatGPT quota and account-metadata HTTP boundary;
 - `codex.rs`: `CODEX_HOME`, effective storage mode, and live auth-file access;
 - `identity.rs`: credential classification, stable non-secret identity, and
@@ -164,8 +164,9 @@ file-backed projection, never proof of vault state.
 OAuth, authentication-only switch/import/quota fallback, and reset redemption
 may run an official Codex App Server in a short-lived GSwitch-owned
 `CODEX_HOME`. This isolates the operation from the user's live Codex identity.
-Refreshed credentials are accepted only after the returned document still
-matches the expected account identity. Ordinary switch validation, quota,
+Each profile is deleted when its operation ends, and the next start removes
+any profile a forced stop left behind. Refreshed credentials are accepted only
+after the returned document still matches the expected account identity. Ordinary switch validation, quota,
 account metadata, and Wake use the small Rust-owned ChatGPT HTTP boundary first.
 A valid switch snapshot updates only normalized non-secret metadata; it neither
 refreshes nor rewrites credentials. API-key switching does no provider request.

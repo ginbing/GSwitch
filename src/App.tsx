@@ -154,7 +154,6 @@ function accountGridHasGlobalMutation(busy: string | null) {
     "save-current",
     "enable-switching",
     "recover-switch",
-    "recover-sign-ins",
     "recover-reset-credit",
     "reset-damaged-store",
   ].includes(busy) || busy.startsWith("switch:") || busy.startsWith("reset:") || busy.startsWith("remove:");
@@ -733,15 +732,6 @@ export default function App() {
           confirm.disarm();
           setDialog("storage-recovery");
         },
-      };
-    }
-    if (storage?.isolated_profile_status) {
-      return {
-        icon: <ShieldAlert size={20} />,
-        title: t("safety.isolatedTitle"),
-        body: t(`safety.isolated.${storage.isolated_profile_status}`),
-        action: t("safety.recoverSignIns"),
-        onAction: () => void runTask("recover-sign-ins", api.recoverPendingCredentials),
       };
     }
     if (pendingResetCredit) {

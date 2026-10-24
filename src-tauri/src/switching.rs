@@ -103,8 +103,6 @@ where
         .ok_or_else(|| "Codex is not signed in with a file-backed credential".to_string())?;
     let kind = document_kind(&original_credential)?;
     let identity = derive_identity(&kind, &original_credential)?;
-    // Keep the isolated owner until the outer saved-account commit finishes.
-    let mut _isolated_profile = None;
     let (metadata, credential) = match kind {
         AccountKind::ChatGpt => save_current_chatgpt_snapshot(
             codex_home,
@@ -113,7 +111,7 @@ where
             &make_chatgpt_client()?,
         )?,
         AccountKind::ApiKey => {
-            let temporary = TempCodexHome::managed(state, Some(identity.clone()), None)?;
+            let temporary = TempCodexHome::new(state)?;
             temporary.write_auth(&original_credential)?;
             let mut server = AppServer::start_isolated(&temporary)?;
             let metadata = account_metadata(&server.account_read(2, false)?)?;
@@ -132,7 +130,6 @@ where
                 &identity,
                 "Codex credentials changed while saving the current account",
             )?;
-            _isolated_profile = Some(temporary);
             (metadata, credential)
         }
     };
@@ -518,8 +515,8 @@ fn check_effective_file_store(
     codex_home: &std::path::Path,
 ) -> Result<(), SwitchFailureCode> {
     require_file_store(codex_home).map_err(|_| SwitchFailureCode::FileStoreRequired)?;
-    let profile = TempCodexHome::managed(state, None, None)
-        .map_err(|_| SwitchFailureCode::CodexConfigUnavailable)?;
+    let profile =
+        TempCodexHome::new(state).map_err(|_| SwitchFailureCode::CodexConfigUnavailable)?;
     let mut server = AppServer::start_isolated(&profile)
         .map_err(|_| SwitchFailureCode::CodexAppServerUnavailable)?;
     runtime::ensure_no_external_codex(&[server.pid()]).map_err(|_| SwitchFailureCode::CodexOpen)?;
