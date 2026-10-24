@@ -2176,6 +2176,15 @@ export default function App() {
         },
       };
     }
+    if (storage?.isolated_profile_status) {
+      return {
+        icon: <ShieldAlert size={20} />,
+        title: t("safety.isolatedTitle"),
+        body: t(`safety.isolated.${storage.isolated_profile_status}`),
+        action: t("safety.recoverSignIns"),
+        onAction: () => void runTask("recover-sign-ins", api.recoverPendingCredentials),
+      };
+    }
     if (pendingResetCredit) {
       return {
         icon: <CircleAlert size={20} />,

@@ -31,6 +31,7 @@ const mocks = vi.hoisted(() => ({
   appSnapshot: vi.fn(),
   listAccounts: vi.fn(),
   resetDamagedAccountStore: vi.fn(),
+  recoverPendingCredentials: vi.fn(),
   liveAccount: vi.fn(),
   startOAuth: vi.fn(),
   oauthStatus: vi.fn(),
@@ -151,6 +152,7 @@ function prepareDefaults() {
     live: await mocks.liveAccount(),
   }));
   mocks.resetDamagedAccountStore.mockResolvedValue(undefined);
+  mocks.recoverPendingCredentials.mockResolvedValue(0);
   mocks.accountQuota.mockResolvedValue({
     account_id: "unused",
     status: "unknown",
@@ -216,6 +218,23 @@ function prepareDefaults() {
 }
 
 describe("GSwitch account workspace", () => {
+  it.each(["recovery_available", "restricted", "cleanup_failed", "protection_failed"] as const)("shows sanitized isolated-storage status %s without replaying an operation", async (status) => {
+    mocks.appSnapshot.mockResolvedValueOnce({
+      storage: { status: "ready", isolated_profile_status: status },
+      accounts: [chatAccount], live: { status: "not_signed_in", credential_store: "file" },
+    });
+    render(<App />);
+    expect(await screen.findByText("An interrupted sign-in needs attention")).toBeInTheDocument();
+    expect(mocks.recoverPendingCredentials).not.toHaveBeenCalled();
+    expect(mocks.redeemResetCredit).not.toHaveBeenCalled();
+    expect(mocks.startOAuth).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: "Recover saved sign-ins" }));
+    await waitFor(() => expect(mocks.recoverPendingCredentials).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.queryByText("An interrupted sign-in needs attention")).not.toBeInTheDocument());
+    expect(mocks.resetDamagedAccountStore).not.toHaveBeenCalled();
+    expect(mocks.redeemResetCredit).not.toHaveBeenCalled();
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     window.localStorage.clear();

@@ -224,9 +224,28 @@ separate user-initiated alternate-model request.
   retried. A document that fails the intended identity check remains protected
   but cannot be applied as another account. IPC receives only a count, never a
   credential or vault reference.
-- OAuth ends its App Server process before attempting to delete the isolated
-  profile. Failure to remove that plaintext profile is reported as failure,
-  not hidden by its destructor.
+- Isolated operations record their original identity/account generations before
+  writing credentials or starting the provider flow. The App Server retains its
+  profile owner until its owned process group/job has stopped. Unix helpers
+  inherit the activity lease across exec; Windows uses the kill-on-close job.
+  Cleanup uses the same protected handoff on normal completion and startup.
+  It never derives a new authorization baseline from a later login.
+- Startup protects valid interrupted material in the existing encrypted pending
+  queue, verifies readback, then removes the isolated files. It does not apply a
+  credential or replay OAuth, credit redemption, or another provider operation.
+  Only explicit recovery can finish a save. Cancellation remains distinct from
+  an accepted OAuth completion. Identity, account deletion and generation checks
+  still govern recovery; repeated handoff uses one operation reference.
+- Active leases, possible Codex activity, unknown ownership, symlinks and Windows
+  reparse points prevent automatic recovery/deletion. Verified inactive legacy
+  homes without intent may be cleaned but cannot authorize credential recovery.
+  This conservative check may require closing an unrelated Codex runtime before
+  cleanup. No process is killed by startup recovery.
+- Protected handoff failure does not retain plaintext as a backup. Actual
+  deletion failure is separate and visible, keeps the intent until secret files
+  have been removed, and blocks new isolated operations. IPC exposes only a
+  bounded recovery status. A forced stop can still leave material until the next
+  successful cleanup; this does not promise secure disk erasure.
 - A damaged metadata store, unavailable/locked vault, missing metadata secret
   reference, or incomplete legacy migration blocks mutation. None becomes an
   empty library or plaintext fallback. Metadata reset preserves the damaged
