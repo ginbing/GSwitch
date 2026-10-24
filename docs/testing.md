@@ -58,9 +58,12 @@ production frontend build. Rust changes call its Linux mode for version,
 frontend build, Rust formatting, Clippy, and the full Rust test suite. Frontend
 only changes do not start the Rust or platform workers. Changes to application
 or build inputs also compile all Rust targets on Windows and macOS; those jobs
-also run the focused process and isolated-profile lifecycle tests, the dependency's
-secp256k1/SLIP10 vectors, and encrypted-vault compatibility tests, without
-creating installer bundles. Node and Cargo dependencies
+first build the debug application through the official Tauri CLI with
+`--no-bundle`, as does Linux source proof. This checks the JavaScript/Rust
+package pairing and native link boundary without generating installers.
+The platform jobs also run the focused process and isolated-profile lifecycle
+tests, the dependency's secp256k1/SLIP10 vectors, and encrypted-vault compatibility
+tests, without creating installer bundles. Node and Cargo dependencies
 use runner caches, and newer runs cancel older runs for the same pull request
 or branch.
 

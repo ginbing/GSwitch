@@ -195,6 +195,11 @@ Use official current Codex and Tauri interfaces where they exist. New
 dependencies and abstractions require a present product, platform, or safety
 need. Do not add infrastructure because a future feature might use it.
 
+Keep Tauri's JavaScript API and Rust crate on the same minor release, and paired
+plugin packages on the same exact version, following the official
+[dependency update contract](https://v2.tauri.app/develop/updating-dependencies/#sync-npm-packages-and-cargo-crates-versions).
+The Tauri CLI build validates the resolved pairs; do not bypass its mismatch check.
+
 The Cargo patch for `libsodium-sys-stable` preserves the published 1.24.0
 source (upstream revision `b17dd40bd8ff878a308b79423efc0a086ee2e7d3`,
 crates.io checksum `72b04bf6da2c98b727af37ab62cb505f4d751b975b034a9b9ad491d333b0564e`).
