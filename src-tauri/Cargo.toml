@@ -37,7 +37,12 @@ toml_edit = "0.25"
 uuid = { version = "1", features = ["v4"] }
 zeroize = "1.9"
 
+[dev-dependencies]
+crypto = { package = "iota-crypto", version = "=0.23.2", default-features = false, features = ["secp256k1", "slip10", "rand", "random", "sha", "keccak"] }
+
 [patch.crates-io]
 # Upstream 1.24.0 source and signed libsodium archives; only the ZIP build
 # dependency is changed to the security-fixed major. See docs/architecture.md.
 libsodium-sys-stable = { path = "vendor/libsodium-sys-stable" }
+# Maintainer-approved dependency-only migration off the vulnerable bigint line.
+iota-crypto = { path = "vendor/iota-crypto" }

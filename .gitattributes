@@ -1,2 +1,3 @@
 # Preserve the published dependency and detached-signature bytes on every host.
 src-tauri/vendor/libsodium-sys-stable/** -text
+src-tauri/vendor/iota-crypto/** -text
