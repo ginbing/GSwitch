@@ -251,7 +251,7 @@ pub fn start_oauth(state: AppState, target_id: Option<String>) -> Result<OAuthLo
             identity::derive_identity(&kind, document).ok()
         }),
     };
-    let profile = TempCodexHome::managed(&state, None, Some(context.clone()))?;
+    let profile = TempCodexHome::new(&state)?;
     let mut server = AppServer::start_isolated(&profile)?;
 
     let result = server.call(
@@ -372,7 +372,6 @@ fn monitor_oauth(
     ) {
         Ok(notification) => notification,
         Err(error) if error == "The operation was cancelled" => {
-            profile.cancel_recovery()?;
             let _ = server.account_login_cancel(2, login_id);
             return Ok(None);
         }
@@ -381,7 +380,6 @@ fn monitor_oauth(
     // Cancellation can win until the completion event is accepted. After that,
     // closing the browser or dialog cannot discard a successful login.
     if !state.accept_oauth_completion(login_id)? {
-        profile.cancel_recovery()?;
         let _ = server.account_login_cancel(2, login_id);
         return Ok(None);
     }
@@ -402,12 +400,7 @@ fn monitor_oauth(
             return Err("OAuth identity mismatch: this login belongs to another account".into());
         }
     }
-    state.stage_oauth_recovery(
-        login_id,
-        &credential,
-        context.clone(),
-        profile.recovery_reference(),
-    )?;
+    state.stage_oauth_recovery(login_id, &credential, context.clone())?;
     Ok(Some(()))
 }
 
@@ -764,7 +757,7 @@ fn import_credential_under_operation(
         );
     }
 
-    let profile = TempCodexHome::managed(state, Some(expected_identity.clone()), None)?;
+    let profile = TempCodexHome::new(state)?;
     profile.write_auth(&credential)?;
     let mut server = AppServer::start_isolated(&profile)?;
     let result = server.account_read(1, expected_kind == AccountKind::ChatGpt)?;
@@ -811,7 +804,7 @@ fn import_chatgpt_snapshot_with_client(
     label: Option<String>,
     client: &ChatGptClient,
 ) -> Result<AccountView, String> {
-    let profile = TempCodexHome::managed(state, Some(expected_identity.clone()), None)?;
+    let profile = TempCodexHome::new(state)?;
     profile.write_auth(&credential)?;
     let live = crate::quota::live_credential_for_identity(&expected_identity)?;
     let snapshot = live.clone().unwrap_or_else(|| credential.clone());
@@ -941,7 +934,7 @@ pub fn import_api_key(
     }
 
     let operation = state.acquire_operation()?;
-    let profile = TempCodexHome::managed(state, None, None)?;
+    let profile = TempCodexHome::new(state)?;
     let mut server = AppServer::start_isolated(&profile)?;
     server.call(
         1,

@@ -135,13 +135,12 @@ as applicable:
 - protected switch rollback and reset-credit material round-tripping through
   the vault without appearing in `accounts.json`, plus saved-account removal
   leaving the live Codex file untouched;
-- isolated profile intent-before-secret writes, normal and startup protected
-  handoff, reconciliation waiting for a contended storage file lock, empty-library
-  profile creation, forced owner termination, inherited Unix leases, repeated recovery,
-  changed identity/generation or removed accounts, metadata/vault failures,
-  Windows file occupancy, and unowned/redirected trees staying untouched;
-- sanitized recovery notices requiring explicit recovery, without automatically
-  starting OAuth, replaying reset credits, or resetting the account store;
+- isolated profiles: Codex-style helper links (Unix symlinks, a Windows
+  junction) removed without touching their targets, removal waiting until the
+  App Server releases its profile, a profile Windows cannot remove yet being
+  removed at the next start, startup removing leftovers while keeping locked
+  profiles and unrelated entries, and no credential kept for recovery by
+  cleanup or startup;
 - Operation-owned descendant termination, inherited pipes, bounded cleanup and
   unrelated-process survival use fixture subprocesses.
 - OAuth App Server-before-profile teardown and explicit cleanup errors,

@@ -59,9 +59,6 @@ impl AppServer {
 
     fn start_owned(codex_home: &Path, profile: Option<TempCodexHome>) -> Result<Self, String> {
         let mut command = app_server_command(codex_home);
-        if let Some(profile) = &profile {
-            profile.inherit_lease(&mut command);
-        }
         let mut process = OwnedProcess::spawn(&mut command).map_err(|_| {
             "Unable to start Codex App Server. Check that Codex is installed.".to_string()
         })?;

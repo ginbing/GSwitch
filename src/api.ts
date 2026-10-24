@@ -27,7 +27,6 @@ export const api = {
   listAccounts: () => invoke<AccountView[]>("list_accounts"),
   resetDamagedAccountStore: () =>
     invoke<void>("reset_damaged_account_store"),
-  recoverPendingCredentials: () => invoke<number>("recover_pending_credentials"),
   liveAccount: () => invoke<LiveAccountView>("get_live_account_state"),
   startOAuth: (targetId?: string) => invoke<OAuthLoginStart>("start_oauth_login", { targetId }),
   retryOAuth: (loginId: string) => invoke<void>("retry_oauth_login", { loginId }),

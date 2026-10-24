@@ -187,22 +187,11 @@ pub enum StorageStatus {
     RecoveryRequired,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum IsolatedProfileStatus {
-    RecoveryAvailable,
-    Restricted,
-    ProtectionFailed,
-    CleanupFailed,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StorageView {
     pub status: StorageStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub isolated_profile_status: Option<IsolatedProfileStatus>,
 }
 
 /// A single read-only view for the initial workspace render. Credential
@@ -662,7 +651,6 @@ mod tests {
             storage: StorageView {
                 status: StorageStatus::Ready,
                 message: None,
-                isolated_profile_status: None,
             },
             accounts: Vec::new(),
             pending_reset: Some(PendingResetView {
