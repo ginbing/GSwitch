@@ -125,9 +125,10 @@ as applicable:
   reset credits, switch rollback auth, a pending reset credit and a pending
   credential) into version 5, reread and compared, with the vault deleted;
 - a missing or damaged vault leaving the version-4 store and vault unchanged
-  until a later start can read it, and a leftover vault beside a version-5
-  store deleted without being read; the unmodified Stronghold 2.1.0 snapshot
-  fixture still reads;
+  until a later start can read it; a vault kept unread beside a store that was
+  reset after a failed migration or migrated from inline credentials; an
+  interrupted vault retirement finished at the next start; the unmodified
+  Stronghold 2.1.0 snapshot fixture still reads;
 - version-3 and unversioned inline-store migration with identity verification,
   pre-vault pending files read in place, an account whose credential no longer
   derives its identity failing closed, and same-identity token rotation

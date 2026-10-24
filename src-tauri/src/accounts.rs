@@ -195,7 +195,8 @@ impl AppState {
         let store = match storage::read_store_json(store_path)? {
             Some(mut raw) => {
                 let version = storage::store_version(&raw)?;
-                let vault_pending = if version == storage::VAULT_STORE_VERSION {
+                let from_vault = version == storage::VAULT_STORE_VERSION;
+                let vault_pending = if from_vault {
                     vault
                         .resolve(&mut raw)
                         .map_err(|_| VAULT_MIGRATION_FAILED.to_string())?
@@ -205,24 +206,20 @@ impl AppState {
                 let mut store = storage::store_from_json(raw)?;
                 Self::verify_credentials(&mut store, version)?;
                 if version < storage::STORE_VERSION {
-                    Self::commit_migration(store_path, pending_dir, &mut store, &vault_pending)
-                        .map_err(|error| {
-                            if version == storage::VAULT_STORE_VERSION {
-                                VAULT_MIGRATION_FAILED.to_string()
-                            } else {
-                                error
-                            }
-                        })?;
-                }
-                // The file now holds everything. A vault left by an interrupted
-                // cleanup is removed without being read.
-                if vault.exists() {
-                    let _ = vault.remove();
+                    Self::commit_migration(store_path, pending_dir, &mut store, &vault_pending)?;
+                    // Only the vault this start moved into the file is retired.
+                    // Any other vault, such as one beside a store that was reset
+                    // after a failed migration, is kept unread.
+                    if from_vault {
+                        let _ = vault.retire();
+                    }
                 }
                 store
             }
             None => AccountStore::default(),
         };
+        // Finishes a retirement that an earlier start could not complete.
+        let _ = vault.finish_retirement();
         for (_, pending) in storage::pending_credentials::<PendingCredential>(pending_dir)? {
             Self::validate_pending(&pending)?;
         }
@@ -265,14 +262,14 @@ impl AppState {
     }
 
     /// Writes a migrated store and its pending entries, then reads both back.
-    /// Only after this succeeds may the previous vault be removed.
+    /// Only after this succeeds may the previous vault be retired.
     fn commit_migration(
         store_path: &std::path::Path,
         pending_dir: &std::path::Path,
         store: &mut AccountStore,
         vault_pending: &[(String, Value)],
     ) -> Result<(), String> {
-        let failure = || "Legacy account storage could not be verified safely".to_string();
+        let failure = || "Migrated account storage could not be confirmed".to_string();
         let mut pending = Vec::with_capacity(vault_pending.len());
         for (reference, value) in vault_pending {
             let mut record = value.clone();
@@ -1969,11 +1966,9 @@ mod tests {
             storage::STORE_VERSION
         );
         assert!(!vault.exists());
-        assert!(!path
-            .parent()
-            .expect("parent")
-            .join("credentials.lock")
-            .exists());
+        for leftover in ["credentials.hold.migrated", "credentials.lock"] {
+            assert!(!path.parent().expect("parent").join(leftover).exists());
+        }
 
         drop(state);
         let reopened = AppState::new(path.clone()).expect("reopen");
@@ -2031,16 +2026,49 @@ mod tests {
     }
 
     #[test]
-    fn a_leftover_vault_beside_a_current_store_is_removed_without_being_read() {
-        let path = temp_path("leftover-vault");
+    fn a_storage_reset_after_a_failed_migration_keeps_the_vault() {
+        let path = temp_path("reset-keeps-vault");
+        let credential = stable_credential("workspace", "vault-token");
+        write_store(
+            &path,
+            json!({"version": 4, "accounts": [{"id": "a", "label": "A", "kind": "chat_gpt",
+                "identity": identity_json(&credential), "credential_ref": "account:a",
+                "credential_generation": 1}]}),
+        );
+        let vault_path = path.parent().expect("parent").join("credentials.hold");
+        fs::write(&vault_path, b"locked snapshot").expect("unreadable snapshot");
+
+        let state = AppState::new(path.clone()).expect("recovery state");
+        assert_eq!(state.storage_view().status, StorageStatus::RecoveryRequired);
+        state.reset_damaged_store().expect("reset");
+        drop(state);
+
+        // The reset store is current, but it was not written from this vault.
+        let reopened = AppState::new(path.clone()).expect("reopen");
+        assert_eq!(reopened.storage_view().status, StorageStatus::Ready);
+        save(
+            &reopened,
+            draft("other", stable_credential("other", "new-token")),
+        );
+        drop(reopened);
+        let reopened = AppState::new(path.clone()).expect("reopen again");
+        assert_eq!(reopened.list().expect("accounts").len(), 1);
+        assert_eq!(fs::read(&vault_path).expect("vault"), b"locked snapshot");
+        let _ = fs::remove_dir_all(path.parent().expect("parent"));
+    }
+
+    #[test]
+    fn an_interrupted_vault_retirement_finishes_at_the_next_start() {
+        let path = temp_path("retired-vault");
         let state = AppState::new(path.clone()).expect("state");
         let saved = save(
             &state,
             draft("workspace", stable_credential("workspace", "current")),
         );
         drop(state);
-        let vault_path = path.parent().expect("parent").join("credentials.hold");
-        fs::write(&vault_path, b"never read").expect("leftover snapshot");
+        let root = path.parent().expect("parent").to_path_buf();
+        fs::write(root.join("credentials.hold.migrated"), b"retired").expect("retired vault");
+        fs::write(root.join("credentials.lock"), b"").expect("vault lock");
 
         let reopened = AppState::new(path.clone()).expect("reopen");
         assert_eq!(reopened.storage_view().status, StorageStatus::Ready);
@@ -2051,16 +2079,17 @@ mod tests {
                 .credential,
             stable_credential("workspace", "current")
         );
-        assert!(!vault_path.exists());
-        let _ = fs::remove_dir_all(path.parent().expect("parent"));
+        assert!(!root.join("credentials.hold.migrated").exists());
+        assert!(!root.join("credentials.lock").exists());
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
-    fn a_pre_vault_store_moves_to_the_current_file_and_a_stale_vault_is_removed() {
+    fn a_pre_vault_store_moves_to_the_current_file_and_keeps_an_unrelated_vault() {
         let path = temp_path("pre-vault-migration");
         let credential = stable_credential("workspace", "legacy-access-token");
-        // An interrupted vault migration could leave a snapshot beside the
-        // still-authoritative inline store.
+        // The inline store stays authoritative. A vault beside it was not
+        // written from it, so it is kept unread.
         fs::create_dir_all(path.parent().expect("parent")).expect("storage root");
         legacy_vault(&path)
             .put(
@@ -2093,7 +2122,7 @@ mod tests {
         assert_eq!(saved.version, storage::STORE_VERSION);
         assert_eq!(saved.accounts[0].credential, credential);
         assert!(saved.accounts[0].identity.is_some());
-        assert!(!legacy_vault(&path).exists());
+        assert!(legacy_vault(&path).exists());
         drop(first);
 
         let reopened = AppState::new(path.clone()).expect("restart-safe reopen");

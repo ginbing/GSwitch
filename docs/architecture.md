@@ -160,10 +160,13 @@ Version-4 stores from GSwitch 1.0.30 and earlier reference a Stronghold
 snapshot whose root key is held by the platform credential manager. At startup,
 under the operation lock, GSwitch reads every referenced record and pending
 entry from one snapshot session, verifies each credential's identity, writes
-the version-5 file and pending files, rereads both, and only then deletes the
-snapshot and its root key. A vault that cannot be read leaves both files
-unchanged and the library unavailable until a later start. A snapshot found
-beside a version-5 store is deleted without being read. Stores from before the
+the version-5 file and pending files, rereads both, and only then retires the
+snapshot: it is renamed, its root key is deleted, and the renamed file is
+deleted last, so a cleanup interrupted after the rename finishes at a later
+start. A vault that cannot be read leaves both files unchanged and the library
+unavailable until a later start. A snapshot that was not migrated this way,
+such as one beside a store reset after a failed migration, is kept unread.
+Stores from before the
 vault already keep credentials inline and are verified and rewritten as
 version 5. Removing Stronghold, `keyring` and the two patched crates below ends
 this direct migration path.

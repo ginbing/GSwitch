@@ -1,6 +1,6 @@
 //! Read-only access to the Stronghold vault that GSwitch 1.0.30 and earlier
 //! used for saved credentials. Startup reads it once to move a version-4 store
-//! into the owner-only account file, then removes it and its root key.
+//! into the owner-only account file, then retires it and its root key.
 #[cfg(test)]
 use std::sync::Once;
 use std::{fs, path::PathBuf, sync::Mutex};
@@ -56,10 +56,6 @@ impl LegacyVault {
             snapshot_path,
             root: RootSecret::Fixed(vec![7; 32]),
         }
-    }
-
-    pub fn exists(&self) -> bool {
-        fs::symlink_metadata(&self.snapshot_path).is_ok()
     }
 
     /// Resolves a version-4 store's vault references in place: complete
@@ -173,14 +169,31 @@ impl LegacyVault {
         Ok(pending)
     }
 
-    /// Removes the snapshot first, so a failure is retried at the next start
-    /// without asking the credential manager again. The root key is then
-    /// removed once; without the snapshot it protects nothing.
-    pub fn remove(&self) -> Result<(), String> {
+    /// Retires a vault whose contents were just written to the account file
+    /// and read back. The rename marks it as migrated, so an interrupted
+    /// cleanup can finish at a later start without reading it again.
+    pub fn retire(&self) -> Result<(), String> {
+        fs::rename(&self.snapshot_path, self.retired_path())
+            .map_err(|_| "Unable to retire the previous credential vault".to_string())?;
+        self.finish_retirement()
+    }
+
+    /// Removes a retired vault: its root key once, then its leftover files,
+    /// with the retired snapshot last so a failure is retried at the next
+    /// start. A vault that was never retired is not touched.
+    pub fn finish_retirement(&self) -> Result<(), String> {
+        let retired = self.retired_path();
+        if fs::symlink_metadata(&retired).is_err() {
+            return Ok(());
+        }
+        #[cfg(not(test))]
+        if let Ok(entry) = Entry::new(ROOT_SERVICE, ROOT_USER) {
+            let _ = entry.delete_credential();
+        }
         for path in [
-            self.snapshot_path.clone(),
             self.snapshot_path.with_extension("hold.tmp"),
             self.snapshot_path.with_extension("lock"),
+            retired,
         ] {
             match fs::remove_file(&path) {
                 Ok(()) => {}
@@ -188,11 +201,11 @@ impl LegacyVault {
                 Err(_) => return Err("Unable to remove the previous credential vault".to_string()),
             }
         }
-        #[cfg(not(test))]
-        if let Ok(entry) = Entry::new(ROOT_SERVICE, ROOT_USER) {
-            let _ = entry.delete_credential();
-        }
         Ok(())
+    }
+
+    fn retired_path(&self) -> PathBuf {
+        self.snapshot_path.with_extension("hold.migrated")
     }
 
     /// Reads the requested records and every pending credential from one
@@ -339,6 +352,10 @@ fn reference(record: &Value, name: &str, generation: &str) -> Option<String> {
 /// did, so migration tests start from a genuine vault.
 #[cfg(test)]
 impl LegacyVault {
+    pub fn exists(&self) -> bool {
+        fs::symlink_metadata(&self.snapshot_path).is_ok()
+    }
+
     pub fn put(&self, reference: &str, value: &Value) -> Result<(), String> {
         let bytes = serde_json::to_vec(value).expect("fixture");
         self.with_client(true, |client| {
@@ -422,7 +439,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_material_is_an_error_and_removal_deletes_the_snapshot() {
+    fn missing_material_is_an_error_and_retirement_deletes_the_snapshot() {
         let root = root("vault-missing");
         let vault = LegacyVault::with_test_root(root.join("credentials.hold"));
         assert!(vault.read(&["account:one:1".into()]).is_err());
@@ -439,10 +456,14 @@ mod tests {
             .read(&["account:one:1".into(), "account:missing:1".into()])
             .is_err());
         assert!(vault.exists());
-        vault.remove().expect("remove");
+        vault.finish_retirement().expect("nothing retired yet");
+        assert!(vault.exists());
+        vault.retire().expect("retire");
         assert!(!vault.exists());
+        assert!(!root.join("credentials.hold.migrated").exists());
         assert!(!root.join("credentials.lock").exists());
-        vault.remove().expect("removal is idempotent");
+        vault.finish_retirement().expect("retirement is idempotent");
+        assert!(vault.retire().is_err());
         fs::remove_dir_all(root).expect("fixture cleanup");
     }
 
