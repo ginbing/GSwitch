@@ -221,11 +221,12 @@ separate user-initiated alternate-model request.
   retried. A document that fails the intended identity check remains protected
   but cannot be applied as another account. IPC receives only a count, never a
   credential or vault reference.
-- An isolated profile is removed when its operation ends, after the App Server
-  holding it has stopped its owned process group/job. Removal does not follow
-  links, so the helper links Codex creates inside the profile are deleted
-  without touching their targets. A profile that cannot be removed then, such
-  as one a helper still holds open on Windows, stays until the next start.
+- An isolated profile is removed when its operation ends, once GSwitch has
+  stopped the App Server's owned process group/job or its five-second cleanup
+  bound has expired. Removal does not follow links, so the helper links Codex
+  creates inside the profile are deleted without touching their targets. A
+  profile that cannot be removed then, such as one a helper still holds open on
+  Windows, stays until the next start.
 - A forced stop can leave a profile behind. Each start removes leftover
   `gswitch-*` profiles unless a running GSwitch holds a profile's owner lock.
   Nothing in a leftover is read, applied, or kept for recovery. If Codex had

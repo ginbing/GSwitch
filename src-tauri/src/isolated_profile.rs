@@ -26,9 +26,9 @@ pub struct TempCodexHome {
 
 struct Profile {
     path: PathBuf,
-    // Held for the profile's lifetime: startup cleanup in another GSwitch
-    // process leaves a locked profile alone.
-    _lock: File,
+    // Held until removal: startup cleanup in another GSwitch process leaves a
+    // locked profile alone.
+    lock: Option<File>,
 }
 
 impl TempCodexHome {
@@ -50,7 +50,10 @@ impl TempCodexHome {
         };
         let profile = Self {
             path: path.clone(),
-            inner: Arc::new(Profile { path, _lock: lock }),
+            inner: Arc::new(Profile {
+                path,
+                lock: Some(lock),
+            }),
         };
         storage::write_private_bytes_atomic(
             &profile.path.join("config.toml"),
@@ -76,15 +79,27 @@ impl TempCodexHome {
     /// explicit result keeps a Windows file lock from masquerading as cleanup;
     /// whatever remains is removed at the next start.
     pub fn cleanup(self) -> Result<(), String> {
-        let profile = Arc::try_unwrap(self.inner)
+        let mut profile = Arc::try_unwrap(self.inner)
             .map_err(|_| "The isolated Codex profile is still in use".to_string())?;
-        remove_profile(&profile.path)
+        profile.remove()
+    }
+}
+
+impl Profile {
+    fn remove(&mut self) -> Result<(), String> {
+        // Close the owner lock first. Without POSIX delete semantics (FAT,
+        // exFAT, NFS, some SMB shares), an open file keeps its directory.
+        self.lock = None;
+        remove_profile(&self.path)
     }
 }
 
 impl Drop for Profile {
     fn drop(&mut self) {
-        let _ = remove_profile(&self.path);
+        // An explicit cleanup() has already released the lock and tried once.
+        if self.lock.is_some() {
+            let _ = self.remove();
+        }
     }
 }
 
@@ -209,7 +224,7 @@ mod tests {
     fn abandon(profile: TempCodexHome) -> PathBuf {
         let path = profile.path.clone();
         let mut inner = Arc::try_unwrap(profile.inner).ok().unwrap();
-        inner.path = PathBuf::new();
+        inner.lock = None;
         drop(inner);
         path
     }
