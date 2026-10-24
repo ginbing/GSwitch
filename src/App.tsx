@@ -1288,11 +1288,11 @@ export default function App() {
       return current.promise;
     }
 
-    lastQuotaAttempt.current.set(accountId, Date.now());
     const lanes = refreshLanes.current;
     const entry: QuotaRefreshEntry = { manual: !background, started: false, promise: Promise.resolve() as never };
     const read = () => {
       entry.started = true;
+      lastQuotaAttempt.current.set(accountId, Date.now());
       return api.refreshAccountQuota(accountId, true);
     };
     const attempt = background
@@ -1337,6 +1337,7 @@ export default function App() {
     quotaRefreshes.current.set(accountId, entry);
     const forget = () => {
       if (quotaRefreshes.current.get(accountId) === entry) {
+        if (entry.started) lastQuotaAttempt.current.set(accountId, Date.now());
         quotaRefreshes.current.delete(accountId);
       }
     };

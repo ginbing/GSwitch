@@ -440,7 +440,7 @@ fn finish_oauth_recovery_with_client(
                     | RequestFailureKind::Transport => {
                         "OAuth account service is unavailable".to_string()
                     }
-                    RequestFailureKind::InvalidJson => {
+                    RequestFailureKind::InvalidJson | RequestFailureKind::InvalidResponse => {
                         "OAuth account verification failed".to_string()
                     }
                 },
@@ -913,7 +913,7 @@ impl SnapshotMetadataFailure {
                 RequestFailureKind::Transport => {
                     "Unable to reach ChatGPT account service".to_string()
                 }
-                RequestFailureKind::InvalidJson => {
+                RequestFailureKind::InvalidJson | RequestFailureKind::InvalidResponse => {
                     "ChatGPT returned an invalid account response".to_string()
                 }
             },

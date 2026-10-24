@@ -181,6 +181,10 @@ as applicable:
 - delayed filesystem, provider, process, and App Server command paths running
   through the asynchronous blocking-work boundary rather than the Tauri main
   thread;
+- read-only usage shape checks against local HTTP fixtures, legitimate optional
+  empty windows, and invalid/failed responses preserving metadata bytes, vault
+  bytes, last-success times and reset-credit data; valid usage still committing
+  when its separate detail request fails;
 - quota refresh lanes: automatic reads one at a time, a user's refresh not
   waiting behind them, up to three read-only reads in a full refresh, the
   official sign-in refresh only after a read shows it is needed, same-account
