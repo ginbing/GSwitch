@@ -480,7 +480,12 @@ mod tests {
             Some(derive_identity(&AccountKind::ChatGpt, &credential("synthetic", "old")).unwrap()),
             None,
         )
-        .unwrap()
+        .unwrap_or_else(|error| {
+            panic!(
+                "prepare isolated profile: {error}; startup status: {:?}",
+                state.storage_view().isolated_profile_status
+            )
+        })
     }
 
     // Drop the in-memory owner without its cleanup, as a crash would. The

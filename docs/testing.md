@@ -133,7 +133,8 @@ as applicable:
   the vault without appearing in `accounts.json`, plus saved-account removal
   leaving the live Codex file untouched;
 - isolated profile intent-before-secret writes, normal and startup protected
-  handoff, forced owner termination, inherited Unix leases, repeated recovery,
+  handoff, reconciliation waiting for a contended storage file lock, empty-library
+  profile creation, forced owner termination, inherited Unix leases, repeated recovery,
   changed identity/generation or removed accounts, metadata/vault failures,
   Windows file occupancy, and unowned/redirected trees staying untouched;
 - sanitized recovery notices requiring explicit recovery, without automatically
