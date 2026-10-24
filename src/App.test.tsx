@@ -632,7 +632,7 @@ describe("GSwitch account workspace", () => {
 
     expect(await screen.findByText("Personal")).toBeInTheDocument();
     expect(screen.queryByText("Stale")).not.toBeInTheDocument();
-    expect(screen.getByText("Last 30%")).toBeInTheDocument();
+    expect(await screen.findByText("Last 30%")).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: "Details" }));
     const dialog = await screen.findByRole("dialog", { name: "Reset credits · person@example.com" });
