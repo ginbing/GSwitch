@@ -13,9 +13,9 @@ with simulated metadata/download/launch calls; they never run an installer:
 pwsh -NoProfile -File scripts/test-install-helper.ps1
 ```
 
-Windows PR CI and release builds run these checks. Root `install.ps1` changes
-select their proof. Cases include missing/malformed/unsupported digests,
-mismatched bytes, network/read failures and installer failures.
+Windows CI runs these checks. Root `install.ps1` changes select their proof.
+Cases include missing/malformed/unsupported digests, mismatched bytes,
+network/read failures and installer failures.
 
 Frontend source proof:
 
@@ -57,13 +57,12 @@ repository-owned `ci:source` command for the version check, UI tests, and
 production frontend build. Rust changes call its Linux mode for version,
 frontend build, Rust formatting, Clippy, and the full Rust test suite. Frontend
 only changes do not start the Rust or platform workers. Changes to application
-or build inputs also compile all Rust targets on Windows and macOS; those jobs
-first build the debug application through the official Tauri CLI with
-`--no-bundle`, as does Linux source proof. This checks the JavaScript/Rust
-package pairing and native link boundary without generating installers.
-The platform jobs also run the focused process and isolated-profile lifecycle
-tests, the dependency's secp256k1/SLIP10 vectors, and encrypted-vault compatibility
-tests, without creating installer bundles. Node and Cargo dependencies
+or build inputs also run Rust proof on Windows and macOS; those jobs first
+build the debug application through the official Tauri CLI with `--no-bundle`,
+as does Linux source proof. This checks the JavaScript/Rust package pairing and
+native link boundary without generating installers. The platform jobs then run
+Clippy with warnings denied and the full Rust test suite, so platform-specific
+code and tests need no hand-maintained selection. Node and Cargo dependencies
 use runner caches, and newer runs cancel older runs for the same pull request
 or branch.
 
@@ -77,7 +76,8 @@ merging.
 Ordinary CI does not create or upload installers. The release workflow builds
 and smoke-checks final platform packages before upload; CI success alone does
 not prove interactive installation, platform signing, notarization, or public
-release readiness.
+release readiness. The release workflow does not repeat these source checks:
+it requires `CI gate` to pass on the tagged `main` commit before attestation.
 
 The CI workflow has read-only repository permissions. A passing CI run proves
 that the checked-in revision passed those commands on those runners; it does
