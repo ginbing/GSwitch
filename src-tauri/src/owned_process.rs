@@ -70,17 +70,20 @@ impl OwnedProcess {
         if self.cleaned {
             return true;
         }
-        let signalled = self.group.terminate(&mut self.child).is_ok();
+        // Darwin may refuse a group signal after its last live member exits.
+        // Confirm the resulting process state rather than requiring a signal
+        // to have been delivered to an already-empty group.
+        let _termination = self.group.terminate(&mut self.child);
         let result = loop {
             let exited = self.try_wait().ok().flatten().is_some();
             let quiet = self.group.quiet(self.child.id());
-            if signalled && exited && quiet {
+            if exited && quiet {
                 // try_wait already established exit; this wait only reaps it.
                 break self.child.wait().is_ok();
             }
             if Instant::now() >= deadline {
                 #[cfg(test)]
-                eprintln!("Owned helper cleanup unconfirmed: signalled={signalled}, exited={exited}, group_quiet={quiet}");
+                eprintln!("Owned helper cleanup unconfirmed: termination={_termination:?}, exited={exited}, group_quiet={quiet}");
                 break false;
             }
             thread::sleep(
