@@ -50,7 +50,7 @@ Cockpit Tools 里。
 ## 数据和联网
 
 - 保存的凭据加密存放在本机，密钥由系统的凭据管理器保管。
-- GSwitch 只连接 OpenAI（额度和账户操作）和 GitHub（检查 GSwitch 更新和 Codex CLI 新版本）。
+- GSwitch 只连接 OpenAI（额度和账户操作）和 GitHub（检查和下载 GSwitch 更新）。
 
 ## 从源码构建
 
