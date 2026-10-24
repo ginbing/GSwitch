@@ -326,7 +326,7 @@ function accountGridHasGlobalMutation(busy: string | null) {
 
 function cliUpdateFailureCode(error: unknown): CodexCliUpdateFailure {
   const code = String(error);
-  if (["not_installed", "unsupported", "codex_open", "update_failed", "verification_failed"].includes(code)) {
+  if (["not_installed", "unsupported", "codex_open", "update_failed", "launch_failed", "timed_out", "cleanup_failed", "verification_failed"].includes(code)) {
     return code as CodexCliUpdateFailure;
   }
   return "update_failed";
@@ -2507,6 +2507,9 @@ export default function App() {
               unsupported: "cli.error.unsupported",
               codex_open: "cli.error.codexOpen",
               update_failed: "cli.error.updateFailed",
+              launch_failed: "cli.error.launchFailed",
+              timed_out: "cli.error.timedOut",
+              cleanup_failed: "cli.error.cleanupFailed",
               verification_failed: "cli.error.verificationFailed",
               inspect_failed: "cli.error.inspectFailed",
               open_guide: "cli.error.openGuide",
