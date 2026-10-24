@@ -28,7 +28,9 @@ procedure and trust limits belong to [release.md](./release.md).
   and only then deletes the vault and its root key. If the vault cannot be read,
   nothing is changed and the account library stays unavailable until a later
   start succeeds. Only a vault moved this way is deleted; one left beside a
-  newer store, such as after a storage reset, is kept unread.
+  newer store, such as after a storage reset, is kept unread, and so is a
+  moved vault that could not be renamed for deletion at that moment. A root
+  key that the credential manager refuses to delete stays behind.
 - Preserve the complete Codex-generated document rather than rebuilding known
   token fields; unknown future fields must survive a round trip.
 - A pasted auth document or API key may exist only in its transient input until

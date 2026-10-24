@@ -186,9 +186,13 @@ impl LegacyVault {
         if fs::symlink_metadata(&retired).is_err() {
             return Ok(());
         }
+        // The root key entry is shared, so a newer vault at the original path
+        // keeps it.
         #[cfg(not(test))]
-        if let Ok(entry) = Entry::new(ROOT_SERVICE, ROOT_USER) {
-            let _ = entry.delete_credential();
+        if fs::symlink_metadata(&self.snapshot_path).is_err() {
+            if let Ok(entry) = Entry::new(ROOT_SERVICE, ROOT_USER) {
+                let _ = entry.delete_credential();
+            }
         }
         for path in [
             self.snapshot_path.with_extension("hold.tmp"),
