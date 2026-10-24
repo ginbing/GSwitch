@@ -259,6 +259,13 @@ unknown. The card renders whichever Codex windows the provider actually supplies
 including a five-week Free-plan window, with its reset time. It does not
 invent a five-hour or weekly window for a plan that lacks one.
 
+Codex starts a window with the first request after the previous one ended.
+Until then the provider reports an unused window whose reset is a full window
+after the moment of reading, so its reset time moves with every read. Rust
+marks such a window, unused with the full duration left, as not started, and
+the card says it starts on next use instead of counting down. A started window,
+even seconds after Wake, already counts down and keeps its reset time.
+
 Before normalization, Rust validates the consumed usage-response structure:
 the plan marker, optional quota containers, and supplied windows and reset
 summary. Absent/null optional windows and unknown plan names remain valid;

@@ -563,6 +563,10 @@ pub struct QuotaWindow {
     pub window_duration_mins: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resets_at: Option<i64>,
+    /// No use since the window last ended. The provider's reset time is then
+    /// only a projection, because Codex starts the window on the next request.
+    #[serde(default)]
+    pub not_started: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -1495,6 +1495,13 @@ fn normalize_window(window: &Value) -> QuotaWindow {
         .map(|seconds| seconds / 60)
         .filter(|minutes| *minutes > 0)
     });
+    // Codex starts a window with its first request. Until then the provider
+    // reports a full window from the moment of reading, while a started one
+    // counts down; even seconds after Wake its used_percent is still 0.
+    let not_started = used_percent == Some(0)
+        && positive_i64_at(window.get("reset_after_seconds"))
+            .zip(positive_i64_at(window.get("limit_window_seconds")))
+            .is_some_and(|(reset_after, limit)| reset_after >= limit);
     QuotaWindow {
         kind: match window_duration_mins {
             Some(300) => QuotaWindowKind::FiveHour,
@@ -1510,6 +1517,7 @@ fn normalize_window(window: &Value) -> QuotaWindow {
                 .or_else(|| window.get("resets_at"))
                 .or_else(|| window.get("reset_at")),
         ),
+        not_started,
     }
 }
 
@@ -1641,6 +1649,37 @@ mod tests {
         assert_eq!(snapshot.buckets[0].windows[1].kind, QuotaWindowKind::Weekly);
         assert_eq!(snapshot.buckets[1].limit_name.as_deref(), Some("Images"));
         assert_eq!(snapshot.buckets[1].kind, QuotaBucketKind::Other);
+    }
+
+    #[test]
+    fn only_an_unused_full_window_is_not_started() {
+        let window = |used: u64, reset_after: i64| {
+            normalize_window(&json!({
+                "used_percent": used,
+                "limit_window_seconds": 18000,
+                "reset_after_seconds": reset_after,
+                "reset_at": 1_792_867_318
+            }))
+        };
+
+        let idle = window(0, 18000);
+        assert!(idle.not_started);
+        assert_eq!(idle.resets_at, Some(1_792_867_318));
+        // Read about twenty minutes after Wake: still 0% used, but counting down.
+        assert!(!window(0, 16694).not_started);
+        assert!(!window(9, 15472).not_started);
+        assert!(!window(0, 17999).not_started);
+        // Without the provider's countdown the state stays unknown, not idle.
+        assert!(
+            !normalize_window(&json!({"used_percent": 0, "limit_window_seconds": 18000}))
+                .not_started
+        );
+        assert!(
+            !normalize_window(
+                &json!({"usedPercent": 0, "windowDurationMins": 300, "resetsAt": 900})
+            )
+            .not_started
+        );
     }
 
     #[test]

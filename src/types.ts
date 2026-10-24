@@ -151,6 +151,8 @@ export interface QuotaWindow {
   remaining_percent?: number;
   window_duration_mins?: number;
   resets_at?: number;
+  // The window has had no use since it last ended; Codex starts it on the next request.
+  not_started?: boolean;
 }
 
 export interface QuotaBucket {
