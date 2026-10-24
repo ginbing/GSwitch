@@ -103,15 +103,16 @@ Codex location must be in the graphical session's `PATH` or set with
 
 ## Real-account acceptance
 
-Tests and fictional-data screenshots cannot show how the provider or an
-installed Codex treats a real account. A release that changes sign-in,
-switching, quota, Wake, credential storage, or recovery is therefore accepted
-with real accounts before its tag is pushed, not after the public installer
-exists.
+Real-account checks provide optional evidence of how the provider and installed
+Codex behave. They are not a release prerequisite: the maintainer may release
+without performing them, without a waiver or additional approval. Applicable
+automated checks, package and updater-signature verification, provenance, and
+draft review remain required.
 
-The agent builds the [maintainer Windows preview](#maintainer-windows-preview)
-from the merged `main` commit and hands it over; only the maintainer uses real
-accounts. With at least two saved ChatGPT accounts, the maintainer checks:
+When the maintainer chooses to test with real accounts, the agent can build the
+[maintainer Windows preview](#maintainer-windows-preview) from a committed
+revision and hand it over. Only the maintainer uses real accounts. With at
+least two saved ChatGPT accounts, useful checks include:
 
 1. launch shows the current account and loads each card's quota;
 2. Switch to another saved account with Codex closed, then switch back;
@@ -123,20 +124,18 @@ accounts. With at least two saved ChatGPT accounts, the maintainer checks:
    and recovers through **Sign in again**, when such an account is available.
 
 Reset-credit redemption is not part of this list; it keeps its own explicit
-confirmation. The maintainer may waive the acceptance for a release, including
-in the publish request itself. Record the preview commit and either the result
-or the waiver in the release pull request. The version commit that follows may
-differ from the accepted commit only in the version files. A failed or
-unanswered acceptance stops the release like any other failed gate; do not
-describe a waived or unperformed flow as validated.
+confirmation. If checks are performed, record the tested commit and actual
+results in the release pull request, including any defect found. An omitted or
+unanswered optional check does not stop publication. Never describe an
+unperformed flow as validated or rewrite historical validation claims.
 
 ## Release workflow
 
 Pushing a tag named `v<version>` starts the sole release workflow. The tag must
 point to the exact current merged `main` commit and match
 `src-tauri/tauri.conf.json`. Run the remote CI path against that commit before
-tagging it, and complete the [real-account acceptance](#real-account-acceptance)
-when the release changes account behavior. The workflow runs version, frontend, and Rust checks, then builds
+tagging it. [Real-account checks](#real-account-acceptance) are optional. The
+workflow runs version, frontend, and Rust checks, then builds
 all release bundles locally. It smoke checks the Windows install and uninstall,
 both macOS DMGs and updater archives, and both Linux package payloads before
 signing the final updater bytes. The workflow verifies signatures against the
@@ -182,12 +181,6 @@ legacy ZIP package support is disabled: GSwitch publishes the standard NSIS
 executable and AppImage directly, and macOS keeps its native tar.gz updater
 bundle. No GSwitch release uses the older Windows ZIP updater format.
 
-After the main view appears, a separate background check reads the installed
-Codex CLI version and OpenAI's latest stable Codex release metadata from GitHub.
-It repeats at most every six hours while the app is open. An unavailable check
-stays quiet; only a confirmed newer version produces an update entry. Installing
-that CLI update requires a user click and uses the CLI's own update command.
-
 Windows uses a passive NSIS installer and exits while the installer runs. macOS
 and AppImage installations request a normal relaunch. Debian packages are not
 self-replaced; when an update is available, GSwitch opens the verified release
@@ -226,9 +219,8 @@ Default release posture:
 - no analytics or telemetry;
 - no crash-reporting service without a separate accepted privacy decision;
 - no listening port, localhost API, or remote-control surface;
-- outbound traffic only for user-visible Codex/OpenAI operations, signed app
-  update checks, and the background Codex CLI release-metadata check described
-  above.
+- outbound traffic only for user-visible Codex/OpenAI operations and signed
+  GSwitch update checks.
 
 ## Versioning
 

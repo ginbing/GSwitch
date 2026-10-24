@@ -84,16 +84,6 @@ explicit reset preserves GSwitch's damaged file without touching Codex.
 
 ## Interaction states
 
-After the account grid appears, GSwitch checks the installed Codex CLI against
-OpenAI's latest stable release in the background. The toolbar shows a compact
-entry only when a newer version is confirmed. Its dialog states the version
-once, in one status line ("up to date" or "{latest} available"), and offers an
-explicit update action only when that CLI exposes the official `update`
-command; a single note says the desktop app updates separately and Codex must
-be quit first, and progress shows on the Update button. An unsupported CLI
-points to the official install guide. A failed check remains quiet; no update
-is installed without a click.
-
 - Do not optimistically display a switch or redemption as complete.
 - After a verified switch, update the active card directly.
   That state is the visible confirmation; do not insert a success banner above

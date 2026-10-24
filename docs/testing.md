@@ -58,7 +58,7 @@ production frontend build. Rust changes call its Linux mode for version,
 frontend build, Rust formatting, Clippy, and the full Rust test suite. Frontend
 only changes do not start the Rust or platform workers. Changes to application
 or build inputs also compile all Rust targets on Windows and macOS; those jobs
-also run the focused CLI-update/process and isolated-profile lifecycle tests, the dependency's
+also run the focused process and isolated-profile lifecycle tests, the dependency's
 secp256k1/SLIP10 vectors, and encrypted-vault compatibility tests, without
 creating installer bundles. Node and Cargo dependencies
 use runner caches, and newer runs cancel older runs for the same pull request
@@ -133,15 +133,14 @@ as applicable:
   the vault without appearing in `accounts.json`, plus saved-account removal
   leaving the live Codex file untouched;
 - isolated profile intent-before-secret writes, normal and startup protected
-  handoff, forced owner termination, inherited Unix leases, repeated recovery,
+  handoff, reconciliation waiting for a contended storage file lock, empty-library
+  profile creation, forced owner termination, inherited Unix leases, repeated recovery,
   changed identity/generation or removed accounts, metadata/vault failures,
   Windows file occupancy, and unowned/redirected trees staying untouched;
 - sanitized recovery notices requiring explicit recovery, without automatically
   starting OAuth, replaying reset credits, or resetting the account store;
-- CLI update success, failure, missing executable, timeout, operation-lock
-  release after cleanup, an exited launcher with inherited pipes, scoped
-  descendant termination, and an unrelated process remaining alive; these use
-  fixture subprocesses and never update the installed CLI;
+- Operation-owned descendant termination, inherited pipes, bounded cleanup and
+  unrelated-process survival use fixture subprocesses.
 - OAuth App Server-before-profile teardown and explicit cleanup errors,
   including a Windows-exclusive `auth.json` handle fixture;
 - accepted OAuth completion surviving browser closure, protected retry after
@@ -315,7 +314,8 @@ Standard CI does not by itself prove:
 - the exact permissions of a packaged artifact;
 - public-release readiness.
 
-Those claims require the matching integration or release check. Real-account
-behavior is accepted before a release through the procedure in
-[`release.md`](./release.md#real-account-acceptance). Never report a platform,
+Those claims require the matching integration or release check. Optional
+maintainer real-account checks are described in
+[`release.md`](./release.md#real-account-acceptance); omitting them requires no
+waiver and does not block a release. Never report a platform,
 provider, installer, or recovery path as validated unless that exact proof ran.

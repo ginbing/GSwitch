@@ -26,23 +26,6 @@ export interface RuntimeInfo {
   credential_store: CredentialStoreMode;
 }
 
-export interface CodexCliInfo {
-  version?: string;
-  supports_update: boolean;
-  latest_version?: string;
-  update_status: "available" | "current" | "unknown" | "missing";
-}
-
-export type CodexCliUpdateFailure =
-  | "not_installed"
-  | "unsupported"
-  | "codex_open"
-  | "update_failed"
-  | "launch_failed"
-  | "timed_out"
-  | "cleanup_failed"
-  | "verification_failed";
-
 export type StorageStatus = "ready" | "recovery_required";
 
 export interface StorageView {

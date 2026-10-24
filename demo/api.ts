@@ -51,7 +51,6 @@ const snapshot: AppSnapshot = {
 const displayOnly = {
   appSnapshot: async () => snapshot,
   accountQuota: async (id: string) => quotas[id] || { account_id: id, status: "unknown" },
-  codexCliInfo: async () => ({ version: "0.158.0", latest_version: "0.158.0", supports_update: true, update_status: "current" as const }),
 };
 
 export const api = new Proxy(displayOnly, {

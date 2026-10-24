@@ -77,22 +77,12 @@ GSwitch-owned isolated App Server children are scoped to their operation and
 excluded only from that operation's external-process check. They are terminated
 when the operation ends.
 
-GSwitch reads the installed CLI version from the same executable it uses for
-App Server. It updates the CLI only after a user selects **Update CLI**, with
-the GSwitch operation lock held and no external Codex runtime active. When
-GSwitch's own work, such as a quota refresh, holds that lock, the update waits
-for it to finish instead of failing. The CLI
-itself chooses its supported installation method; GSwitch does not download or
-replace CLI files or change account credentials. A completed update is followed
-by a fresh version read. Execution is limited to ten minutes, with at most five
-additional seconds for termination and reaping. Probes include pipe collection
-and cleanup within their five-second limit. Windows helpers enter a kill-on-close
-Job Object before their primary thread runs; Unix helpers enter their own
-process group, with the leader left unreaped until group cleanup to avoid PID
-reuse. Only operation-owned processes are terminated. If cleanup cannot be
-confirmed, subsequent account mutations remain blocked until restart rather
-than assuming the helper is gone. Missing or unsupported update commands use official
-manual guidance. Tests use a fake CLI and never update the user's installation.
+GSwitch-owned helpers enter a kill-on-close Windows Job Object before their
+primary thread runs, or an independent Unix process group. Only operation-owned
+processes are terminated. The Unix leader stays unreaped until group cleanup
+to prevent process-group ID reuse. Cleanup is bounded to five seconds; unconfirmed
+cleanup blocks conflicting mutations until restart. GSwitch does not inspect
+CLI release metadata or update the user's Codex installation.
 
 Saving the current file-backed ChatGPT account uses the live access-token
 snapshot for a Rust-only read-only account check. It matches the returned

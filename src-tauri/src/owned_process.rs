@@ -52,6 +52,7 @@ impl OwnedProcess {
         Ok(self.status)
     }
 
+    #[cfg(test)]
     pub fn wait_until(&mut self, deadline: Instant) -> io::Result<Option<ExitStatus>> {
         loop {
             if let Some(status) = self.try_wait()? {

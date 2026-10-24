@@ -67,8 +67,6 @@ Keep the backend flat and organized by concrete responsibility:
   credential handoff, and cleanup shared by normal completion and startup;
 - `chatgpt.rs`: read-only ChatGPT quota and account-metadata HTTP boundary;
 - `codex.rs`: `CODEX_HOME`, effective storage mode, and live auth-file access;
-- `cli_update.rs`: version inspection and explicit handoff to the installed
-  Codex CLI's official update command;
 - `identity.rs`: credential classification, stable non-secret identity, and
   fingerprints used for comparisons;
 - `intake.rs`: OAuth, bounded auth-document batch import, versioned portable export serialization, and API-key intake;
