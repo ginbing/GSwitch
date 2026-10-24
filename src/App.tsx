@@ -19,7 +19,6 @@ import {
   Plus,
   RefreshCw,
   ShieldAlert,
-  Terminal,
   Trash2,
   Upload,
   X,
@@ -58,8 +57,6 @@ import { RefreshLanes } from "./refreshLanes";
 import { quotaRefreshDue } from "./refreshPolicy";
 import type {
   AccountView,
-  CodexCliInfo,
-  CodexCliUpdateFailure,
   LiveAccountView,
   MigrationCandidate,
   MigrationPreview,
@@ -91,7 +88,6 @@ type Dialog =
   | "remove"
   | "export"
   | "wake"
-  | "codex-cli"
   | null;
 
 type AddMethod = "start" | "oauth" | "json" | "api-key" | "migration";
@@ -320,16 +316,7 @@ function accountGridHasGlobalMutation(busy: string | null) {
     "recover-switch",
     "recover-reset-credit",
     "reset-damaged-store",
-    "codex-cli-update",
   ].includes(busy) || busy.startsWith("switch:") || busy.startsWith("reset:") || busy.startsWith("remove:");
-}
-
-function cliUpdateFailureCode(error: unknown): CodexCliUpdateFailure {
-  const code = String(error);
-  if (["not_installed", "unsupported", "codex_open", "update_failed", "launch_failed", "timed_out", "cleanup_failed", "verification_failed"].includes(code)) {
-    return code as CodexCliUpdateFailure;
-  }
-  return "update_failed";
 }
 
 function codexQuotaWindows(quota: QuotaView | undefined): QuotaWindow[] {
@@ -1181,10 +1168,6 @@ export default function App() {
   const [removeError, setRemoveError] = useState<string | null>(null);
   const [redeemingCredit, setRedeemingCredit] = useState<string | null>(null);
   const [pendingUpdate, setPendingUpdate] = useState<PendingUpdate | null>(null);
-  const [cliInfo, setCliInfo] = useState<CodexCliInfo | null>(null);
-  const [cliChecking, setCliChecking] = useState(false);
-  const [cliResult, setCliResult] = useState<{ kind: "updated" | "sameVersion"; version: string } | null>(null);
-  const [cliError, setCliError] = useState<CodexCliUpdateFailure | "inspect_failed" | "open_guide" | null>(null);
   const [updatePhase, setUpdatePhase] = useState<UpdatePhase>("available");
   const [updateProgress, setUpdateProgress] = useState<number | null>(null);
   const jsonRef = useRef<HTMLTextAreaElement>(null);
@@ -1223,61 +1206,6 @@ export default function App() {
   const changeLanguage = (preference: LanguagePreference) => {
     setLanguagePreference(preference);
     saveLanguagePreference(preference);
-  };
-
-  const checkCodexCli = async () => {
-    setCliChecking(true);
-    setCliError(null);
-    try {
-      setCliInfo(await api.codexCliInfo());
-    } catch {
-      setCliInfo(null);
-      setCliError("inspect_failed");
-    } finally {
-      setCliChecking(false);
-    }
-  };
-
-  const openCodexCli = () => {
-    setCliResult(null);
-    setCliError(null);
-    setDialog("codex-cli");
-    void checkCodexCli();
-  };
-
-  useEffect(() => {
-    if (loading) return;
-    let closed = false;
-    const check = () => {
-      void api.codexCliInfo().then((info) => {
-        if (!closed) setCliInfo(info);
-      }).catch(() => {
-        if (!closed) setCliInfo(null);
-      });
-    };
-    const initial = window.setTimeout(check, 250);
-    const interval = window.setInterval(check, 6 * 60 * 60 * 1000);
-    return () => {
-      closed = true;
-      window.clearTimeout(initial);
-      window.clearInterval(interval);
-    };
-  }, [loading]);
-
-  const updateCodexCli = async () => {
-    const previousVersion = cliInfo?.version;
-    setCliResult(null);
-    setCliError(null);
-    setBusy("codex-cli-update");
-    try {
-      const updated = await api.updateCodexCli();
-      setCliInfo(await api.codexCliInfo().catch(() => updated));
-      setCliResult({ kind: previousVersion === updated.version ? "sameVersion" : "updated", version: updated.version || "—" });
-    } catch (error) {
-      setCliError(cliUpdateFailureCode(error));
-    } finally {
-      setBusy(null);
-    }
   };
 
   const requestQuotaRefresh = useCallback((accountId: string, background = false): Promise<QuotaView> => {
@@ -2138,7 +2066,6 @@ export default function App() {
     }
   };
 
-  const cliUpdateAvailable = cliInfo?.update_status === "available" && cliInfo.supports_update;
   const currentActiveId = live?.account?.id;
   refreshInputs.current = { accounts, quotas, quotaFailures, activeId: currentActiveId };
   const chatGptAccounts = accounts.filter((account) => account.kind === "chat_gpt");
@@ -2270,12 +2197,6 @@ export default function App() {
             <Plus size={16} />
             {t("common.addAccount")}
           </button>
-          {cliInfo?.update_status === "available" ? (
-            <button className="button button-secondary cli-toolbar-button" disabled={busy !== null} onClick={openCodexCli} type="button">
-              <Terminal size={16} />
-              {t("cli.available", { version: cliInfo.latest_version || "" })}
-            </button>
-          ) : null}
           <PopoverMenu
             className="language-menu"
             icon={<span aria-hidden="true" className="language-menu-icon" />}
@@ -2493,50 +2414,6 @@ export default function App() {
           )}
         </section>
       </div>
-
-      {dialog === "codex-cli" ? (
-        <Modal dismissible={busy !== "codex-cli-update"} onClose={() => setDialog(null)} t={t} title={t("toolbar.codexCli")}>
-          <div className="cli-panel">
-            {cliChecking ? <p className="cli-status" role="status"><LoaderCircle className="spin" size={18} />{t("cli.checking")}</p> : (
-              <p className="cli-status">
-                <Terminal size={18} />
-                {!cliInfo?.version
-                  ? t("cli.missing")
-                  : cliUpdateAvailable
-                    ? t("cli.updateAvailable", { version: cliInfo.version, latest: cliInfo.latest_version || "" })
-                    : cliInfo.latest_version === cliInfo.version
-                      ? t("cli.upToDate", { version: cliInfo.version })
-                      : t("cli.version", { version: cliInfo.version })}
-              </p>
-            )}
-            {cliInfo?.version && !cliInfo.supports_update ? <p>{t("cli.unsupported")}</p> : null}
-            {cliUpdateAvailable ? <p>{busy === "codex-cli-update" ? t("cli.updatingNote") : t("cli.updateNote")}</p> : null}
-            {cliResult ? <p className="cli-result" role="status">{t(cliResult.kind === "updated" ? "cli.updated" : "cli.sameVersion")}</p> : null}
-            {cliError ? <p className="cli-error" role="alert">{t(({
-              not_installed: "cli.error.notInstalled",
-              unsupported: "cli.error.unsupported",
-              codex_open: "cli.error.codexOpen",
-              update_failed: "cli.error.updateFailed",
-              launch_failed: "cli.error.launchFailed",
-              timed_out: "cli.error.timedOut",
-              cleanup_failed: "cli.error.cleanupFailed",
-              verification_failed: "cli.error.verificationFailed",
-              inspect_failed: "cli.error.inspectFailed",
-              open_guide: "cli.error.openGuide",
-            } as const)[cliError])}</p> : null}
-            <div className="modal-actions">
-              <button className="button button-quiet" disabled={busy !== null} onClick={() => void api.openCodexCliGuide().catch(() => setCliError("open_guide"))} type="button">{t("cli.guide")}</button>
-              <button className="button button-secondary" disabled={busy !== null || cliChecking} onClick={() => void checkCodexCli()} type="button">{t("cli.checkAgain")}</button>
-              {cliUpdateAvailable ? (
-                <button className="button button-primary" disabled={busy !== null || cliChecking} onClick={() => void updateCodexCli()} type="button">
-                  {busy === "codex-cli-update" ? <LoaderCircle className="spin" size={15} /> : <Download size={15} />}
-                  {busy === "codex-cli-update" ? t("cli.updating") : t("cli.update")}
-                </button>
-              ) : null}
-            </div>
-          </div>
-        </Modal>
-      ) : null}
 
       {dialog === "add" ? (
         <Modal dismissible={!runningAny("import", "migration-scan", "migration-import", "oauth", "oauth-cancel", "oauth-retry", "import-json", "import-key")} onClose={closeAddDialog} t={t} title={t(oauthTarget ? "oauth.reauthenticateTitle" : "add.title", oauthTarget ? { name: accountPrimaryName(oauthTarget) } : undefined)} wide>

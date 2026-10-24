@@ -374,8 +374,8 @@ fn app_server_command(codex_home: &Path) -> Command {
     command
 }
 
-/// Resolve the same installed Codex CLI for App Server and explicit CLI
-/// maintenance. A desktop process does not necessarily inherit a shell PATH.
+/// Resolve the installed Codex executable for App Server. A desktop process
+/// does not necessarily inherit a shell PATH.
 pub(crate) fn codex_command() -> Command {
     #[cfg(windows)]
     {
