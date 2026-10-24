@@ -6,6 +6,17 @@ acceptance.
 
 ## Local validation
 
+Windows installer-helper checks use real hashing and temporary-file cleanup
+with simulated metadata/download/launch calls; they never run an installer:
+
+```powershell
+pwsh -NoProfile -File scripts/test-install-helper.ps1
+```
+
+Windows PR CI and release builds run these checks. Root `install.ps1` changes
+select their proof. Cases include missing/malformed/unsupported digests,
+mismatched bytes, network/read failures and installer failures.
+
 Frontend source proof:
 
 ```bash

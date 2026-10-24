@@ -3,6 +3,13 @@
 GSwitch handles password-equivalent credential material. These invariants are
 product behavior, not optional implementation polish.
 
+The optional Windows installer helper verifies the selected release asset's
+SHA-256 metadata against the downloaded bytes before launch and fails closed
+when verification is unavailable. This complements updater signatures and
+release provenance; it does not supply Windows publisher trust. Release tag
+updates/deletions are restricted by the live GitHub tag ruleset. Distribution
+procedure and trust limits belong to [release.md](./release.md).
+
 ## Secret boundary
 
 - Complete saved credential documents, individual reset-credit IDs,
