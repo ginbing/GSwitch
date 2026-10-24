@@ -133,10 +133,14 @@ unperformed flow as validated or rewrite historical validation claims.
 
 Pushing a tag named `v<version>` starts the sole release workflow. The tag must
 point to the exact current merged `main` commit and match
-`src-tauri/tauri.conf.json`. Run the remote CI path against that commit before
-tagging it. [Real-account checks](#real-account-acceptance) are optional. The
-workflow runs version, frontend, and Rust checks, then builds
-all release bundles locally. It smoke checks the Windows install and uninstall,
+`src-tauri/tauri.conf.json`. Tag it as soon as the version pull request
+merges; do not wait for that commit's CI run first.
+[Real-account checks](#real-account-acceptance) are optional. The workflow
+checks the version and release-asset tooling, then builds all release bundles
+locally through the official Tauri CLI while the `main` CI run proves the same
+commit's source checks. It does not attest or draft anything until that
+commit's `CI gate` passes; CodeQL results are not awaited. It smoke checks the
+Windows install and uninstall,
 both macOS DMGs and updater archives, and both Linux package payloads before
 signing the final updater bytes. The workflow verifies signatures against the
 configured public key, builds a static `latest.json` from those signatures,
@@ -236,6 +240,6 @@ Make the version change its own commit and pull request, after the product
 changes it releases have merged. A product pull request does not touch the
 version files.
 
-After an authorized version change is merged and the exact `main` commit passes
-the required remote checks, tag that commit as the matching `v<version>`. The
-workflow creates a draft; review its assets and notes before publishing it.
+After an authorized version change is merged, tag that exact `main` commit as
+the matching `v<version>`. The workflow waits for the commit's `CI gate` and
+then creates a draft; review its assets and notes before publishing it.
