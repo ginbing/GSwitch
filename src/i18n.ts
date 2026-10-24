@@ -11,6 +11,12 @@ export interface ResolvedLocale {
 type TranslationValues = Record<string, string | number>;
 
 const en = {
+  "safety.isolatedTitle": "An interrupted sign-in needs attention",
+  "safety.isolated.recovery_available": "An interrupted operation left a protected sign-in copy. Recover it to finish saving; reset credits and other provider operations will not be replayed.",
+  "safety.isolated.restricted": "Temporary sign-in storage could not be confirmed inactive and safe. Close Codex and retry recovery. Operations requiring isolated storage remain blocked.",
+  "safety.isolated.cleanup_failed": "Temporary sign-in storage could not be removed. Close Codex and retry recovery. Operations requiring isolated storage remain blocked.",
+  "safety.isolated.protection_failed": "An interrupted sign-in could not be retained safely. Temporary credentials were removed; you may need to sign in again.",
+  "safety.recoverSignIns": "Recover saved sign-ins",
   "file.accountExports": "Account exports",
   "common.unknown": "Unknown",
   "common.cancel": "Cancel",
@@ -379,6 +385,12 @@ const en = {
 } as const;
 
 const zhCN: Record<keyof typeof en, string> = {
+  "safety.isolatedTitle": "中断的登录需要处理",
+  "safety.isolated.recovery_available": "已加密保留中断操作的登录信息。恢复后可继续保存；不会重放额度重置等服务商操作。",
+  "safety.isolated.restricted": "暂时无法确认临时登录存储无人使用且安全。请关闭 Codex 后重试恢复。需要隔离存储的操作暂不可用。",
+  "safety.isolated.cleanup_failed": "临时登录存储未能删除。请关闭 Codex 后重试恢复。需要隔离存储的操作暂不可用。",
+  "safety.isolated.protection_failed": "未能安全保留中断的登录信息。临时凭据已删除，可能需要重新登录。",
+  "safety.recoverSignIns": "恢复已保存的登录",
   "file.accountExports": "账户导出文件",
   "common.unknown": "未知",
   "common.cancel": "取消",

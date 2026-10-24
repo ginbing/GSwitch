@@ -6,6 +6,7 @@ mod codex;
 mod commands;
 mod identity;
 mod intake;
+mod isolated_profile;
 mod migration;
 mod owned_process;
 mod quota;

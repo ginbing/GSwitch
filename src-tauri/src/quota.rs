@@ -432,18 +432,20 @@ pub(crate) fn refresh_saved_sign_in(
     identity: &AccountIdentity,
 ) -> Result<Value, ManagedRefreshFailure> {
     let unavailable = ManagedRefreshFailure::Unavailable;
-    let temporary = TempCodexHome::create(&state.isolated_profile_root().map_err(unavailable)?)
-        .map_err(unavailable)?;
+    let temporary =
+        TempCodexHome::managed(state, Some(identity.clone()), None).map_err(unavailable)?;
     temporary
         .write_auth(&account.credential)
         .map_err(unavailable)?;
-    let mut server = AppServer::start(&temporary.path).map_err(unavailable)?;
+    let mut server = AppServer::start_isolated(&temporary).map_err(unavailable)?;
     let attempt = server.account_refresh(1);
+    drop(server);
 
     // Codex may have rotated the token chain even when its reply never
     // arrived, so keep a newer credential before reporting that failure.
     let refreshed = temporary.read_auth().map_err(unavailable)?;
     let credential = keep_refreshed_credential(state, operation, account, identity, refreshed)?;
+    temporary.cleanup().map_err(unavailable)?;
     attempt.map_err(unavailable)?;
     Ok(credential)
 }
@@ -625,9 +627,11 @@ struct AppServerResetSession {
 
 impl AppServerResetSession {
     fn start(state: &AppState, credential: &Value) -> Result<Self, String> {
-        let temporary = TempCodexHome::create(&state.isolated_profile_root()?)?;
+        let kind = document_kind(credential)?;
+        let temporary =
+            TempCodexHome::managed(state, Some(derive_identity(&kind, credential)?), None)?;
         temporary.write_auth(credential)?;
-        let server = AppServer::start(&temporary.path)?;
+        let server = AppServer::start_isolated(&temporary)?;
         Ok(Self {
             server,
             temporary,

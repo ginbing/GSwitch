@@ -41,7 +41,7 @@ zeroize = "1.9"
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp"] }
 
 [dev-dependencies]
 crypto = { package = "iota-crypto", version = "=0.23.2", default-features = false, features = ["secp256k1", "slip10", "rand", "random", "sha", "keccak"] }

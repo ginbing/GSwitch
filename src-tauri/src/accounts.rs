@@ -36,6 +36,7 @@ pub struct AppState {
     operation_lock: Arc<Mutex<()>>,
     oauth_logins: Arc<Mutex<HashMap<String, OAuthLoginControl>>>,
     wake_operations: Arc<Mutex<HashMap<String, WakeControl>>>,
+    isolated_profile_status: Arc<Mutex<Option<crate::types::IsolatedProfileStatus>>>,
 }
 
 #[derive(Clone)]
@@ -127,7 +128,7 @@ impl AppState {
                 ),
             };
 
-        Ok(Self {
+        let state = Self {
             store_path: Arc::new(store_path),
             store_recovery_dir: Arc::new(storage_root.join("damaged-account-stores")),
             vault,
@@ -137,7 +138,10 @@ impl AppState {
             operation_lock: Arc::new(Mutex::new(())),
             oauth_logins: Arc::new(Mutex::new(HashMap::new())),
             wake_operations: Arc::new(Mutex::new(HashMap::new())),
-        })
+            isolated_profile_status: Arc::new(Mutex::new(None)),
+        };
+        state.reconcile_isolated_profiles();
+        Ok(state)
     }
 
     fn recovery_message(error: &str) -> String {
@@ -606,6 +610,11 @@ impl AppState {
         if self.store_recovery_required.load(Ordering::SeqCst) {
             StorageView {
                 status: StorageStatus::RecoveryRequired,
+                isolated_profile_status: self
+                    .isolated_profile_status
+                    .lock()
+                    .ok()
+                    .and_then(|status| *status),
                 message: self
                     .store_recovery_message
                     .lock()
@@ -622,6 +631,11 @@ impl AppState {
             StorageView {
                 status: StorageStatus::Ready,
                 message: None,
+                isolated_profile_status: self
+                    .isolated_profile_status
+                    .lock()
+                    .ok()
+                    .and_then(|status| *status),
             }
         }
     }
@@ -758,10 +772,124 @@ impl AppState {
     /// Keep short-lived isolated profiles in GSwitch-owned application storage
     /// instead; each profile is still independently deleted after its task.
     pub fn isolated_profile_root(&self) -> Result<PathBuf, String> {
-        self.store_path
+        let parent = self
+            .store_path
             .parent()
-            .map(|path| path.join("isolated-codex"))
-            .ok_or_else(|| "Invalid GSwitch storage path".to_string())
+            .ok_or_else(|| "Invalid GSwitch storage path".to_string())?;
+        // Resolve the existing storage anchor, not the isolated root/entries.
+        // macOS may expose the system temporary directory through /var.
+        #[cfg(unix)]
+        let parent = parent
+            .canonicalize()
+            .map_err(|_| "Invalid GSwitch storage path")?;
+        Ok(parent.join("isolated-codex"))
+    }
+
+    pub(crate) fn set_isolated_profile_status(&self, status: crate::types::IsolatedProfileStatus) {
+        if let Ok(mut held) = self.isolated_profile_status.lock() {
+            *held = Some(status);
+        }
+    }
+
+    pub(crate) fn ensure_isolated_profiles_ready(&self) -> Result<(), String> {
+        match *self
+            .isolated_profile_status
+            .lock()
+            .map_err(|_| "Isolated storage status is unavailable")?
+        {
+            Some(
+                crate::types::IsolatedProfileStatus::Restricted
+                | crate::types::IsolatedProfileStatus::CleanupFailed,
+            ) => Err(
+                "Isolated Codex storage requires cleanup before another isolated operation".into(),
+            ),
+            _ => Ok(()),
+        }
+    }
+
+    pub(crate) fn reconcile_isolated_profiles(&self) {
+        if let Ok(mut status) = self.isolated_profile_status.lock() {
+            *status = None;
+        }
+        let result = self
+            .acquire_recovery_operation()
+            .map_err(|_| crate::types::IsolatedProfileStatus::Restricted)
+            .and_then(|_operation| crate::isolated_profile::reconcile(self));
+        if let Err(status) = result {
+            self.set_isolated_profile_status(status);
+        } else if self
+            .vault
+            .pending_credentials::<PendingCredentialSecret>()
+            .is_ok_and(|pending| !pending.is_empty())
+        {
+            self.set_isolated_profile_status(
+                crate::types::IsolatedProfileStatus::RecoveryAvailable,
+            );
+        }
+    }
+
+    pub(crate) fn credential_baseline(
+        &self,
+    ) -> Result<Vec<crate::isolated_profile::CredentialBaseline>, String> {
+        let store = self
+            .store
+            .lock()
+            .map_err(|_| "Account store lock is unavailable")?;
+        Ok(store
+            .accounts
+            .iter()
+            .filter_map(|account| {
+                Some(crate::isolated_profile::CredentialBaseline {
+                    id: account.id.clone(),
+                    identity: account.identity.clone()?,
+                    generation: account.credential_generation,
+                })
+            })
+            .collect())
+    }
+
+    pub(crate) fn protect_isolated_credential(
+        &self,
+        reference: &str,
+        credential: &Value,
+        identity: &AccountIdentity,
+        intent: &crate::isolated_profile::ProfileIntent,
+    ) -> Result<(), String> {
+        let store = self
+            .store
+            .lock()
+            .map_err(|_| "Account store lock is unavailable")?;
+        if store
+            .accounts
+            .iter()
+            .any(|account| &account.credential == credential)
+        {
+            return Ok(());
+        }
+        let baseline = intent
+            .baseline
+            .iter()
+            .find(|account| &account.identity == identity);
+        let secret = PendingCredentialSecret {
+            credential: credential.clone(),
+            expected_identity: Some(identity.clone()),
+            expected_account_id: baseline.map(|account| account.id.clone()),
+            expected_generation: baseline.map(|account| account.generation),
+            oauth: intent.oauth.clone(),
+        };
+        drop(store);
+        self.vault.put_pending_credential(reference, &secret)?;
+        let saved: PendingCredentialSecret = self.vault.get(reference)?;
+        let encode = |value: &PendingCredentialSecret| {
+            serde_json::to_vec(value).map_err(|_| {
+                "Protected credential recovery could not be verified safely".to_string()
+            })
+        };
+        if encode(&saved)? != encode(&secret)? {
+            return Err("Protected credential recovery could not be verified safely".into());
+        }
+        self.set_isolated_profile_status(crate::types::IsolatedProfileStatus::RecoveryAvailable);
+        Ok(())
     }
 
     /// Serializes any operation that can touch credentials across both GSwitch
@@ -1486,6 +1614,8 @@ impl AppState {
     /// A changed account generation is never overwritten by an older queue
     /// entry; retirement follows a successful metadata commit.
     pub fn recover_pending_credentials(&self) -> Result<u32, String> {
+        self.reconcile_isolated_profiles();
+        self.ensure_isolated_profiles_ready()?;
         let pending = self
             .vault
             .pending_credentials::<PendingCredentialSecret>()?;
@@ -1494,6 +1624,20 @@ impl AppState {
         for (reference, secret) in pending {
             let result: Result<(), String> = (|| {
                 if let Some(context) = &secret.oauth {
+                    if let Some(expected_id) = &secret.expected_account_id {
+                        let store = self
+                            .store
+                            .lock()
+                            .map_err(|_| "Account store lock is unavailable")?;
+                        if !store.accounts.iter().any(|account| {
+                            &account.id == expected_id
+                                && (Some(account.credential_generation)
+                                    == secret.expected_generation
+                                    || account.credential == secret.credential)
+                        }) {
+                            return Err("Protected credential recovery account changed".into());
+                        }
+                    }
                     crate::intake::finish_oauth_recovery(self, &secret.credential, context)?;
                     return self.vault.retire_pending_credential(&reference);
                 }
@@ -1593,7 +1737,12 @@ impl AppState {
         }
         match first_error {
             Some(error) => Err(error),
-            None => Ok(recovered),
+            None => {
+                if let Ok(mut status) = self.isolated_profile_status.lock() {
+                    *status = None;
+                }
+                Ok(recovered)
+            }
         }
     }
 
@@ -1652,8 +1801,8 @@ impl AppState {
         login_id: &str,
         credential: &Value,
         context: crate::intake::OAuthRecovery,
+        reference: String,
     ) -> Result<(), String> {
-        let reference = format!("pending-credential-{}", Uuid::new_v4());
         let secret = PendingCredentialSecret {
             credential: credential.clone(),
             expected_identity: None,

@@ -1,18 +1,20 @@
 use std::{
     collections::VecDeque,
-    env, fs,
+    env,
     io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
-    process::{Child, ChildStdin, ChildStdout, Command, Stdio},
+    process::{ChildStdin, ChildStdout, Command, Stdio},
     sync::mpsc::{self, Receiver},
     thread,
     time::{Duration, Instant},
 };
 
 use serde_json::{json, Value};
-use uuid::Uuid;
+#[cfg(test)]
+use {std::fs, uuid::Uuid};
 
-use crate::storage;
+pub use crate::isolated_profile::TempCodexHome;
+use crate::owned_process::{OwnedProcess, CLEANUP_TIMEOUT};
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(15);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -39,31 +41,46 @@ impl CallError {
 }
 
 pub struct AppServer {
-    child: Child,
+    process: OwnedProcess,
+    _profile: Option<TempCodexHome>,
     stdin: ChildStdin,
     messages: Receiver<Result<Value, String>>,
     pending_messages: VecDeque<Value>,
 }
 
 impl AppServer {
+    pub fn start_isolated(profile: &TempCodexHome) -> Result<Self, String> {
+        Self::start_owned(&profile.path, Some(profile.clone()))
+    }
+
     pub fn start(codex_home: &Path) -> Result<Self, String> {
+        Self::start_owned(codex_home, None)
+    }
+
+    fn start_owned(codex_home: &Path, profile: Option<TempCodexHome>) -> Result<Self, String> {
         let mut command = app_server_command(codex_home);
-        let mut child = command.spawn().map_err(|_| {
+        if let Some(profile) = &profile {
+            profile.inherit_lease(&mut command);
+        }
+        let mut process = OwnedProcess::spawn(&mut command).map_err(|_| {
             "Unable to start Codex App Server. Check that Codex is installed.".to_string()
         })?;
 
-        let stdin = child
+        let stdin = process
+            .child
             .stdin
             .take()
             .ok_or_else(|| "Codex App Server did not provide standard input".to_string())?;
-        let stdout = child
+        let stdout = process
+            .child
             .stdout
             .take()
             .ok_or_else(|| "Codex App Server did not provide standard output".to_string())?;
-        let messages = spawn_reader(stdout, &mut child)?;
+        let messages = spawn_reader(stdout)?;
 
         let mut server = Self {
-            child,
+            process,
+            _profile: profile,
             stdin,
             messages,
             pending_messages: VecDeque::new(),
@@ -110,7 +127,7 @@ impl AppServer {
     }
 
     pub fn send(&mut self, message: Value) -> Result<(), String> {
-        ensure_child_is_running(&mut self.child)?;
+        ensure_child_is_running(&mut self.process)?;
         serde_json::to_writer(&mut self.stdin, &message)
             .map_err(|_| "Unable to encode a Codex App Server request".to_string())?;
         self.stdin
@@ -216,7 +233,7 @@ impl AppServer {
     /// The App Server process is started by GSwitch and may be excluded from
     /// the external-Codex preflight that protects the user's live session.
     pub fn pid(&self) -> u32 {
-        self.child.id()
+        self.process.child.id()
     }
 
     pub fn config_read(&mut self, id: i64) -> Result<Value, String> {
@@ -321,21 +338,7 @@ fn receive_message(
 
 impl Drop for AppServer {
     fn drop(&mut self) {
-        #[cfg(windows)]
-        {
-            // The Windows .cmd launcher starts a Node child. A plain Child::kill
-            // would leave that GSwitch-owned App Server behind to touch auth.
-            use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-            let _ = Command::new("taskkill")
-                .args(["/PID", &self.child.id().to_string(), "/T", "/F"])
-                .creation_flags(CREATE_NO_WINDOW)
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status();
-        }
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        self.process.cleanup(Instant::now() + CLEANUP_TIMEOUT);
     }
 }
 
@@ -519,18 +522,13 @@ fn official_unix_codex_binary(home: &Path) -> PathBuf {
     home.join(".local").join("bin").join("codex")
 }
 
-fn spawn_reader(
-    stdout: ChildStdout,
-    child: &mut Child,
-) -> Result<Receiver<Result<Value, String>>, String> {
+fn spawn_reader(stdout: ChildStdout) -> Result<Receiver<Result<Value, String>>, String> {
     let (sender, receiver) = mpsc::channel();
     let reader = thread::Builder::new()
         .name("gswitch-app-server-reader".to_string())
         .spawn(move || read_messages(stdout, sender));
 
     if reader.is_err() {
-        let _ = child.kill();
-        let _ = child.wait();
         return Err("Unable to monitor Codex App Server responses".to_string());
     }
     Ok(receiver)
@@ -557,8 +555,8 @@ fn read_messages(stdout: ChildStdout, sender: mpsc::Sender<Result<Value, String>
     }
 }
 
-fn ensure_child_is_running(child: &mut Child) -> Result<(), String> {
-    match child
+fn ensure_child_is_running(process: &mut OwnedProcess) -> Result<(), String> {
+    match process
         .try_wait()
         .map_err(|_| "Unable to inspect Codex App Server".to_string())?
     {
@@ -610,77 +608,6 @@ fn response_result_protocol(message: Value) -> Result<Value, CallError> {
         .get("result")
         .cloned()
         .ok_or(CallError::MissingResult)
-}
-
-pub struct TempCodexHome {
-    pub path: PathBuf,
-}
-
-impl TempCodexHome {
-    pub fn create(root: &Path) -> Result<Self, String> {
-        fs::create_dir_all(root)
-            .map_err(|_| "Unable to prepare isolated Codex storage".to_string())?;
-        let path = root.join(format!("gswitch-{}", Uuid::new_v4()));
-        create_private_directory(&path)?;
-
-        let config_path = path.join("config.toml");
-        if let Err(error) = storage::write_private_bytes_atomic(
-            &config_path,
-            b"cli_auth_credentials_store = \"file\"\n",
-            "temporary Codex configuration",
-        ) {
-            let _ = fs::remove_dir_all(&path);
-            return Err(error);
-        }
-
-        Ok(Self { path })
-    }
-
-    pub fn write_auth(&self, credential: &Value) -> Result<(), String> {
-        storage::write_json_atomic(
-            &self.path.join("auth.json"),
-            credential,
-            "temporary Codex credentials",
-        )
-    }
-
-    pub fn read_auth(&self) -> Result<Value, String> {
-        storage::read_json(&self.path.join("auth.json"), "temporary Codex credentials")
-    }
-
-    /// Call only after every process using this profile has exited. An
-    /// explicit result keeps a Windows file lock from masquerading as cleanup.
-    pub fn cleanup(self) -> Result<(), String> {
-        fs::remove_dir_all(&self.path)
-            .map_err(|_| "Unable to remove isolated Codex credentials".to_string())
-    }
-}
-
-impl Drop for TempCodexHome {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
-    }
-}
-
-fn create_private_directory(path: &Path) -> Result<(), String> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::DirBuilderExt;
-
-        let mut builder = fs::DirBuilder::new();
-        builder.mode(0o700);
-        builder
-            .create(path)
-            .map_err(|_| "Unable to create a temporary Codex profile".to_string())?;
-    }
-
-    #[cfg(not(unix))]
-    {
-        fs::create_dir(path)
-            .map_err(|_| "Unable to create a temporary Codex profile".to_string())?;
-    }
-
-    Ok(())
 }
 
 pub struct AccountMetadata {
@@ -919,7 +846,7 @@ mod tests {
         {
             let profile = TempCodexHome::create(&root).expect("profile");
             let profile_path = profile.path.clone();
-            let mut server = AppServer::start(&profile.path).expect("start app server");
+            let mut server = AppServer::start_isolated(&profile).expect("start app server");
             let config = server.config_read(1).expect("read config");
             let expected_version = config
                 .pointer("/origins/cli_auth_credentials_store/version")
