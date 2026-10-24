@@ -13,12 +13,13 @@ const commands = {
   ],
   linux: [
     ["pnpm", ["run", "version:check"]],
-    ["pnpm", ["build"]],
+    ["pnpm", ["tauri", "build", "--debug", "--no-bundle", "--ci", "--", "--locked"]],
     ["cargo", ["fmt", "--manifest-path", "src-tauri/Cargo.toml", "--check"]],
     ["cargo", ["clippy", "--manifest-path", "src-tauri/Cargo.toml", "--all-targets", "--locked", "--", "-D", "warnings"]],
     ["cargo", ["test", "--manifest-path", "src-tauri/Cargo.toml", "--locked"]],
   ],
   platform: [
+    ["pnpm", ["tauri", "build", "--debug", "--no-bundle", "--ci", "--", "--locked"]],
     ["cargo", ["check", "--manifest-path", "src-tauri/Cargo.toml", "--all-targets", "--locked"]],
     ["cargo", ["test", "--manifest-path", "src-tauri/Cargo.toml", "--locked", "--lib", "owned_process::tests"]],
     ["cargo", ["test", "--manifest-path", "src-tauri/Cargo.toml", "--locked", "--lib", "isolated_profile::tests"]],
