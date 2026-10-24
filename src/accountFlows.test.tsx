@@ -126,6 +126,19 @@ describe("quota acceptance owner", () => {
     expect(mocks.refreshAccountQuota.mock.calls.map(call => call[0])).toEqual(["synthetic"]);
   });
 
+  it("keeps the current reading and starts no read when only the revision changes", async () => {
+    const { result, rerender } = renderHook(({ saved }) => useAccountQuota({ accounts: saved, enabled: true }), { initialProps: { saved: accounts } });
+    await waitFor(() => expect(result.current.quotas.synthetic).toBeDefined());
+    const current = result.current.quotas.synthetic;
+    rerender({ saved: [{ ...accounts[0], revision: 2 }] });
+    expect(result.current.quotas.synthetic).toEqual(current);
+    await waitFor(() => expect(mocks.accountQuota).toHaveBeenCalledTimes(2));
+    // Let the reloaded cache read reach its automatic refresh check.
+    await act(() => new Promise(resolve => setTimeout(resolve, 0)));
+    expect(result.current.quotas.synthetic).toEqual(current);
+    expect(mocks.refreshAccountQuota).not.toHaveBeenCalled();
+  });
+
   it("defers a post-login read until its new revision arrives, then coalesces it", async () => {
     const { result, rerender } = renderHook(({ saved }) => useAccountQuota({ accounts: saved, enabled: true }), { initialProps: { saved: accounts } });
     await waitFor(() => expect(result.current.quotas.synthetic).toBeDefined());
