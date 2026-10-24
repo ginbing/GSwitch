@@ -404,7 +404,7 @@ fn monitor_oauth(
     Ok(Some(()))
 }
 
-/// Rechecks provider identity before a short serialized save. The protected
+/// Rechecks provider identity before a short serialized save. The staged
 /// credential remains available when verification, saving, or applying fails.
 pub(crate) fn finish_oauth_recovery(
     state: &AppState,
@@ -1375,9 +1375,12 @@ fn persist_validated(
             .record_pending_credential(operation, &credential)
             .is_ok()
         {
-            Err("GSwitch could not save validated credentials. A protected recovery copy was retained.".to_string())
+            Err(
+                "GSwitch could not save validated credentials. A recovery copy was kept."
+                    .to_string(),
+            )
         } else {
-            Err("GSwitch could not save validated credentials or write protected recovery. No plaintext recovery copy was retained.".to_string())
+            Err("GSwitch could not save validated credentials or keep a recovery copy.".to_string())
         };
     }
 

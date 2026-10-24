@@ -1932,7 +1932,6 @@ dependencies = [
  "base64 0.23.1",
  "chrono",
  "fs2",
- "getrandom 0.4.3",
  "iota-crypto",
  "iota_stronghold",
  "keyring",
