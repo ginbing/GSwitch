@@ -103,15 +103,16 @@ Codex location must be in the graphical session's `PATH` or set with
 
 ## Real-account acceptance
 
-Tests and fictional-data screenshots cannot show how the provider or an
-installed Codex treats a real account. A release that changes sign-in,
-switching, quota, Wake, credential storage, or recovery is therefore accepted
-with real accounts before its tag is pushed, not after the public installer
-exists.
+Real-account checks provide optional evidence of how the provider and installed
+Codex behave. They are not a release prerequisite: the maintainer may release
+without performing them, without a waiver or additional approval. Applicable
+automated checks, package and updater-signature verification, provenance, and
+draft review remain required.
 
-The agent builds the [maintainer Windows preview](#maintainer-windows-preview)
-from the merged `main` commit and hands it over; only the maintainer uses real
-accounts. With at least two saved ChatGPT accounts, the maintainer checks:
+When the maintainer chooses to test with real accounts, the agent can build the
+[maintainer Windows preview](#maintainer-windows-preview) from a committed
+revision and hand it over. Only the maintainer uses real accounts. With at
+least two saved ChatGPT accounts, useful checks include:
 
 1. launch shows the current account and loads each card's quota;
 2. Switch to another saved account with Codex closed, then switch back;
@@ -123,20 +124,18 @@ accounts. With at least two saved ChatGPT accounts, the maintainer checks:
    and recovers through **Sign in again**, when such an account is available.
 
 Reset-credit redemption is not part of this list; it keeps its own explicit
-confirmation. The maintainer may waive the acceptance for a release, including
-in the publish request itself. Record the preview commit and either the result
-or the waiver in the release pull request. The version commit that follows may
-differ from the accepted commit only in the version files. A failed or
-unanswered acceptance stops the release like any other failed gate; do not
-describe a waived or unperformed flow as validated.
+confirmation. If checks are performed, record the tested commit and actual
+results in the release pull request, including any defect found. An omitted or
+unanswered optional check does not stop publication. Never describe an
+unperformed flow as validated or rewrite historical validation claims.
 
 ## Release workflow
 
 Pushing a tag named `v<version>` starts the sole release workflow. The tag must
 point to the exact current merged `main` commit and match
 `src-tauri/tauri.conf.json`. Run the remote CI path against that commit before
-tagging it, and complete the [real-account acceptance](#real-account-acceptance)
-when the release changes account behavior. The workflow runs version, frontend, and Rust checks, then builds
+tagging it. [Real-account checks](#real-account-acceptance) are optional. The
+workflow runs version, frontend, and Rust checks, then builds
 all release bundles locally. It smoke checks the Windows install and uninstall,
 both macOS DMGs and updater archives, and both Linux package payloads before
 signing the final updater bytes. The workflow verifies signatures against the

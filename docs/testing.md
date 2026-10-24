@@ -133,7 +133,8 @@ as applicable:
   the vault without appearing in `accounts.json`, plus saved-account removal
   leaving the live Codex file untouched;
 - isolated profile intent-before-secret writes, normal and startup protected
-  handoff, forced owner termination, inherited Unix leases, repeated recovery,
+  handoff, reconciliation waiting for a contended storage file lock, empty-library
+  profile creation, forced owner termination, inherited Unix leases, repeated recovery,
   changed identity/generation or removed accounts, metadata/vault failures,
   Windows file occupancy, and unowned/redirected trees staying untouched;
 - sanitized recovery notices requiring explicit recovery, without automatically
@@ -306,7 +307,8 @@ Standard CI does not by itself prove:
 - the exact permissions of a packaged artifact;
 - public-release readiness.
 
-Those claims require the matching integration or release check. Real-account
-behavior is accepted before a release through the procedure in
-[`release.md`](./release.md#real-account-acceptance). Never report a platform,
+Those claims require the matching integration or release check. Optional
+maintainer real-account checks are described in
+[`release.md`](./release.md#real-account-acceptance); omitting them requires no
+waiver and does not block a release. Never report a platform,
 provider, installer, or recovery path as validated unless that exact proof ran.

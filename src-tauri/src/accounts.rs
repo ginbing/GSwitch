@@ -812,7 +812,10 @@ impl AppState {
             *status = None;
         }
         let result = self
-            .acquire_recovery_operation()
+            // Startup/recovery inspection shares the same serialized boundary
+            // as store loading. Transient contention is not evidence that an
+            // isolated directory is unsafe or needs manual cleanup.
+            .wait_for_operation_lock()
             .map_err(|_| crate::types::IsolatedProfileStatus::Restricted)
             .and_then(|_operation| crate::isolated_profile::reconcile(self));
         if let Err(status) = result {
@@ -2315,6 +2318,45 @@ mod tests {
             credential
         );
 
+        let _ = fs::remove_dir_all(path.parent().expect("parent"));
+    }
+
+    #[test]
+    fn isolated_reconciliation_waits_for_the_storage_file_lock() {
+        use std::{sync::mpsc, thread, time::Duration};
+
+        let path = temp_path("serialized-isolated-reconciliation");
+        let state = AppState::new(path.clone()).expect("empty state");
+        let lock = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path.parent().unwrap().join("operations.lock"))
+            .expect("separate storage handle");
+        FileExt::lock_exclusive(&lock).expect("hold storage lock");
+        let (started_tx, started_rx) = mpsc::channel();
+        let (result_tx, result_rx) = mpsc::channel();
+        let waiting = state.clone();
+        let worker = thread::spawn(move || {
+            started_tx.send(()).expect("signal start");
+            waiting.reconcile_isolated_profiles();
+            result_tx
+                .send(waiting.storage_view().isolated_profile_status)
+                .expect("send result");
+        });
+        started_rx.recv().expect("worker started");
+        let while_locked = result_rx.recv_timeout(Duration::from_millis(100));
+        // Always release before asserting so a regression cannot strand a worker.
+        FileExt::unlock(&lock).expect("release storage lock");
+        let after_unlock = result_rx.recv_timeout(Duration::from_secs(5));
+        worker.join().expect("worker finished");
+        assert!(matches!(while_locked, Err(mpsc::RecvTimeoutError::Timeout)));
+        assert_eq!(
+            after_unlock.expect("inspection completed after unlock"),
+            None
+        );
+        let temporary = crate::isolated_profile::TempCodexHome::managed(&state, None, None)
+            .expect("empty library can start an isolated operation");
+        temporary.cleanup().expect("remove empty profile");
         let _ = fs::remove_dir_all(path.parent().expect("parent"));
     }
 
