@@ -632,7 +632,7 @@ describe("GSwitch account workspace", () => {
 
     expect(await screen.findByText("Personal")).toBeInTheDocument();
     expect(screen.queryByText("Stale")).not.toBeInTheDocument();
-    expect(screen.getByText("Last 30%")).toBeInTheDocument();
+    expect(await screen.findByText("Last 30%")).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: "Details" }));
     const dialog = await screen.findByRole("dialog", { name: "Reset credits · person@example.com" });
@@ -814,7 +814,7 @@ describe("GSwitch account workspace", () => {
     render(<App />);
 
     const card = (await screen.findByRole("heading", { name: "person@example.com" })).closest(".account-card");
-    expect(card).toHaveTextContent("5 weeks");
+    await waitFor(() => expect(card).toHaveTextContent("5 weeks"));
     expect(card).toHaveTextContent("100%");
     const resetTime = card?.querySelector("time.quota-reset-time");
     expect(resetTime).toHaveTextContent(/\d+d/);
@@ -1802,6 +1802,44 @@ describe("GSwitch account workspace", () => {
     expect(await screen.findByText("Sign-in cancelled")).toBeInTheDocument();
   });
 
+  it("cancels a pending sign-in when its dialog closes", async () => {
+    render(<App />);
+    await userEvent.click(await screen.findByRole("button", { name: /^Add account$/ }));
+    await userEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: /^Sign in / }));
+    await userEvent.click(screen.getByRole("button", { name: "Close Add a Codex account" }));
+    expect(mocks.cancelOAuth).toHaveBeenCalledWith("login-1");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("finishes saving after the OAuth dialog is dismissed", async () => {
+    mocks.oauthStatus.mockResolvedValue({ status: "finishing" });
+    render(<App />);
+    await userEvent.click(await screen.findByRole("button", { name: /^Add account$/ }));
+    await userEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: /^Sign in / }));
+    await screen.findByText("Finishing sign-in…");
+    await userEvent.click(screen.getByRole("button", { name: "Close Add a Codex account" }));
+    mocks.listAccounts.mockResolvedValue([chatAccount]);
+    mocks.oauthStatus.mockResolvedValue({ status: "complete", account: chatAccount });
+    await screen.findByRole("heading", { name: "person@example.com" }, { timeout: 2500 });
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(mocks.cancelOAuth).not.toHaveBeenCalled();
+  });
+
+  it("keeps the OAuth polling interval across same-phase status renders", async () => {
+    vi.useFakeTimers();
+    try {
+      await act(async () => { render(<App />); });
+      await act(async () => { fireEvent.click(screen.getByRole("button", { name: /^Add account$/ })); });
+      await act(async () => { fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: /^Sign in / })); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(500); });
+      expect(mocks.oauthStatus).toHaveBeenCalledTimes(1);
+      await act(async () => { await vi.advanceTimersByTimeAsync(500); });
+      expect(mocks.oauthStatus).toHaveBeenCalledTimes(1);
+      await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+      expect(mocks.oauthStatus).toHaveBeenCalledTimes(2);
+    } finally { cleanup(); vi.useRealTimers(); }
+  });
+
   it("keeps a browser sign-in pending after a temporary status read failure", async () => {
     mocks.oauthStatus
       .mockRejectedValueOnce(new Error("temporary status outage"))
@@ -2270,6 +2308,8 @@ describe("GSwitch account workspace", () => {
       const focused = document.activeElement;
       mocks.wakeOperation.mockResolvedValue({ id: "wake-all", status: "completed", results: [result] });
       await act(async () => { await vi.advanceTimersByTimeAsync(500); });
+      expect(mocks.wakeOperation).toHaveBeenCalledTimes(1);
+      await act(async () => { await vi.advanceTimersByTimeAsync(350); });
       expect(screen.getByRole("dialog", { name: "Add a Codex account" })).toBe(addDialog);
       expect(document.activeElement).toBe(focused);
       expect(screen.queryByRole("dialog", { name: "Wake" })).not.toBeInTheDocument();

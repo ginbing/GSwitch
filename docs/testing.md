@@ -255,6 +255,13 @@ as applicable:
 - frontend clearing secret inputs, confirming reset consumption, and disabling
   conflicting actions;
 - a dialog staying closable while unrelated work such as a full refresh runs;
+- one quota acceptance owner rejecting old cache/point/reset results, errors
+  superseded by newer data, removed/re-added memberships and changed credential
+  revisions; queued removed accounts never reaching the provider, and post-login
+  reads waiting for the matching revision;
+- pending login dismissal cancelling, accepted completion saving with its dialog
+  closed, and OAuth/Wake polling retaining their intervals across same-phase
+  status renders;
 - two-click confirmations ignoring a double-click and disarming on an outside
   click;
 - the reset dialog listing each credit with its provider title and its own
