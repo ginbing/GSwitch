@@ -23,6 +23,7 @@ pub struct OwnedProcess {
     pub child: Child,
     group: platform::Group,
     cleaned: bool,
+    status: Option<ExitStatus>,
 }
 
 impl OwnedProcess {
@@ -33,6 +34,7 @@ impl OwnedProcess {
             child,
             group,
             cleaned: false,
+            status: None,
         };
         if let Err(error) = owned.group.attach(&owned.child) {
             owned.cleanup(Instant::now() + CLEANUP_TIMEOUT);
@@ -44,7 +46,10 @@ impl OwnedProcess {
     /// On Unix leave the leader waitable until group cleanup, so its PID/PGID
     /// cannot be recycled underneath a later group signal.
     pub fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
-        platform::try_wait(&mut self.child)
+        if self.status.is_none() {
+            self.status = platform::try_wait(&mut self.child)?;
+        }
+        Ok(self.status)
     }
 
     pub fn wait_until(&mut self, deadline: Instant) -> io::Result<Option<ExitStatus>> {
@@ -68,11 +73,14 @@ impl OwnedProcess {
         let signalled = self.group.terminate(&mut self.child).is_ok();
         let result = loop {
             let exited = self.try_wait().ok().flatten().is_some();
-            if signalled && exited && self.group.quiet(self.child.id()) {
+            let quiet = self.group.quiet(self.child.id());
+            if signalled && exited && quiet {
                 // try_wait already established exit; this wait only reaps it.
                 break self.child.wait().is_ok();
             }
             if Instant::now() >= deadline {
+                #[cfg(test)]
+                eprintln!("Owned helper cleanup unconfirmed: signalled={signalled}, exited={exited}, group_quiet={quiet}");
                 break false;
             }
             thread::sleep(
@@ -368,7 +376,9 @@ mod platform {
                 ProcessRefreshKind::nothing().without_tasks(),
             );
             system.processes().iter().all(|(pid, process)| {
-                (unsafe { libc::getpgid(pid.as_u32() as libc::pid_t) }) != leader as libc::pid_t
+                pid.as_u32() == leader
+                    || (unsafe { libc::getpgid(pid.as_u32() as libc::pid_t) })
+                        != leader as libc::pid_t
                     || process.status() == ProcessStatus::Zombie
             })
         }
