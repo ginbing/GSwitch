@@ -52,6 +52,12 @@ function Install-GSwitch {
   }
 
   $asset = Select-GSwitchInstallerAsset -Assets @($release.assets)
+  $digestProperty = $asset.PSObject.Properties['digest']
+  if ($null -eq $digestProperty -or $digestProperty.Value -isnot [string] -or
+      $digestProperty.Value -cnotmatch '\Asha256:[0-9a-fA-F]{64}\z') {
+    throw 'The selected GSwitch installer must have a valid SHA-256 digest in GitHub release metadata.'
+  }
+  $expectedHash = $digestProperty.Value.Substring(7)
   $downloadUrl = [string]$asset.browser_download_url
   if ([string]::IsNullOrWhiteSpace($downloadUrl)) {
     throw 'The selected GSwitch installer does not have a download URL.'
@@ -67,6 +73,16 @@ function Install-GSwitch {
     }
     catch {
       throw "Could not download the GSwitch installer. Try again or download it from $ReleasesPage."
+    }
+
+    try {
+      $actualHash = (Get-FileHash -LiteralPath $installerPath -Algorithm SHA256).Hash
+    }
+    catch {
+      throw 'Could not verify the downloaded GSwitch installer.'
+    }
+    if (-not [string]::Equals($actualHash, $expectedHash, [System.StringComparison]::OrdinalIgnoreCase)) {
+      throw 'The downloaded GSwitch installer does not match its GitHub SHA-256 digest.'
     }
 
     $installer = Start-Process -FilePath $installerPath -Wait -PassThru

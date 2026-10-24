@@ -60,7 +60,7 @@ jobs:
                 ;;
             esac
             case "$path" in
-              .github/workflows/*|scripts/*|src-tauri/*|rust-toolchain.toml|package.json|pnpm-lock.yaml|pnpm-workspace.yaml|.node-version|vite.config.*|postcss.config.*)
+              .github/workflows/*|scripts/*|install.ps1|src-tauri/*|rust-toolchain.toml|package.json|pnpm-lock.yaml|pnpm-workspace.yaml|.node-version|vite.config.*|postcss.config.*)
                 frontend=true
                 rust=true
                 platform=true
@@ -117,6 +117,9 @@ jobs:
           cache-dependency-path: pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
+      - name: Verify Windows installer helper with synthetic downloads
+        if: runner.os == 'Windows'
+        run: pwsh -NoProfile -File scripts/test-install-helper.ps1
       - name: Install repository Rust toolchain
         run: rustup show active-toolchain
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
