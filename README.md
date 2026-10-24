@@ -70,7 +70,7 @@ Tools.
 - Saved credentials are encrypted on your computer. The key is held by your
   system's credential manager.
 - GSwitch connects only to OpenAI, for quota and account actions, and to
-  GitHub, to check for GSwitch updates.
+  GitHub, to check for and download GSwitch updates.
 
 ## Build from source
 
