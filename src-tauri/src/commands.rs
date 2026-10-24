@@ -77,8 +77,8 @@ pub async fn reset_damaged_account_store(state: State<'_, AppState>) -> Result<(
     run_blocking(move || state.reset_damaged_store()).await
 }
 
-/// Explicit recovery action. Only a count returns to the WebView; the vault
-/// index, credential document, and stable identity stay inside Rust.
+/// Explicit recovery action. Only a count returns to the WebView; recovery
+/// references, credential documents, and stable identity stay inside Rust.
 #[tauri::command]
 pub async fn recover_pending_credentials(state: State<'_, AppState>) -> Result<u32, String> {
     let state = state.inner().clone();

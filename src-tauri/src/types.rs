@@ -23,6 +23,8 @@ pub enum AccountIdentity {
     },
 }
 
+/// Serialized only into the owner-only account file, never across IPC; the
+/// WebView receives an `AccountView`.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct StoredAccount {
     pub id: String,
@@ -40,15 +42,11 @@ pub struct StoredAccount {
     pub identity: Option<AccountIdentity>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quota: Option<QuotaSnapshot>,
-    /// Reset-credit identifiers are credential-adjacent provider secrets. They
-    /// are hydrated only inside Rust from the protected vault.
-    #[serde(default, skip_serializing)]
+    /// Reset-credit identifiers are credential-adjacent provider secrets.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reset_credits: Option<StoredResetCredits>,
-    /// Opaque key for the encrypted credential material. It is not a secret
-    /// and allows metadata to retain logical account ownership across token
-    /// rotation.
-    #[serde(default)]
-    pub credential_ref: String,
+    /// Advances whenever the credential or reset credits change, so older
+    /// results and recovery entries cannot apply to a newer sign-in.
     #[serde(default)]
     pub credential_generation: u64,
     /// A replacement saved by sign-in/import/managed refresh has not yet been
@@ -57,10 +55,8 @@ pub struct StoredAccount {
     pub needs_apply: bool,
     #[serde(default)]
     pub sign_in_required: bool,
-    /// Kept in Rust memory for existing domain operations, but never written
-    /// back into accounts.json. Legacy stores deserialize it only long enough
-    /// for the one-time protected-vault migration.
-    #[serde(default, skip_serializing)]
+    /// The complete Codex document, unknown fields included.
+    #[serde(default)]
     pub credential: Value,
 }
 
@@ -145,10 +141,6 @@ pub struct PendingSwitch {
     pub target_identity: AccountIdentity,
     pub previous_active_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub secret_ref: Option<String>,
-    #[serde(default)]
-    pub secret_generation: u64,
-    #[serde(default, skip_serializing)]
     pub previous_auth: Option<Value>,
     pub stage: PendingSwitchStage,
 }
@@ -319,9 +311,8 @@ pub struct StoredResetCredits {
     pub credits: Option<Vec<StoredResetCredit>>,
     /// When this GSwitch process last read the credit list from the usage
     /// endpoint's detail lookup; absent when it came from elsewhere or is
-    /// unknown. It only spaces out detail reads, so it stays in memory: every
-    /// protected-vault write costs seconds, and confirming an unchanged list
-    /// must not cause one. Older vault entries may still carry it.
+    /// unknown. It only spaces out detail reads, so it stays in memory, and
+    /// confirming an unchanged list does not count as a credential change.
     #[serde(default, skip_serializing)]
     pub details_read_at_unix_ms: Option<i64>,
 }
@@ -355,13 +346,9 @@ pub struct StoredResetCredit {
 #[derive(Clone, Serialize, Deserialize)]
 pub struct PendingResetCredit {
     pub account_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub secret_ref: Option<String>,
     #[serde(default)]
-    pub secret_generation: u64,
-    #[serde(default, skip_serializing)]
     pub credit_id: String,
-    #[serde(default, skip_serializing)]
+    #[serde(default)]
     pub idempotency_key: String,
     pub created_at_unix_ms: i64,
     /// Set only after the provider rejected a replay of a credit it no longer
@@ -377,28 +364,6 @@ pub struct PendingResetCredit {
 pub struct PendingResetView {
     pub account_id: String,
     pub discardable: bool,
-}
-
-/// Complete account material kept exclusively in the encrypted vault. The
-/// metadata store intentionally owns neither a credential document nor reset
-/// credit identifiers.
-#[derive(Clone, Serialize, Deserialize)]
-pub struct AccountSecret {
-    pub credential: Value,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reset_credits: Option<StoredResetCredits>,
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-pub struct PendingSwitchSecret {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub previous_auth: Option<Value>,
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-pub struct PendingResetCreditSecret {
-    pub credit_id: String,
-    pub idempotency_key: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

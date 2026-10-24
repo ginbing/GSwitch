@@ -119,22 +119,23 @@ Credential and state work should cover the exact affected boundary, including
 as applicable:
 
 - complete credential-document preservation, including unknown fields;
-- encrypted-vault round-trip of unknown credential fields, metadata JSON with
-  no token, reset ID, idempotency key, rollback auth, or recovery credential;
-- native credential storage unavailable, missing secret references, and
-  incomplete legacy migration failing closed without an empty library or
-  plaintext fallback;
-- version-3 inline-store migration, restart-safe vault hydration, stable
-  identity preservation, unversioned legacy migration, pending-recovery import,
-  and same-identity token rotation advancing generation without duplicate
-  profiles or retaining the retired secret generation;
-- simulated interrupted migration, vault-write failure preserving the only
-  legacy source, metadata-commit failure preserving the old readable secret,
-  concurrent startup migration waiting on the operation lock, missing vault
-  references, and inline switch recovery failing closed;
-- protected switch rollback and reset-credit material round-tripping through
-  the vault without appearing in `accounts.json`, plus saved-account removal
-  leaving the live Codex file untouched;
+- the account file and pending credential files written `0600` in `0700`
+  directories on Unix, including a store that was previously more open;
+- migration of a synthetic version-4 store and Stronghold vault (two accounts,
+  reset credits, switch rollback auth, a pending reset credit and a pending
+  credential) into version 5, reread and compared, with the vault deleted;
+- a missing or damaged vault leaving the version-4 store and vault unchanged
+  until a later start can read it, and a leftover vault beside a version-5
+  store deleted without being read; the unmodified Stronghold 2.1.0 snapshot
+  fixture still reads;
+- version-3 and unversioned inline-store migration with identity verification,
+  pre-vault pending files read in place, an account whose credential no longer
+  derives its identity failing closed, and same-identity token rotation
+  advancing generation without duplicate profiles;
+- a failed store write leaving the previous credential and generation in
+  memory, concurrent startup migration waiting on the operation lock, and
+  switch rollback and reset-credit material surviving a restart, plus
+  saved-account removal leaving the live Codex file untouched;
 - isolated profiles: Codex-style helper links (Unix symlinks, a Windows
   junction) removed without touching their targets, removal waiting until the
   App Server releases its profile, a profile Windows cannot remove yet being
@@ -145,7 +146,7 @@ as applicable:
   unrelated-process survival use fixture subprocesses.
 - OAuth App Server-before-profile teardown and explicit cleanup errors,
   including a Windows-exclusive `auth.json` handle fixture;
-- accepted OAuth completion surviving browser closure, protected retry after
+- accepted OAuth completion surviving browser closure, staged retry after
   verification or save failure, target identity and generation checks, and
   cleanup failure remaining distinct from a committed login;
 - re-sign-in of the selected account applying its new credential or leaving a
@@ -153,9 +154,9 @@ as applicable:
   back without restoring the old login;
 - generation-scoped authentication flags and local token reconciliation so a
   stale Wake, quota, or live-file result cannot overwrite a newer sign-in;
-- encrypted pending-credential replay after restart, generation mismatch
-  refusal, intended-identity mismatch refusal, failed-commit retry, missing
-  queue material fail-closed, and count-only IPC;
+- pending-credential replay after restart, generation mismatch refusal,
+  intended-identity mismatch refusal, failed-commit retry, a damaged pending
+  entry failing closed, and count-only IPC;
 - stable identity matching and workspace separation;
 - reauthentication replacing the correct saved profile;
 - single-operation and cross-process serialization;
@@ -188,7 +189,7 @@ as applicable:
 - post-write identity confirmation using only a local `auth.json` reread;
 - verification failure restoring the previous credential only when the live
   file still equals GSwitch's write, otherwise preserving pending recovery;
-- interrupted-switch and protected-credential recovery;
+- interrupted-switch and pending-credential recovery;
 - saved-account removal protecting the live identity, allowing removal of a
   non-current profile while Codex runs, leaving live `auth.json` untouched, and
   keeping lock and persistence failures actionable in the confirmation;
@@ -199,8 +200,8 @@ as applicable:
   through the asynchronous blocking-work boundary rather than the Tauri main
   thread;
 - read-only usage shape checks against local HTTP fixtures, legitimate optional
-  empty windows, and invalid/failed responses preserving metadata bytes, vault
-  bytes, last-success times and reset-credit data; valid usage still committing
+  empty windows, and invalid/failed responses preserving store bytes,
+  last-success times and reset-credit data; valid usage still committing
   when its separate detail request fails;
 - quota refresh lanes: automatic reads one at a time, a user's refresh not
   waiting behind them, up to three read-only reads in a full refresh, the

@@ -26,8 +26,7 @@ serialized error code, not a Rust display string or raw provider error.
 | Effective live Codex identity | Codex runtime | Inspect, match, and verify before reporting it |
 | Live file-backed credential | `CODEX_HOME/auth.json` | Preserve the complete document and replace it only through the switch transaction |
 | Credential-store policy | Effective Codex configuration or managed policy | Read and verify it; never silently override it |
-| Saved account metadata | Rust-owned `accounts.json` | Persist identity, display fields, quota summaries, active state, and opaque credential references only |
-| Saved credential and recovery secrets | Rust-owned Stronghold vault | Preserve complete credential documents, reset IDs, idempotency keys, and rollback material behind a native-credential-manager-protected root key |
+| Saved accounts and recovery secrets | Rust-owned, owner-only `accounts.json` | Persist identity, display fields, quota summaries, active state, complete credential documents, reset IDs, idempotency keys, and rollback material in one atomic file |
 | Account-store health | Rust-owned recovery state | Open a recovery-only workspace when the store cannot be read; never infer an empty library |
 | OAuth and managed token refresh | Codex | Use official flows and preserve refreshed complete documents |
 | Read-only account metadata | ChatGPT backend response | Match the returned workspace entry and cache only normalized fields |
@@ -43,11 +42,12 @@ The initial workspace snapshot names the saved account of a reset that needs
 recovery and whether retrying can no longer help. The provider credit and
 idempotency key remain in Rust-owned storage.
 
-Interrupted credential saves use a separate encrypted pending index. The
-explicit recovery command returns only a recovered count; Rust verifies each
-document's stable identity and the recorded account generation before a
-metadata commit, then retires the protected entry. Neither the index nor its
-contents is an IPC value.
+Interrupted credential saves use separate owner-only files in
+`pending-credentials/`, so a recovery copy does not depend on the account file
+being writable. The explicit recovery command returns only a recovered count;
+Rust verifies each document's stable identity and the recorded account
+generation before a store commit, then deletes the entry. Neither the entries
+nor their references are IPC values.
 
 ## Rust module boundaries
 
@@ -57,10 +57,9 @@ Keep the backend flat and organized by concrete responsibility:
 - `commands.rs`: thin IPC adapters, sanitized application snapshots, and the
   `spawn_blocking` scheduling boundary for filesystem, provider, process, and
   App Server work;
-- `accounts.rs`: saved-profile metadata, secret-generation transactions,
-  operation serialization, store coordination,
-  damaged-store recovery, pending credential recovery, and in-memory operation
-  state;
+- `accounts.rs`: saved profiles, credential generations, operation
+  serialization, store loading and migration, damaged-store recovery, pending
+  credential recovery, and in-memory operation state;
 - `app_server.rs`: lifecycle and protocol boundary for the official Codex App
   Server;
 - `isolated_profile.rs`: short-lived isolated Codex homes, removed when their
@@ -82,9 +81,10 @@ Keep the backend flat and organized by concrete responsibility:
 - `runtime.rs`: external Codex process detection;
 - `owned_process.rs`: scoped helper process groups/jobs, bounded termination,
   and the fail-closed state after unconfirmed cleanup;
-- `storage.rs`: versioned JSON persistence and atomic/private writes;
-- `vault.rs`: Rust-only Stronghold snapshot and native root-key boundary for
-  credential and recovery secrets;
+- `storage.rs`: versioned JSON persistence, pending credential files, and
+  atomic owner-only writes;
+- `vault.rs`: read-only access to the Stronghold vault of GSwitch 1.0.30 and
+  earlier, used once to migrate it, and its removal;
 - `types.rs`: backend state and sanitized serializable view models.
 
 Split a module only after it has acquired two real responsibilities. Do not add
@@ -142,24 +142,31 @@ the Rust operation mutex or cross-process lock. Automatic quota reads release
 that lock during network waiting and reacquire it only to commit a projection
 after checking the saved credential generation. Wake requests likewise hold no
 lock; Wake waits for it only to run an isolated refresh or to mark the rejected
-credential generation as needing sign-in. Startup reads account secrets
-from one Stronghold session instead of reopening the snapshot for every card.
-React keeps point-operation state local: a single-account quota refresh
+credential generation as needing sign-in. React keeps point-operation state local: a single-account quota refresh
 replaces only that account's quota projection, while a full workspace reload is
 reserved for initial state or a real topology change. When a reload reads saved
 projections, a newer saved projection replaces the in-memory one and an older
 one does not.
 
-`accounts.json` is metadata, not a vault. Its version-4 account records carry
-an opaque credential reference and generation; complete documents and
-credential-adjacent recovery values are loaded only inside Rust from the
-Stronghold snapshot. The snapshot is encrypted with a random root key held by
-the platform credential manager. Vault writes commit before metadata advances
-to a new generation; a failed metadata commit can leave only unreachable
-encrypted material, never a metadata reference to an unwritten secret. Legacy
-inline stores migrate atomically after every saved secret is readable and still
-derives its recorded identity. The live Codex `auth.json` remains a distinct
-file-backed projection, never proof of vault state.
+`accounts.json` version 5 keeps each complete credential document beside its
+account record, as Codex keeps its own `auth.json`: plain JSON in an owner-only
+file. Every change is one atomic replacement, and a changed credential advances
+its account's credential generation. On Unix the file is `0600` in a `0700`
+directory; on Windows it keeps the per-user permissions of the application
+config directory. The live Codex `auth.json` remains a distinct file-backed
+projection, never proof of the saved account.
+
+Version-4 stores from GSwitch 1.0.30 and earlier reference a Stronghold
+snapshot whose root key is held by the platform credential manager. At startup,
+under the operation lock, GSwitch reads every referenced record and pending
+entry from one snapshot session, verifies each credential's identity, writes
+the version-5 file and pending files, rereads both, and only then deletes the
+snapshot and its root key. A vault that cannot be read leaves both files
+unchanged and the library unavailable until a later start. A snapshot found
+beside a version-5 store is deleted without being read. Stores from before the
+vault already keep credentials inline and are verified and rewritten as
+version 5. Removing Stronghold, `keyring` and the two patched crates below ends
+this direct migration path.
 
 ## Isolated Codex profiles
 
@@ -214,7 +221,7 @@ are omitted with their manifest targets because GSwitch consumes this package
 only as a library. The original signed libsodium archives and their verification
 code stay byte-for-byte intact; no vault format or credential path changes. Cargo's
 lock file owns the resolved dependency versions. Remove this patch when a
-compatible upstream release uses a fixed ZIP dependency.
+compatible upstream release uses a fixed ZIP dependency, or with Stronghold.
 
 The maintainer-approved `iota-crypto` patch retains the published 0.23.2 source
 (upstream `8c13125541e762206e2dc57b8bfde89c7f6ce8e3`, crate SHA-256
@@ -227,4 +234,4 @@ caller interface and forwards bytes without changing the entropy source.
 Stronghold, snapshot encryption, credential metadata, and key derivation are
 unchanged. Published upstream vectors and a synthetic snapshot generated with
 unmodified Stronghold verify the boundary. Remove this patch when a compatible
-published IOTA release adopts the fixed dependency chain.
+published IOTA release adopts the fixed dependency chain, or with Stronghold.

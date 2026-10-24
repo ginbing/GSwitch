@@ -407,11 +407,11 @@ impl ManagedRefreshFailure {
             }
             Self::NotSaved {
                 recovery_retained: true,
-            } => "GSwitch could not save refreshed credentials. A protected recovery copy was retained."
+            } => "GSwitch could not save refreshed credentials. A recovery copy was kept."
                 .to_string(),
             Self::NotSaved {
                 recovery_retained: false,
-            } => "GSwitch could not save refreshed credentials or write protected recovery. The temporary profile was removed."
+            } => "GSwitch could not save refreshed credentials or keep a recovery copy. The temporary profile was removed."
                 .to_string(),
         }
     }
@@ -773,8 +773,6 @@ fn prepare_redemption(
             let used_expires_at = credit.expires_at;
             let pending = PendingResetCredit {
                 account_id: account.id.clone(),
-                secret_ref: None,
-                secret_generation: 0,
                 credit_id: credit.id.clone(),
                 idempotency_key: Uuid::new_v4().to_string(),
                 created_at_unix_ms: now_unix_ms(),
@@ -827,9 +825,9 @@ fn complete_redemption(
             .is_ok();
         result.refresh_warning = Some(
             if recovery_retained {
-                "The reset result was confirmed, but GSwitch could not confirm refreshed credentials. A protected recovery copy was retained."
+                "The reset result was confirmed, but GSwitch could not confirm refreshed credentials. A recovery copy was kept."
             } else {
-                "The reset result was confirmed, but GSwitch could not confirm refreshed credentials or write protected recovery. The temporary profile was removed."
+                "The reset result was confirmed, but GSwitch could not confirm refreshed credentials or keep a recovery copy. The temporary profile was removed."
             }
             .to_string(),
         );
@@ -914,9 +912,9 @@ fn refresh_after_confirmed_reset(
             None,
             Some(
                 if recovery_retained {
-                    "The reset result was confirmed, but GSwitch could not confirm refreshed credentials. A protected recovery copy was retained."
+                    "The reset result was confirmed, but GSwitch could not confirm refreshed credentials. A recovery copy was kept."
                 } else {
-                    "The reset result was confirmed, but GSwitch could not confirm refreshed credentials or write protected recovery. The temporary profile was removed."
+                    "The reset result was confirmed, but GSwitch could not confirm refreshed credentials or keep a recovery copy. The temporary profile was removed."
                 }
                 .to_string(),
             ),
@@ -982,11 +980,10 @@ pub(crate) fn persist_refreshed_credential_and_quota(
         .is_ok()
     {
         return Err(
-            "GSwitch could not save refreshed credentials. A protected recovery copy was retained."
-                .to_string(),
+            "GSwitch could not save refreshed credentials. A recovery copy was kept.".to_string(),
         );
     }
-    Err("GSwitch could not save refreshed credentials or write protected recovery. The temporary profile was removed.".to_string())
+    Err("GSwitch could not save refreshed credentials or keep a recovery copy. The temporary profile was removed.".to_string())
 }
 
 pub(crate) fn verified_chatgpt_identity(
@@ -2173,7 +2170,7 @@ mod tests {
         const FUTURE: i64 = 4_000_000_000;
 
         #[test]
-        fn failed_usage_reads_preserve_the_last_success_and_protected_credentials() {
+        fn failed_usage_reads_preserve_the_last_success_and_saved_credentials() {
             let (state, accounts, root) = state_with_accounts(&["synthetic"]);
             let account = &accounts[0];
             let operation = state.acquire_operation().expect("operation");
@@ -2191,7 +2188,6 @@ mod tests {
                 .account_by_id_under_operation(&operation, &account.id)
                 .expect("cached account");
             let metadata = fs::read(root.join("accounts.json")).expect("metadata");
-            let vault = fs::read(root.join("credentials.hold")).expect("vault");
             let identity = account.identity.as_ref().expect("identity");
             for (status, body, code) in [
                 (429, "{}", QuotaRefreshFailureCode::RateLimited),
@@ -2222,7 +2218,6 @@ mod tests {
                 assert_eq!(refresh_failure(&error.message()).code, code);
                 server.join().expect("fixture");
                 assert_eq!(fs::read(root.join("accounts.json")).unwrap(), metadata);
-                assert_eq!(fs::read(root.join("credentials.hold")).unwrap(), vault);
             }
             let client =
                 ChatGptClient::with_base_url("http://127.0.0.1:0").expect("unreachable client");
@@ -2240,7 +2235,6 @@ mod tests {
                 QuotaRefreshFailureCode::Network
             );
             assert_eq!(fs::read(root.join("accounts.json")).unwrap(), metadata);
-            assert_eq!(fs::read(root.join("credentials.hold")).unwrap(), vault);
             drop(operation);
             fs::remove_dir_all(root).expect("cleanup");
         }

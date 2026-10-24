@@ -19,8 +19,7 @@ left, switch with one click, and keep using Codex.
   from its card instead of removing and re-adding the account.
 - **Wake.** Send one short Codex request to each selected account and see which
   accounts replied.
-- **No analytics or telemetry.** Saved credentials stay encrypted on your
-  computer.
+- **No analytics or telemetry.** Saved credentials stay on your computer.
 
 ## Install
 
@@ -67,8 +66,8 @@ Tools.
 
 ## Data and network
 
-- Saved credentials are encrypted on your computer. The key is held by your
-  system's credential manager.
+- Saved credentials are kept in files that only your user account can read,
+  the same way Codex keeps its own sign-in.
 - GSwitch connects only to OpenAI, for quota and account actions, and to
   GitHub, to check for and download GSwitch updates.
 

@@ -162,9 +162,9 @@ where
             .record_pending_credential(&operation, &recovery_credential)
             .is_ok()
         {
-            Err("GSwitch could not save the current account. A protected recovery copy was retained.".to_string())
+            Err("GSwitch could not save the current account. A recovery copy was kept.".to_string())
         } else {
-            Err("GSwitch could not save the current account or write protected recovery. No plaintext recovery copy was retained.".to_string())
+            Err("GSwitch could not save the current account or keep a recovery copy.".to_string())
         };
     }
     result
@@ -355,8 +355,6 @@ pub(crate) fn switch_under_operation(
         previous_active_id: state
             .active_account_id_under_operation(operation)
             .map_err(|_| switch_failure(SwitchFailureCode::LocalVerificationFailed))?,
-        secret_ref: None,
-        secret_generation: 0,
         previous_auth: previous_auth.clone(),
         stage: PendingSwitchStage::Prepared,
     };
@@ -742,11 +740,10 @@ fn update_credential_or_record(
         .is_ok()
     {
         return Err(
-            "GSwitch could not save refreshed credentials. A protected recovery copy was retained."
-                .to_string(),
+            "GSwitch could not save refreshed credentials. A recovery copy was kept.".to_string(),
         );
     }
-    Err("GSwitch could not save refreshed credentials or write protected recovery. No plaintext recovery copy was retained.".to_string())
+    Err("GSwitch could not save refreshed credentials or keep a recovery copy.".to_string())
 }
 
 fn stored_identity(account: &StoredAccount) -> Result<(AccountKind, AccountIdentity), String> {
@@ -913,8 +910,6 @@ mod tests {
                     &operation,
                     crate::types::PendingResetCredit {
                         account_id: target.id.clone(),
-                        secret_ref: None,
-                        secret_generation: 0,
                         credit_id: "credit".into(),
                         idempotency_key: "key".into(),
                         created_at_unix_ms: 1,
@@ -1515,12 +1510,9 @@ mod tests {
         let identity = target.identity.clone().expect("identity");
         let operation = state.acquire_operation().expect("operation");
         let store_path = root.join("accounts.json");
-        let vault_path = root.join("credentials.hold");
-
         fs::remove_file(&store_path).expect("remove metadata file");
         fs::create_dir(&store_path).expect("block metadata commit");
-        fs::remove_file(&vault_path).expect("remove vault snapshot");
-        fs::create_dir(&vault_path).expect("block protected recovery");
+        fs::write(root.join("pending-credentials"), b"").expect("block credential recovery");
 
         assert_eq!(
             keep_refreshed_credential(
@@ -1650,8 +1642,6 @@ mod tests {
                     target_id: target.id.clone(),
                     target_identity: identity.clone(),
                     previous_active_id: None,
-                    secret_ref: None,
-                    secret_generation: 0,
                     previous_auth: None,
                     stage: PendingSwitchStage::Prepared,
                 },
@@ -1706,8 +1696,6 @@ mod tests {
                     target_id: target.id.clone(),
                     target_identity: identity,
                     previous_active_id: None,
-                    secret_ref: None,
-                    secret_generation: 0,
                     previous_auth: Some(previous.clone()),
                     stage: PendingSwitchStage::Prepared,
                 },
@@ -1754,8 +1742,6 @@ mod tests {
                     target_id: target.id.clone(),
                     target_identity: identity,
                     previous_active_id: None,
-                    secret_ref: None,
-                    secret_generation: 0,
                     previous_auth: Some(previous.clone()),
                     stage: PendingSwitchStage::Prepared,
                 },

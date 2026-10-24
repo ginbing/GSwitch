@@ -20,12 +20,12 @@ not changed. Other intake never changes the live identity.
    success page so completing login does not launch the ChatGPT desktop app.
 4. Wait for the matching completion event. Once accepted, show **Finishing
    sign-in**; closing the browser or dialog does not cancel this local commit.
-   Read the complete credential document into protected recovery storage before
-   ending the isolated profile. Use its fresh access-token snapshot for a
+   Read the complete credential document into an owner-only pending credential
+   before ending the isolated profile. Use its fresh access-token snapshot for a
    read-only metadata check without requesting a proactive refresh.
 5. Match the verified identity, email when available, and saved generation to
-   the intended account. Write the complete document to a new protected-vault
-   generation, then atomically commit metadata pointing at it. An existing
+   the intended account. Write the complete document into the account store in
+   one atomic commit that advances its credential generation. An existing
    identity replaces its original record rather than adding a duplicate.
 6. If this was the selected live account when login started and is still selected,
    Codex is closed, and the live document is unchanged, apply the saved login
@@ -105,7 +105,7 @@ dropped rather than copied into GSwitch.
 
 Selection mode is the normal way to act on several saved accounts. The
 WebView holds only selected account IDs; Rust verifies those IDs under the
-operation lock, reads the matching complete snapshots from the protected vault,
+operation lock, reads the matching complete snapshots from the account store,
 opens the native save dialog, and writes one explicitly user-authorized
 portable document. It returns only an aggregate count or cancellation state.
 
@@ -232,7 +232,7 @@ supported version answers from its cached account after a failed refresh, and
 current versions reject the read without a typed reason. GSwitch therefore
 never takes the outcome from the App Server reply. It rereads the profile's
 complete credential and requires the saved identity. A rotated document is
-committed immediately, or to protected recovery if that commit fails, so a
+committed immediately, or kept as a pending credential if that commit fails, so a
 consumed refresh token never stays saved; a document for another identity is
 never saved.
 
@@ -333,8 +333,8 @@ read. A refresh reads credit details only when the usage response's credit
 count differs from the saved list, the saved list is missing, or this GSwitch
 process has not read it in the last hour. Otherwise it keeps the saved list,
 which is filtered for expiry when read; redemption still matches the pick
-against a fresh provider read. That read time stays in memory: the protected
-vault is rewritten only when the count or the list itself changes, never to
+against a fresh provider read. That read time stays in memory: the credential
+generation advances only when the count or the list itself changes, never to
 confirm an unchanged list.
 
 ## Reset credits
@@ -460,21 +460,21 @@ One account's failure does not stop the remaining queue.
 ## Recovery
 
 Interrupted switch and reset-credit actions retain non-secret durable intent
-plus protected recovery material so a retry can distinguish a completed
-operation from one that is still pending. If a validated credential refresh
-cannot be committed to metadata, GSwitch retains a copy only after the
-encrypted-vault write and readback succeed. If protected recovery also fails,
-the isolated profile is removed instead of being retained as plaintext. Legacy
-version-3 and unversioned inline account stores migrate each complete document
-into the vault and verify stable identity before atomically replacing active
-metadata; interruption leaves the old source recoverable.
+plus the recovery material in the account store so a retry can distinguish a
+completed operation from one that is still pending. If a validated credential
+refresh cannot be committed to the store, GSwitch keeps it as an owner-only
+pending credential. If that write also fails, the isolated profile is removed
+instead of being kept. Version-4 stores migrate out of the Stronghold vault
+and older inline stores are verified and rewritten, as described in
+[architecture.md](./architecture.md); interruption leaves the old source
+recoverable.
 
 Pending-credential recovery is an explicit Rust command, not automatic startup
 replay. It rederives identity, checks the saved generation before replacing an
 existing credential, and refuses a stale or ambiguous entry. For an account
 not yet saved, it creates one local recovered profile without a provider
-request. A successful metadata commit precedes removal of the encrypted queue
-entry; the command returns only the number recovered. The current WebView does
+request. A successful store commit precedes removal of the pending file; the
+command returns only the number recovered. The current WebView does
 not yet offer a control for this command.
 
 A damaged GSwitch account store starts in recovery mode. Resetting it preserves

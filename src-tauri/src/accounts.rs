@@ -17,19 +17,21 @@ use crate::{
     identity::{derive_identity, document_kind},
     storage::{self, AccountStore},
     types::{
-        AccountIdentity, AccountKind, AccountSecret, AccountView, OAuthLoginStatus,
-        PendingResetCredit, PendingResetCreditSecret, PendingResetView, PendingSwitch,
-        PendingSwitchSecret, StorageStatus, StorageView, StoredAccount, StoredResetCredits,
-        WakeOperationStatus, WakeOperationView,
+        AccountIdentity, AccountKind, AccountView, OAuthLoginStatus, PendingResetCredit,
+        PendingResetView, PendingSwitch, StorageStatus, StorageView, StoredAccount,
+        StoredResetCredits, WakeOperationStatus, WakeOperationView,
     },
-    vault::CredentialVault,
+    vault::LegacyVault,
 };
+
+const VAULT_MIGRATION_FAILED: &str = "Legacy vault migration could not read saved accounts";
+const PENDING_CREDENTIAL_VERSION: u32 = 2;
 
 #[derive(Clone)]
 pub struct AppState {
     store_path: Arc<PathBuf>,
     store_recovery_dir: Arc<PathBuf>,
-    vault: CredentialVault,
+    pending_dir: Arc<PathBuf>,
     store: Arc<Mutex<AccountStore>>,
     store_recovery_required: Arc<AtomicBool>,
     store_recovery_message: Arc<Mutex<Option<String>>>,
@@ -90,8 +92,11 @@ pub struct AccountDraft {
     pub credential: Value,
 }
 
+/// One interrupted credential save, kept in its own owner-only file. Version 1
+/// files predate the Stronghold vault and hold only the credential.
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
-struct PendingCredentialSecret {
+struct PendingCredential {
+    version: u32,
     credential: Value,
     #[serde(default)]
     expected_identity: Option<AccountIdentity>,
@@ -110,11 +115,12 @@ impl AppState {
             .ok_or_else(|| "Invalid GSwitch storage path".to_string())?
             .to_path_buf();
         #[cfg(test)]
-        let vault = CredentialVault::with_test_root(storage_root.join("credentials.hold"));
+        let vault = LegacyVault::with_test_root(storage_root.join("credentials.hold"));
         #[cfg(not(test))]
-        let vault = CredentialVault::new(storage_root.join("credentials.hold"));
+        let vault = LegacyVault::new(storage_root.join("credentials.hold"));
+        let pending_dir = storage_root.join("pending-credentials");
         let (store, store_recovery_required, store_recovery_message) =
-            match Self::load_protected_store_serialized(&store_path, &vault) {
+            match Self::load_store_serialized(&store_path, &pending_dir, &vault) {
                 Ok(store) => (store, false, None),
                 // Do not prevent the desktop application from opening because
                 // GSwitch's own account file is unreadable. The replacement
@@ -130,7 +136,7 @@ impl AppState {
         let state = Self {
             store_path: Arc::new(store_path),
             store_recovery_dir: Arc::new(storage_root.join("damaged-account-stores")),
-            vault,
+            pending_dir: Arc::new(pending_dir),
             store: Arc::new(Mutex::new(store)),
             store_recovery_required: Arc::new(AtomicBool::new(store_recovery_required)),
             store_recovery_message: Arc::new(Mutex::new(store_recovery_message)),
@@ -145,15 +151,11 @@ impl AppState {
     }
 
     fn recovery_message(error: &str) -> String {
-        if error.starts_with("Legacy") {
-            "GSwitch could not complete protected credential migration. The legacy account library was left unchanged."
+        if error == VAULT_MIGRATION_FAILED {
+            "GSwitch could not move saved accounts out of its previous encrypted storage. Nothing was changed, and GSwitch will try again the next time it starts."
                 .to_string()
-        } else if error.contains("protected credential")
-            || error.contains("Protected credential")
-            || error.starts_with("Protected switch")
-            || error.starts_with("Protected reset-credit")
-        {
-            "GSwitch could not open protected credential storage. Saved accounts remain unavailable until it can be opened safely."
+        } else if error.starts_with("Legacy") {
+            "GSwitch could not complete account storage migration. The previous account library was left unchanged."
                 .to_string()
         } else {
             "GSwitch could not safely read its saved account library. Codex credentials were not changed."
@@ -161,14 +163,15 @@ impl AppState {
         }
     }
 
-    fn load_protected_store_serialized(
+    fn load_store_serialized(
         store_path: &std::path::Path,
-        vault: &CredentialVault,
+        pending_dir: &std::path::Path,
+        vault: &LegacyVault,
     ) -> Result<AccountStore, String> {
         let parent = store_path
             .parent()
             .ok_or_else(|| "Invalid GSwitch storage path".to_string())?;
-        fs::create_dir_all(parent)
+        storage::ensure_private_dir(parent)
             .map_err(|_| "Unable to prepare GSwitch operation storage".to_string())?;
         let lock_file = OpenOptions::new()
             .create(true)
@@ -179,296 +182,148 @@ impl AppState {
             .map_err(|_| "Unable to lock GSwitch operations".to_string())?;
         FileExt::lock_exclusive(&lock_file)
             .map_err(|_| "Unable to lock GSwitch operations".to_string())?;
-        // The file lock spans metadata load, every secret migration/readback,
-        // and the atomic version-4 metadata commit. Closing it also unlocks.
-        Self::load_protected_store(store_path, vault)
+        // The file lock spans the load, a one-time migration and its readback.
+        // Closing it also unlocks.
+        Self::load_store(store_path, pending_dir, vault)
     }
 
-    fn load_protected_store(
+    fn load_store(
         store_path: &std::path::Path,
-        vault: &CredentialVault,
+        pending_dir: &std::path::Path,
+        vault: &LegacyVault,
     ) -> Result<AccountStore, String> {
-        let mut store = storage::load(store_path)?;
-        if store.version < storage::STORE_VERSION {
-            Self::migrate_legacy_store(store_path, vault, &mut store)?;
-        } else {
-            Self::hydrate_store_secrets(vault, &mut store)?;
-        }
-        Self::migrate_legacy_pending_credentials(store_path, vault)?;
-        for (_, pending) in vault.pending_credentials::<PendingCredentialSecret>()? {
-            let kind = document_kind(&pending.credential)?;
-            let _ = derive_identity(&kind, &pending.credential)?;
-            if pending.expected_account_id.is_some() != pending.expected_generation.is_some() {
-                return Err("Protected credential recovery is incomplete".to_string());
+        let store = match storage::read_store_json(store_path)? {
+            Some(mut raw) => {
+                let version = storage::store_version(&raw)?;
+                let vault_pending = if version == storage::VAULT_STORE_VERSION {
+                    vault
+                        .resolve(&mut raw)
+                        .map_err(|_| VAULT_MIGRATION_FAILED.to_string())?
+                } else {
+                    Vec::new()
+                };
+                let mut store = storage::store_from_json(raw)?;
+                Self::verify_credentials(&mut store, version)?;
+                if version < storage::STORE_VERSION {
+                    Self::commit_migration(store_path, pending_dir, &mut store, &vault_pending)
+                        .map_err(|error| {
+                            if version == storage::VAULT_STORE_VERSION {
+                                VAULT_MIGRATION_FAILED.to_string()
+                            } else {
+                                error
+                            }
+                        })?;
+                }
+                // The file now holds everything. A vault left by an interrupted
+                // cleanup is removed without being read.
+                if vault.exists() {
+                    let _ = vault.remove();
+                }
+                store
             }
+            None => AccountStore::default(),
+        };
+        for (_, pending) in storage::pending_credentials::<PendingCredential>(pending_dir)? {
+            Self::validate_pending(&pending)?;
         }
         Ok(store)
     }
 
-    fn migrate_legacy_pending_credentials(
-        store_path: &std::path::Path,
-        vault: &CredentialVault,
-    ) -> Result<(), String> {
-        let recovery_dir = store_path
-            .parent()
-            .ok_or_else(|| "Invalid GSwitch storage path".to_string())?
-            .join("pending-credentials");
-        let entries = match fs::read_dir(&recovery_dir) {
-            Ok(entries) => entries,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(_) => return Err("Legacy credential recovery could not be read safely".into()),
+    /// Every saved account must hold a complete credential that still derives
+    /// its recorded kind and identity. Stores older than the vault may not
+    /// have recorded an identity yet.
+    fn verify_credentials(store: &mut AccountStore, version: u32) -> Result<(), String> {
+        let failure = || {
+            if version < storage::VAULT_STORE_VERSION {
+                "Legacy account storage could not be verified safely".to_string()
+            } else {
+                "Saved account credentials do not match their account metadata".to_string()
+            }
         };
-
-        for entry in entries {
-            let entry = entry
-                .map_err(|_| "Legacy credential recovery could not be read safely".to_string())?;
-            let path = entry.path();
-            if path.extension().and_then(|extension| extension.to_str()) != Some("json") {
-                continue;
+        for account in &mut store.accounts {
+            if account.credential.is_null() {
+                return Err(failure());
             }
-            let metadata = fs::symlink_metadata(&path)
-                .map_err(|_| "Legacy credential recovery could not be read safely".to_string())?;
-            if !metadata.file_type().is_file() {
-                return Err("Legacy credential recovery could not be verified safely".into());
+            let kind = document_kind(&account.credential).map_err(|_| failure())?;
+            let identity = derive_identity(&kind, &account.credential).map_err(|_| failure())?;
+            let recorded = account.identity.as_ref();
+            if account.kind != kind
+                || recorded.is_some_and(|saved| saved != &identity)
+                || (recorded.is_none() && version >= storage::VAULT_STORE_VERSION)
+            {
+                return Err(failure());
             }
-            let id = path
-                .file_stem()
-                .and_then(|stem| stem.to_str())
-                .and_then(|stem| Uuid::parse_str(stem).ok())
-                .ok_or_else(|| {
-                    "Legacy credential recovery could not be verified safely".to_string()
-                })?;
-            #[derive(serde::Deserialize)]
-            struct LegacyPendingCredential {
-                version: u32,
-                credential: Value,
-            }
-            let content = fs::read(&path)
-                .map_err(|_| "Legacy credential recovery could not be read safely".to_string())?;
-            let pending: LegacyPendingCredential = serde_json::from_slice(&content)
-                .map_err(|_| "Legacy credential recovery is incomplete".to_string())?;
-            if pending.version != 1 || !pending.credential.is_object() {
-                return Err("Legacy credential recovery is incomplete".into());
-            }
-            let reference = format!("pending-credential-{id}");
-            let secret = PendingCredentialSecret {
-                credential: pending.credential,
-                expected_identity: None,
-                expected_account_id: None,
-                expected_generation: None,
-                oauth: None,
-            };
-            vault.put_pending_credential(&reference, &secret)?;
-            let stored: PendingCredentialSecret = vault.get(&reference)?;
-            if stored.credential != secret.credential {
-                return Err("Legacy credential recovery could not be verified safely".into());
-            }
-            fs::remove_file(&path).map_err(|_| {
-                "Legacy credential recovery could not be retired safely".to_string()
-            })?;
+            account.identity = Some(identity);
+            account.credential_generation = account.credential_generation.max(1);
         }
-        let _ = fs::remove_dir(&recovery_dir);
+        if store.pending_reset_credit.as_ref().is_some_and(|pending| {
+            pending.credit_id.is_empty() || pending.idempotency_key.is_empty()
+        }) {
+            return Err(failure());
+        }
         Ok(())
     }
 
-    fn migrate_legacy_store(
+    /// Writes a migrated store and its pending entries, then reads both back.
+    /// Only after this succeeds may the previous vault be removed.
+    fn commit_migration(
         store_path: &std::path::Path,
-        vault: &CredentialVault,
+        pending_dir: &std::path::Path,
         store: &mut AccountStore,
+        vault_pending: &[(String, Value)],
     ) -> Result<(), String> {
-        for account in &mut store.accounts {
-            if account.credential.is_null() {
-                return Err("Legacy account storage is incomplete".to_string());
-            }
-            let kind = document_kind(&account.credential)?;
-            let identity = derive_identity(&kind, &account.credential)?;
-            if account.kind != kind
-                || account
-                    .identity
-                    .as_ref()
-                    .is_some_and(|saved| saved != &identity)
-            {
-                return Err("Legacy account storage could not be verified safely".to_string());
-            }
-            account.identity = Some(identity);
-            account.credential_ref = format!("account:{}", account.id);
-            account.credential_generation = 1;
-            Self::write_account_secret(
-                vault,
-                account,
-                AccountSecret {
-                    credential: account.credential.clone(),
-                    reset_credits: account.reset_credits.clone(),
-                },
-            )?;
+        let failure = || "Legacy account storage could not be verified safely".to_string();
+        let mut pending = Vec::with_capacity(vault_pending.len());
+        for (reference, value) in vault_pending {
+            let mut record = value.clone();
+            record
+                .as_object_mut()
+                .ok_or_else(failure)?
+                .insert("version".into(), PENDING_CREDENTIAL_VERSION.into());
+            let entry: PendingCredential = serde_json::from_value(record).map_err(|_| failure())?;
+            Self::validate_pending(&entry).map_err(|_| failure())?;
+            pending.push((reference, entry));
         }
-        if let Some(pending) = store.pending_switch.as_mut() {
-            if pending.previous_auth.is_some() {
-                pending.secret_ref = Some("pending-switch".to_string());
-                pending.secret_generation = 1;
-                let secret = PendingSwitchSecret {
-                    previous_auth: pending.previous_auth.clone(),
-                };
-                let reference = Self::pending_switch_secret_key(pending);
-                vault.put(&reference, &secret)?;
-                let saved: PendingSwitchSecret = vault.get(&reference)?;
-                if saved.previous_auth != secret.previous_auth {
-                    return Err("Legacy switch recovery could not be verified safely".into());
-                }
-            }
-        }
-        if let Some(pending) = store.pending_reset_credit.as_mut() {
-            if pending.credit_id.is_empty() || pending.idempotency_key.is_empty() {
-                return Err("Legacy reset-credit recovery is incomplete".to_string());
-            }
-            pending.secret_ref = Some("pending-reset-credit".to_string());
-            pending.secret_generation = 1;
-            let secret = PendingResetCreditSecret {
-                credit_id: pending.credit_id.clone(),
-                idempotency_key: pending.idempotency_key.clone(),
-            };
-            let reference = Self::pending_reset_secret_key(pending);
-            vault.put(&reference, &secret)?;
-            let saved: PendingResetCreditSecret = vault.get(&reference)?;
-            if saved.credit_id != secret.credit_id
-                || saved.idempotency_key != secret.idempotency_key
-            {
-                return Err("Legacy reset-credit recovery could not be verified safely".into());
-            }
+        for (reference, entry) in &pending {
+            storage::write_pending_credential(pending_dir, reference, entry)?;
         }
         store.version = storage::STORE_VERSION;
         storage::save_atomic(store_path, store)?;
-        for account in &mut store.accounts {
-            account.credential = Value::Null;
-            account.reset_credits = None;
+        if !same_json(&storage::load(store_path)?, store) {
+            return Err(failure());
         }
-        if let Some(pending) = store.pending_switch.as_mut() {
-            pending.previous_auth = None;
-        }
-        if let Some(pending) = store.pending_reset_credit.as_mut() {
-            pending.credit_id.clear();
-            pending.idempotency_key.clear();
-        }
-        Self::hydrate_store_secrets(vault, store)
-    }
-
-    fn hydrate_store_secrets(
-        vault: &CredentialVault,
-        store: &mut AccountStore,
-    ) -> Result<(), String> {
-        let mut references = Vec::with_capacity(store.accounts.len());
-        for account in &store.accounts {
-            if !account.credential.is_null() || account.reset_credits.is_some() {
-                return Err(
-                    "Protected credential metadata contains inline secret material".to_string(),
-                );
+        for (reference, entry) in &pending {
+            let saved: PendingCredential =
+                storage::read_pending_credential(pending_dir, reference)?;
+            if !same_json(&saved, entry) {
+                return Err(failure());
             }
-            if account.credential_ref.is_empty() || account.credential_generation == 0 {
-                return Err("A saved account is missing protected credential material".to_string());
-            }
-            references.push(Self::account_secret_key(account));
-        }
-        let secrets: Vec<AccountSecret> = vault.get_many(&references)?;
-        for (account, secret) in store.accounts.iter_mut().zip(secrets) {
-            let kind = document_kind(&secret.credential)?;
-            let identity = derive_identity(&kind, &secret.credential)?;
-            if account.kind != kind || account.identity.as_ref() != Some(&identity) {
-                return Err(
-                    "Protected credential material does not match its account metadata".to_string(),
-                );
-            }
-            account.credential = secret.credential;
-            account.reset_credits = secret.reset_credits;
-        }
-        if let Some(pending) = store.pending_switch.as_mut() {
-            match pending.secret_ref.as_deref() {
-                Some(reference) => {
-                    if pending.secret_generation == 0 || pending.previous_auth.is_some() {
-                        return Err("Protected switch recovery is incomplete".to_string());
-                    }
-                    let secret: PendingSwitchSecret =
-                        vault.get(&format!("{}:{}", reference, pending.secret_generation))?;
-                    pending.previous_auth = secret.previous_auth;
-                }
-                None if pending.previous_auth.is_some() || pending.secret_generation != 0 => {
-                    return Err("Protected switch recovery is incomplete".to_string());
-                }
-                None => {}
-            }
-        }
-        if let Some(pending) = store.pending_reset_credit.as_mut() {
-            if !pending.credit_id.is_empty() || !pending.idempotency_key.is_empty() {
-                return Err(
-                    "Protected reset-credit metadata contains inline secret material".into(),
-                );
-            }
-            let reference = pending
-                .secret_ref
-                .as_deref()
-                .ok_or_else(|| "Protected reset-credit recovery is incomplete".to_string())?;
-            if pending.secret_generation == 0 {
-                return Err("Protected reset-credit recovery is incomplete".to_string());
-            }
-            let secret: PendingResetCreditSecret =
-                vault.get(&format!("{}:{}", reference, pending.secret_generation))?;
-            pending.credit_id = secret.credit_id;
-            pending.idempotency_key = secret.idempotency_key;
         }
         Ok(())
     }
 
-    fn account_secret_key(account: &StoredAccount) -> String {
-        format!(
-            "{}:{}",
-            account.credential_ref, account.credential_generation
-        )
+    fn validate_pending(pending: &PendingCredential) -> Result<(), String> {
+        if !matches!(pending.version, 1 | PENDING_CREDENTIAL_VERSION)
+            || !pending.credential.is_object()
+            || pending.expected_account_id.is_some() != pending.expected_generation.is_some()
+        {
+            return Err("Credential recovery is incomplete".to_string());
+        }
+        let kind = document_kind(&pending.credential)?;
+        derive_identity(&kind, &pending.credential).map(|_| ())
     }
 
-    fn next_secret_generation(previous: Option<u64>, initial: u64) -> Result<u64, String> {
+    fn next_credential_generation(previous: Option<u64>, initial: u64) -> Result<u64, String> {
         match previous {
             Some(generation) => generation
                 .checked_add(1)
-                .ok_or_else(|| "Protected credential generation is exhausted".to_string()),
+                .ok_or_else(|| "Credential generation is exhausted".to_string()),
             None => Ok(initial.max(1)),
         }
     }
 
-    fn write_account_secret(
-        vault: &CredentialVault,
-        account: &StoredAccount,
-        secret: AccountSecret,
-    ) -> Result<(), String> {
-        let reference = Self::account_secret_key(account);
-        vault.put(&reference, &secret)?;
-        let stored: AccountSecret = vault.get(&reference)?;
-        let kind = document_kind(&stored.credential)?;
-        let identity = derive_identity(&kind, &stored.credential)?;
-        if stored.credential != secret.credential
-            || stored.reset_credits != secret.reset_credits
-            || account.identity.as_ref() != Some(&identity)
-            || account.kind != kind
-        {
-            return Err("Protected credential write could not be verified safely".into());
-        }
-        Ok(())
-    }
-
-    fn pending_switch_secret_key(pending: &PendingSwitch) -> String {
-        format!(
-            "{}:{}",
-            pending.secret_ref.as_deref().unwrap_or_default(),
-            pending.secret_generation
-        )
-    }
-
-    fn pending_reset_secret_key(pending: &PendingResetCredit) -> String {
-        format!(
-            "{}:{}",
-            pending.secret_ref.as_deref().unwrap_or_default(),
-            pending.secret_generation
-        )
-    }
-
+    /// The only store commit: one atomic replacement of the owner-only file.
+    /// A changed credential must still derive its account's identity.
     fn persist_candidate(
         &self,
         current: &AccountStore,
@@ -481,129 +336,18 @@ impl AppState {
                     || saved.reset_credits != account.reset_credits
             });
             if changed {
-                if account.credential_ref.is_empty() {
-                    account.credential_ref = format!("account:{}", account.id);
+                let kind = document_kind(&account.credential)?;
+                let identity = derive_identity(&kind, &account.credential)?;
+                if account.kind != kind || account.identity.as_ref() != Some(&identity) {
+                    return Err("A saved credential does not match its account".to_string());
                 }
-                account.credential_generation = Self::next_secret_generation(
+                account.credential_generation = Self::next_credential_generation(
                     previous.map(|saved| saved.credential_generation),
                     account.credential_generation,
                 )?;
-                Self::write_account_secret(
-                    &self.vault,
-                    account,
-                    AccountSecret {
-                        credential: account.credential.clone(),
-                        reset_credits: account.reset_credits.clone(),
-                    },
-                )?;
             }
         }
-
-        if let Some(pending) = candidate.pending_switch.as_mut() {
-            let previous = current.pending_switch.as_ref();
-            let changed = previous.is_none_or(|saved| saved.previous_auth != pending.previous_auth);
-            if changed && pending.previous_auth.is_some() {
-                if pending.secret_ref.is_none() {
-                    pending.secret_ref = Some(format!("pending-switch-{}", Uuid::new_v4()));
-                }
-                pending.secret_generation = Self::next_secret_generation(
-                    previous.map(|saved| saved.secret_generation),
-                    pending.secret_generation,
-                )?;
-                let secret = PendingSwitchSecret {
-                    previous_auth: pending.previous_auth.clone(),
-                };
-                let reference = Self::pending_switch_secret_key(pending);
-                self.vault.put(&reference, &secret)?;
-                let saved: PendingSwitchSecret = self.vault.get(&reference)?;
-                if saved.previous_auth != secret.previous_auth {
-                    return Err("Protected switch recovery could not be verified safely".into());
-                }
-            }
-        }
-
-        if let Some(pending) = candidate.pending_reset_credit.as_mut() {
-            let previous = current.pending_reset_credit.as_ref();
-            let changed = previous.is_none_or(|saved| {
-                saved.credit_id != pending.credit_id
-                    || saved.idempotency_key != pending.idempotency_key
-            });
-            if changed {
-                if pending.secret_ref.is_none() {
-                    pending.secret_ref = Some(format!("pending-reset-credit-{}", Uuid::new_v4()));
-                }
-                pending.secret_generation = Self::next_secret_generation(
-                    previous.map(|saved| saved.secret_generation),
-                    pending.secret_generation,
-                )?;
-                let secret = PendingResetCreditSecret {
-                    credit_id: pending.credit_id.clone(),
-                    idempotency_key: pending.idempotency_key.clone(),
-                };
-                let reference = Self::pending_reset_secret_key(pending);
-                self.vault.put(&reference, &secret)?;
-                let saved: PendingResetCreditSecret = self.vault.get(&reference)?;
-                if saved.credit_id != secret.credit_id
-                    || saved.idempotency_key != secret.idempotency_key
-                {
-                    return Err(
-                        "Protected reset-credit recovery could not be verified safely".into(),
-                    );
-                }
-            }
-        }
-
-        storage::save_atomic(&self.store_path, candidate)?;
-
-        // Metadata is authoritative for reachability. Retire only after the
-        // metadata commit; failure leaves encrypted orphaned material rather
-        // than an account that points at a missing credential.
-        for (previous, next) in current.accounts.iter().filter_map(|saved| {
-            candidate
-                .accounts
-                .iter()
-                .find(|account| account.id == saved.id)
-                .map(|account| (saved, account))
-        }) {
-            if previous.credential_generation != next.credential_generation {
-                let _ = self.vault.delete(&Self::account_secret_key(previous));
-            }
-        }
-        for removed in current.accounts.iter().filter(|saved| {
-            !candidate
-                .accounts
-                .iter()
-                .any(|account| account.id == saved.id)
-        }) {
-            let _ = self.vault.delete(&Self::account_secret_key(removed));
-        }
-        if let Some(previous) = current.pending_switch.as_ref() {
-            let still_referenced = candidate.pending_switch.as_ref().is_some_and(|next| {
-                next.secret_ref == previous.secret_ref
-                    && next.secret_generation == previous.secret_generation
-            });
-            if !still_referenced {
-                if let Some(reference) = previous.secret_ref.as_deref() {
-                    let _ = self
-                        .vault
-                        .delete(&format!("{reference}:{}", previous.secret_generation));
-                }
-            }
-        }
-        if let Some(previous) = current.pending_reset_credit.as_ref() {
-            let still_referenced = candidate.pending_reset_credit.as_ref().is_some_and(|next| {
-                next.secret_ref == previous.secret_ref
-                    && next.secret_generation == previous.secret_generation
-            });
-            if !still_referenced {
-                if let Some(reference) = previous.secret_ref.as_deref() {
-                    let _ = self
-                        .vault
-                        .delete(&format!("{reference}:{}", previous.secret_generation));
-                }
-            }
-        }
-        Ok(())
+        storage::save_atomic(&self.store_path, candidate)
     }
 
     pub fn storage_view(&self) -> StorageView {
@@ -985,7 +729,6 @@ impl AppState {
                 } else {
                     existing.reset_credits.clone()
                 },
-                credential_ref: existing.credential_ref.clone(),
                 credential_generation: existing.credential_generation,
                 needs_apply: !verified_live && (existing.needs_apply || credential_changed),
                 sign_in_required: false,
@@ -1003,7 +746,6 @@ impl AppState {
                 identity: Some(draft.identity),
                 quota: None,
                 reset_credits: None,
-                credential_ref: String::new(),
                 credential_generation: 0,
                 needs_apply: pending_new,
                 sign_in_required: false,
@@ -1429,7 +1171,7 @@ impl AppState {
         Ok(())
     }
 
-    /// Retains an interrupted refreshed credential only in the protected vault.
+    /// Retains an interrupted refreshed credential in its own owner-only file.
     /// This is deliberately a small recovery queue, not a general backup service.
     pub fn record_pending_credential(
         &self,
@@ -1455,8 +1197,8 @@ impl AppState {
             .accounts
             .iter()
             .find(|account| account.kind == kind && account.identity.as_ref() == Some(&identity));
-        let reference = format!("pending-credential-{}", Uuid::new_v4());
-        let secret = PendingCredentialSecret {
+        let entry = PendingCredential {
+            version: PENDING_CREDENTIAL_VERSION,
             credential: credential.clone(),
             expected_identity: expected_identity.cloned(),
             expected_account_id: existing.map(|account| account.id.clone()),
@@ -1464,33 +1206,26 @@ impl AppState {
             oauth: None,
         };
         drop(store);
-        self.vault.put_pending_credential(&reference, &secret)?;
-        let saved: PendingCredentialSecret = self.vault.get(&reference)?;
-        if saved.credential != secret.credential
-            || saved.expected_identity != secret.expected_identity
-            || saved.expected_account_id != secret.expected_account_id
-            || saved.expected_generation != secret.expected_generation
-        {
-            return Err("Protected credential recovery could not be verified safely".into());
-        }
-        Ok(())
+        storage::write_pending_credential(
+            &self.pending_dir,
+            &storage::new_pending_credential_reference(),
+            &entry,
+        )
     }
 
     /// Explicit, Rust-only recovery of a credential whose previous metadata
-    /// commit failed. No vault reference or credential crosses Tauri IPC.
+    /// commit failed. No recovery reference or credential crosses Tauri IPC.
     /// A changed account generation is never overwritten by an older queue
     /// entry; retirement follows a successful metadata commit.
     pub fn recover_pending_credentials(&self) -> Result<u32, String> {
-        let pending = self
-            .vault
-            .pending_credentials::<PendingCredentialSecret>()?;
+        let pending = storage::pending_credentials::<PendingCredential>(&self.pending_dir)?;
         let mut recovered = 0u32;
         let mut first_error = None;
         for (reference, secret) in pending {
             let result: Result<(), String> = (|| {
                 if let Some(context) = &secret.oauth {
                     crate::intake::finish_oauth_recovery(self, &secret.credential, context)?;
-                    return self.vault.retire_pending_credential(&reference);
+                    return storage::retire_pending_credential(&self.pending_dir, &reference);
                 }
                 let operation = self.acquire_operation()?;
                 let kind = document_kind(&secret.credential)?;
@@ -1500,10 +1235,10 @@ impl AppState {
                     .as_ref()
                     .is_some_and(|expected| expected != &identity)
                 {
-                    return Err("Protected credential recovery identity changed".to_string());
+                    return Err("Credential recovery identity changed".to_string());
                 }
                 if secret.expected_account_id.is_some() != secret.expected_generation.is_some() {
-                    return Err("Protected credential recovery is incomplete".to_string());
+                    return Err("Credential recovery is incomplete".to_string());
                 }
                 {
                     let mut store = self
@@ -1517,15 +1252,14 @@ impl AppState {
                         (Some(index), Some(expected_id)) => {
                             let account = &store.accounts[index];
                             if account.id != expected_id {
-                                return Err(
-                                    "Protected credential recovery account changed".to_string()
-                                );
+                                return Err("Credential recovery account changed".to_string());
                             }
                             if account.credential != secret.credential {
                                 if Some(account.credential_generation) != secret.expected_generation
                                 {
-                                    return Err("Protected credential recovery generation changed"
-                                        .to_string());
+                                    return Err(
+                                        "Credential recovery generation changed".to_string()
+                                    );
                                 }
                                 let mut candidate = store.clone();
                                 candidate.accounts[index].needs_apply = true;
@@ -1541,13 +1275,13 @@ impl AppState {
                             if store.accounts[index].credential == secret.credential => {}
                         (Some(_), None) => {
                             return Err(
-                                "Protected credential recovery has no safe account baseline"
-                                    .to_string(),
+                                "Credential recovery has no safe account baseline".to_string()
                             );
                         }
                         (None, Some(_)) => {
-                            return Err("Protected credential recovery account is no longer saved"
-                                .to_string());
+                            return Err(
+                                "Credential recovery account is no longer saved".to_string()
+                            );
                         }
                         (None, None) => {
                             drop(store);
@@ -1573,14 +1307,14 @@ impl AppState {
                         }
                     }
                 }
-                self.vault.retire_pending_credential(&reference)?;
+                storage::retire_pending_credential(&self.pending_dir, &reference)?;
                 Ok(())
             })();
             match result {
                 Ok(()) => {
-                    recovered = recovered.checked_add(1).ok_or_else(|| {
-                        "Protected credential recovery count overflow".to_string()
-                    })?;
+                    recovered = recovered
+                        .checked_add(1)
+                        .ok_or_else(|| "Credential recovery count overflow".to_string())?;
                 }
                 Err(error) if first_error.is_none() => first_error = Some(error),
                 Err(_) => {}
@@ -1624,7 +1358,7 @@ impl AppState {
     }
 
     /// Acceptance and cancellation are serialized. A browser tab closing after
-    /// completion has no effect on the protected local commit.
+    /// completion has no effect on the local commit.
     pub(crate) fn accept_oauth_completion(&self, login_id: &str) -> Result<bool, String> {
         let mut sessions = self
             .oauth_logins
@@ -1648,15 +1382,16 @@ impl AppState {
         credential: &Value,
         context: crate::intake::OAuthRecovery,
     ) -> Result<(), String> {
-        let reference = format!("pending-credential-{}", Uuid::new_v4());
-        let secret = PendingCredentialSecret {
+        let reference = storage::new_pending_credential_reference();
+        let entry = PendingCredential {
+            version: PENDING_CREDENTIAL_VERSION,
             credential: credential.clone(),
             expected_identity: None,
             expected_account_id: None,
             expected_generation: None,
             oauth: Some(context),
         };
-        self.vault.put_pending_credential(&reference, &secret)?;
+        storage::write_pending_credential(&self.pending_dir, &reference, &entry)?;
         self.oauth_logins
             .lock()
             .map_err(|_| "OAuth state lock is unavailable")?
@@ -1698,7 +1433,8 @@ impl AppState {
             .get(login_id)
             .and_then(|session| session.recovery_ref.clone())
             .ok_or("No completed sign-in is available to retry")?;
-        let secret: PendingCredentialSecret = self.vault.get(&reference)?;
+        let secret: PendingCredential =
+            storage::read_pending_credential(&self.pending_dir, &reference)?;
         let account = crate::intake::finish_oauth_recovery(
             self,
             &secret.credential,
@@ -1707,7 +1443,8 @@ impl AppState {
                 .as_ref()
                 .ok_or("No completed sign-in is available to retry")?,
         )?;
-        let retirement_warning = self.vault.retire_pending_credential(&reference).is_err();
+        let retirement_warning =
+            storage::retire_pending_credential(&self.pending_dir, &reference).is_err();
         self.oauth_logins
             .lock()
             .map_err(|_| "OAuth state lock is unavailable")?
@@ -1853,6 +1590,14 @@ impl AppState {
             revision: account.credential_generation,
         }
     }
+}
+
+/// Compares two values by their complete serialized form.
+fn same_json<T: serde::Serialize>(left: &T, right: &T) -> bool {
+    matches!(
+        (serde_json::to_value(left), serde_json::to_value(right)),
+        (Ok(left), Ok(right)) if left == right
+    )
 }
 
 #[cfg(test)]
@@ -2077,8 +1822,8 @@ mod tests {
     }
 
     #[test]
-    fn rotation_advances_the_secret_generation_without_serializing_tokens() {
-        let path = temp_path("vault-rotation");
+    fn rotation_advances_the_credential_generation_and_keeps_unknown_fields() {
+        let path = temp_path("credential-rotation");
         let state = AppState::new(path.clone()).expect("state");
         let first = save(
             &state,
@@ -2100,38 +1845,232 @@ mod tests {
             saved.credential.pointer("/unknown_future_field/keep"),
             Some(&Value::Bool(true))
         );
-        let metadata = fs::read_to_string(&path).expect("metadata");
-        assert!(!metadata.contains("first-token"));
-        assert!(!metadata.contains("second-token"));
-        assert!(!metadata.contains("refresh-token"));
-        assert!(state
-            .vault
-            .get::<AccountSecret>(&format!("account:{}:{first_generation}", first.id))
-            .is_err());
+        let on_disk = storage::load(&path).expect("store");
+        assert_eq!(on_disk.accounts[0].credential, saved.credential);
+        assert_eq!(
+            on_disk.accounts[0].credential_generation,
+            saved.credential_generation
+        );
+        assert!(!fs::read_to_string(&path)
+            .expect("store")
+            .contains("first-token"));
 
         let _ = fs::remove_dir_all(path.parent().expect("parent"));
     }
 
-    #[test]
-    fn legacy_inline_store_migrates_once_and_reopens_from_the_vault() {
-        let path = temp_path("legacy-vault-migration");
+    fn pending_entries(state: &AppState) -> Vec<(String, PendingCredential)> {
+        storage::pending_credentials(&state.pending_dir).expect("pending credentials")
+    }
+
+    fn identity_json(credential: &Value) -> Value {
+        serde_json::to_value(derive_identity(&AccountKind::ChatGpt, credential).expect("identity"))
+            .expect("identity JSON")
+    }
+
+    fn write_store(path: &std::path::Path, store: Value) {
         fs::create_dir_all(path.parent().expect("parent")).expect("storage root");
-        let credential = stable_credential("workspace", "legacy-access-token");
-        let interrupted_vault = CredentialVault::with_test_root(
-            path.parent().expect("parent").join("credentials.hold"),
+        fs::write(path, serde_json::to_vec_pretty(&store).expect("store")).expect("store file");
+    }
+
+    fn legacy_vault(path: &std::path::Path) -> LegacyVault {
+        LegacyVault::with_test_root(path.parent().expect("parent").join("credentials.hold"))
+    }
+
+    #[test]
+    fn a_vault_store_moves_to_the_owner_only_file_and_the_vault_is_removed() {
+        let path = temp_path("vault-migration");
+        let first = stable_credential("workspace-a", "first-token");
+        let second = stable_credential("workspace-b", "second-token");
+        let rollback = json!({"tokens": {"access_token": "rollback-token"}, "future": [1]});
+        write_store(
+            &path,
+            json!({
+                "version": 4,
+                "active_account_id": "a",
+                "accounts": [
+                    {"id": "a", "label": "A", "kind": "chat_gpt", "identity": identity_json(&first),
+                     "credential_ref": "account:a", "credential_generation": 3},
+                    {"id": "b", "label": "B", "kind": "chat_gpt", "identity": identity_json(&second),
+                     "credential_ref": "account:b", "credential_generation": 1}
+                ],
+                "pending_switch": {"target_id": "b", "target_identity": identity_json(&second),
+                    "previous_active_id": "a", "secret_ref": "pending-switch-x",
+                    "secret_generation": 2, "stage": "prepared"},
+                "pending_reset_credit": {"account_id": "a", "secret_ref": "pending-reset-credit-x",
+                    "secret_generation": 1, "created_at_unix_ms": 123, "discard_allowed": false}
+            }),
         );
-        interrupted_vault
+        let vault = legacy_vault(&path);
+        vault
+            .put(
+                "account:a:3",
+                &json!({"credential": first, "reset_credits": {"available_count": 1,
+                    "credits": [{"id": "credit-private", "status": "available"}]}}),
+            )
+            .expect("first account");
+        vault
+            .put("account:b:1", &json!({"credential": second}))
+            .expect("second account");
+        vault
+            .put("pending-switch-x:2", &json!({"previous_auth": rollback}))
+            .expect("switch rollback");
+        vault
+            .put(
+                "pending-reset-credit-x:1",
+                &json!({"credit_id": "credit-private", "idempotency_key": "key-private"}),
+            )
+            .expect("reset credit");
+        let reference = format!("pending-credential-{}", Uuid::new_v4());
+        vault
+            .put_pending_credential(
+                &reference,
+                &json!({"credential": stable_credential("workspace-a", "queued-token"),
+                    "expected_account_id": "a", "expected_generation": 3}),
+            )
+            .expect("pending credential");
+
+        let state = AppState::new(path.clone()).expect("migrate");
+        assert_eq!(state.storage_view().status, StorageStatus::Ready);
+        let account = state.account_by_id("a").expect("first account");
+        assert_eq!(account.credential, first);
+        assert_eq!(account.credential_generation, 3);
+        let credits = account.reset_credits.expect("reset credits");
+        assert_eq!(
+            credits.credits.expect("credit list")[0].id,
+            "credit-private"
+        );
+        assert_eq!(state.account_by_id("b").expect("second").credential, second);
+        let operation = state.acquire_operation().expect("operation");
+        assert_eq!(
+            state
+                .pending_switch_under_operation(&operation)
+                .expect("switch")
+                .expect("pending switch")
+                .previous_auth,
+            Some(rollback)
+        );
+        let reset = state
+            .pending_reset_credit_under_operation(&operation)
+            .expect("reset")
+            .expect("pending reset");
+        assert_eq!(reset.credit_id, "credit-private");
+        assert_eq!(reset.idempotency_key, "key-private");
+        drop(operation);
+        let pending = pending_entries(&state);
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].0, reference);
+        assert_eq!(pending[0].1.expected_account_id.as_deref(), Some("a"));
+        assert_eq!(pending[0].1.expected_generation, Some(3));
+
+        let raw = fs::read_to_string(&path).expect("store");
+        assert!(!raw.contains("credential_ref") && !raw.contains("secret_ref"));
+        assert_eq!(
+            storage::load(&path).expect("store").version,
+            storage::STORE_VERSION
+        );
+        assert!(!vault.exists());
+        assert!(!path
+            .parent()
+            .expect("parent")
+            .join("credentials.lock")
+            .exists());
+
+        drop(state);
+        let reopened = AppState::new(path.clone()).expect("reopen");
+        assert_eq!(
+            reopened.account_by_id("a").expect("first").credential,
+            first
+        );
+        let _ = fs::remove_dir_all(path.parent().expect("parent"));
+    }
+
+    #[test]
+    fn an_unreadable_vault_leaves_the_vault_store_unchanged_until_it_can_be_read() {
+        let path = temp_path("vault-unreadable");
+        let credential = stable_credential("workspace", "vault-token");
+        write_store(
+            &path,
+            json!({"version": 4, "accounts": [{"id": "a", "label": "A", "kind": "chat_gpt",
+                "identity": identity_json(&credential), "credential_ref": "account:a",
+                "credential_generation": 1}]}),
+        );
+        let original = fs::read(&path).expect("original store");
+        let vault_path = path.parent().expect("parent").join("credentials.hold");
+
+        // Without a snapshot the reference cannot be resolved.
+        let state = AppState::new(path.clone()).expect("recovery state");
+        assert_eq!(state.storage_view().status, StorageStatus::RecoveryRequired);
+        assert!(state
+            .storage_view()
+            .message
+            .is_some_and(|message| message.contains("try again the next time it starts")));
+        assert!(state.list().expect("blocked view").is_empty());
+        assert!(state.acquire_operation().is_err());
+        assert_eq!(fs::read(&path).expect("store"), original);
+        drop(state);
+
+        // A damaged snapshot cannot be opened either, and is kept.
+        fs::write(&vault_path, b"not a snapshot").expect("damaged snapshot");
+        let state = AppState::new(path.clone()).expect("recovery state");
+        assert_eq!(state.storage_view().status, StorageStatus::RecoveryRequired);
+        assert_eq!(fs::read(&path).expect("store"), original);
+        assert_eq!(fs::read(&vault_path).expect("vault"), b"not a snapshot");
+        drop(state);
+
+        fs::remove_file(&vault_path).expect("replace snapshot");
+        legacy_vault(&path)
+            .put("account:a:1", &json!({"credential": credential}))
+            .expect("readable vault");
+        let state = AppState::new(path.clone()).expect("migrated");
+        assert_eq!(
+            state.account_by_id("a").expect("account").credential,
+            credential
+        );
+        assert!(!vault_path.exists());
+        let _ = fs::remove_dir_all(path.parent().expect("parent"));
+    }
+
+    #[test]
+    fn a_leftover_vault_beside_a_current_store_is_removed_without_being_read() {
+        let path = temp_path("leftover-vault");
+        let state = AppState::new(path.clone()).expect("state");
+        let saved = save(
+            &state,
+            draft("workspace", stable_credential("workspace", "current")),
+        );
+        drop(state);
+        let vault_path = path.parent().expect("parent").join("credentials.hold");
+        fs::write(&vault_path, b"never read").expect("leftover snapshot");
+
+        let reopened = AppState::new(path.clone()).expect("reopen");
+        assert_eq!(reopened.storage_view().status, StorageStatus::Ready);
+        assert_eq!(
+            reopened
+                .account_by_id(&saved.id)
+                .expect("account")
+                .credential,
+            stable_credential("workspace", "current")
+        );
+        assert!(!vault_path.exists());
+        let _ = fs::remove_dir_all(path.parent().expect("parent"));
+    }
+
+    #[test]
+    fn a_pre_vault_store_moves_to_the_current_file_and_a_stale_vault_is_removed() {
+        let path = temp_path("pre-vault-migration");
+        let credential = stable_credential("workspace", "legacy-access-token");
+        // An interrupted vault migration could leave a snapshot beside the
+        // still-authoritative inline store.
+        fs::create_dir_all(path.parent().expect("parent")).expect("storage root");
+        legacy_vault(&path)
             .put(
                 "account:legacy-account:1",
-                &AccountSecret {
-                    credential: credential.clone(),
-                    reset_credits: None,
-                },
+                &json!({"credential": stable_credential("workspace", "stale")}),
             )
-            .expect("simulate a prior interrupted migration after secret commit");
-        fs::write(
+            .expect("stale vault");
+        write_store(
             &path,
-            serde_json::to_vec_pretty(&json!({
+            json!({
                 "version": 3,
                 "accounts": [{
                     "id": "legacy-account",
@@ -2139,10 +2078,8 @@ mod tests {
                     "kind": "chat_gpt",
                     "credential": credential,
                 }]
-            }))
-            .expect("legacy JSON"),
-        )
-        .expect("legacy store");
+            }),
+        );
 
         let first = AppState::new(path.clone()).expect("migrate");
         assert_eq!(
@@ -2152,14 +2089,12 @@ mod tests {
                 .credential,
             credential
         );
-        let metadata = fs::read_to_string(&path).expect("migrated metadata");
-        assert!(!metadata.contains("legacy-access-token"));
-        assert!(!metadata.contains("refresh-token"));
-        assert!(path
-            .parent()
-            .expect("parent")
-            .join("credentials.hold")
-            .exists());
+        let saved = storage::load(&path).expect("migrated store");
+        assert_eq!(saved.version, storage::STORE_VERSION);
+        assert_eq!(saved.accounts[0].credential, credential);
+        assert!(saved.accounts[0].identity.is_some());
+        assert!(!legacy_vault(&path).exists());
+        drop(first);
 
         let reopened = AppState::new(path.clone()).expect("restart-safe reopen");
         assert_eq!(
@@ -2227,70 +2162,36 @@ mod tests {
             credential
         );
         worker.join().expect("worker finished");
-        assert!(!fs::read_to_string(&path)
-            .expect("metadata")
-            .contains("legacy-token"));
+        assert_eq!(
+            storage::load(&path).expect("store").version,
+            storage::STORE_VERSION
+        );
         let _ = fs::remove_dir_all(path.parent().expect("parent"));
     }
 
     #[test]
-    fn unavailable_vault_does_not_overwrite_the_only_legacy_credential_copy() {
-        let path = temp_path("legacy-vault-unavailable");
-        fs::create_dir_all(path.parent().expect("parent")).expect("storage root");
-        let credential = stable_credential("workspace", "legacy-preserved-token");
-        fs::write(
-            &path,
-            serde_json::to_vec_pretty(&json!({
-                "version": 3,
-                "accounts": [{
-                    "id": "legacy-account",
-                    "label": "Legacy",
-                    "kind": "chat_gpt",
-                    "credential": credential,
-                }]
-            }))
-            .expect("legacy JSON"),
-        )
-        .expect("legacy store");
-        fs::create_dir(path.parent().expect("parent").join("credentials.hold"))
-            .expect("block vault snapshot");
-
-        let state = AppState::new(path.clone()).expect("recovery state");
-        assert_eq!(state.storage_view().status, StorageStatus::RecoveryRequired);
-        let original = fs::read_to_string(&path).expect("original legacy library remains");
-        assert!(original.contains("legacy-preserved-token"));
-        assert!(original.contains("\"version\": 3"));
-
-        let _ = fs::remove_dir_all(path.parent().expect("parent"));
-    }
-
-    #[test]
-    fn pending_recovery_files_move_into_the_vault_before_the_plaintext_is_removed() {
+    fn pre_vault_pending_recovery_files_are_read_in_place() {
         let path = temp_path("legacy-pending-recovery");
         let recovery_dir = path.parent().expect("parent").join("pending-credentials");
         fs::create_dir_all(&recovery_dir).expect("recovery directory");
         let id = Uuid::new_v4();
-        let credential = stable_credential("workspace", "recovery-only-secret");
         let recovery_path = recovery_dir.join(format!("{id}.json"));
         fs::write(
             &recovery_path,
-            serde_json::to_vec(&json!({"version": 1, "credential": credential})).expect("json"),
+            serde_json::to_vec(&json!({
+                "version": 1,
+                "credential": stable_credential("workspace", "recovery-only-secret")
+            }))
+            .expect("json"),
         )
         .expect("write legacy recovery");
 
-        let state = AppState::new(path.clone()).expect("migrate recovery");
-        assert!(!recovery_path.exists());
-        let saved: PendingCredentialSecret = state
-            .vault
-            .get(&format!("pending-credential-{id}"))
-            .expect("protected recovery");
+        let state = AppState::new(path.clone()).expect("open");
+        assert_eq!(state.storage_view().status, StorageStatus::Ready);
         assert_eq!(
-            saved.credential["tokens"]["access_token"],
-            "recovery-only-secret"
+            pending_entries(&state)[0].0,
+            format!("pending-credential-{id}")
         );
-        let snapshot = fs::read(path.parent().expect("parent").join("credentials.hold"))
-            .expect("encrypted vault");
-        assert!(!String::from_utf8_lossy(&snapshot).contains("recovery-only-secret"));
         assert_eq!(
             state
                 .recover_pending_credentials()
@@ -2298,17 +2199,13 @@ mod tests {
             1
         );
         assert_eq!(state.list().expect("recovered account").len(), 1);
-        assert!(state
-            .vault
-            .pending_credentials::<PendingCredentialSecret>()
-            .expect("retired queue")
-            .is_empty());
+        assert!(!recovery_path.exists());
 
         let _ = fs::remove_dir_all(path.parent().expect("parent"));
     }
 
     #[test]
-    fn protected_pending_refresh_recovers_only_at_its_recorded_generation() {
+    fn pending_refresh_recovers_only_at_its_recorded_generation() {
         let path = temp_path("pending-refresh-recovery");
         let state = AppState::new(path.clone()).expect("state");
         let first = save(
@@ -2320,7 +2217,7 @@ mod tests {
         let operation = state.acquire_operation().expect("operation");
         state
             .record_pending_credential(&operation, &refreshed)
-            .expect("protected queue");
+            .expect("recovery queue");
         drop(operation);
 
         let reopened = AppState::new(path.clone()).expect("restart");
@@ -2333,14 +2230,11 @@ mod tests {
             reopened.recover_pending_credentials().expect("idempotent"),
             0
         );
-        assert!(!fs::read_to_string(&path)
-            .expect("metadata")
-            .contains("recovered-token"));
         let _ = fs::remove_dir_all(path.parent().expect("parent"));
     }
 
     #[test]
-    fn protected_pending_refresh_never_overwrites_a_newer_generation() {
+    fn pending_refresh_never_overwrites_a_newer_generation() {
         let path = temp_path("pending-refresh-stale");
         let state = AppState::new(path.clone()).expect("state");
         let first = save(
@@ -2350,7 +2244,7 @@ mod tests {
         let operation = state.acquire_operation().expect("operation");
         state
             .record_pending_credential(&operation, &stable_credential("workspace", "queued-token"))
-            .expect("protected queue");
+            .expect("recovery queue");
         drop(operation);
         save(
             &state,
@@ -2361,7 +2255,7 @@ mod tests {
             state
                 .recover_pending_credentials()
                 .expect_err("stale must fail"),
-            "Protected credential recovery generation changed"
+            "Credential recovery generation changed"
         );
         assert_eq!(
             state
@@ -2370,19 +2264,12 @@ mod tests {
                 .credential["tokens"]["access_token"],
             "newer-token"
         );
-        assert_eq!(
-            state
-                .vault
-                .pending_credentials::<PendingCredentialSecret>()
-                .expect("still recoverable")
-                .len(),
-            1
-        );
+        assert_eq!(pending_entries(&state).len(), 1);
         let _ = fs::remove_dir_all(path.parent().expect("parent"));
     }
 
     #[test]
-    fn pending_recovery_keeps_the_encrypted_entry_if_metadata_commit_fails() {
+    fn pending_recovery_keeps_the_entry_if_the_store_commit_fails() {
         let path = temp_path("pending-recovery-commit-failure");
         let state = AppState::new(path.clone()).expect("state");
         let operation = state.acquire_operation().expect("operation");
@@ -2391,20 +2278,13 @@ mod tests {
                 &operation,
                 &stable_credential("workspace", "recovery-token"),
             )
-            .expect("protected queue");
+            .expect("recovery queue");
         drop(operation);
         fs::create_dir(&path).expect("block metadata file");
 
         assert!(state.recover_pending_credentials().is_err());
         assert_eq!(state.list().expect("unchanged library").len(), 0);
-        assert_eq!(
-            state
-                .vault
-                .pending_credentials::<PendingCredentialSecret>()
-                .expect("preserved queue")
-                .len(),
-            1
-        );
+        assert_eq!(pending_entries(&state).len(), 1);
         fs::remove_dir(&path).expect("unblock metadata file");
         assert_eq!(state.recover_pending_credentials().expect("retry"), 1);
         assert_eq!(state.list().expect("recovered library").len(), 1);
@@ -2418,7 +2298,7 @@ mod tests {
         let operation = state.acquire_operation().expect("operation");
         state
             .record_pending_credential(&operation, &stable_credential("workspace", "queued-token"))
-            .expect("protected queue");
+            .expect("recovery queue");
         drop(operation);
         let saved = save(
             &state,
@@ -2429,20 +2309,13 @@ mod tests {
             state
                 .recover_pending_credentials()
                 .expect_err("ambiguous token"),
-            "Protected credential recovery has no safe account baseline"
+            "Credential recovery has no safe account baseline"
         );
         assert_eq!(
             state.account_by_id(&saved.id).expect("saved").credential["tokens"]["access_token"],
             "newer-token"
         );
-        assert_eq!(
-            state
-                .vault
-                .pending_credentials::<PendingCredentialSecret>()
-                .expect("preserved queue")
-                .len(),
-            1
-        );
+        assert_eq!(pending_entries(&state).len(), 1);
         let _ = fs::remove_dir_all(path.parent().expect("parent"));
     }
 
@@ -2462,24 +2335,17 @@ mod tests {
                 &stable_credential("other-workspace", "foreign-token"),
                 Some(&expected),
             )
-            .expect("protected queue");
+            .expect("recovery queue");
         drop(operation);
 
         assert_eq!(
             state
                 .recover_pending_credentials()
                 .expect_err("wrong identity"),
-            "Protected credential recovery identity changed"
+            "Credential recovery identity changed"
         );
         assert!(state.list().expect("no foreign account").is_empty());
-        assert_eq!(
-            state
-                .vault
-                .pending_credentials::<PendingCredentialSecret>()
-                .expect("retained for investigation")
-                .len(),
-            1
-        );
+        assert_eq!(pending_entries(&state).len(), 1);
         let _ = fs::remove_dir_all(path.parent().expect("parent"));
     }
 
@@ -2512,23 +2378,16 @@ mod tests {
             state
                 .recover_pending_credentials()
                 .expect_err("unsafe entry remains"),
-            "Protected credential recovery identity changed"
+            "Credential recovery identity changed"
         );
         assert_eq!(state.list().expect("safe account").len(), 1);
-        assert_eq!(
-            state
-                .vault
-                .pending_credentials::<PendingCredentialSecret>()
-                .expect("only unsafe entry remains")
-                .len(),
-            1
-        );
+        assert_eq!(pending_entries(&state).len(), 1);
         let _ = fs::remove_dir_all(path.parent().expect("parent"));
     }
 
     #[test]
-    fn missing_pending_secret_blocks_recovery_without_emptying_accounts() {
-        let path = temp_path("pending-secret-missing");
+    fn a_damaged_pending_entry_blocks_startup_without_emptying_accounts() {
+        let path = temp_path("pending-entry-damaged");
         let state = AppState::new(path.clone()).expect("state");
         let first = save(
             &state,
@@ -2537,18 +2396,14 @@ mod tests {
         let operation = state.acquire_operation().expect("operation");
         state
             .record_pending_credential(&operation, &stable_credential("workspace", "queued-token"))
-            .expect("protected queue");
+            .expect("recovery queue");
         drop(operation);
-        let reference = state
-            .vault
-            .pending_credentials::<PendingCredentialSecret>()
-            .expect("queue")[0]
-            .0
-            .clone();
-        state
-            .vault
-            .delete(&reference)
-            .expect("simulate missing secret");
+        let reference = pending_entries(&state)[0].0.clone();
+        let entry = state.pending_dir.join(format!(
+            "{}.json",
+            reference.trim_start_matches("pending-credential-")
+        ));
+        fs::write(&entry, "{ damaged").expect("damage entry");
 
         let reopened = AppState::new(path.clone()).expect("recovery state");
         assert_eq!(
@@ -2557,11 +2412,8 @@ mod tests {
         );
         assert_eq!(reopened.list().expect("blocked view").len(), 0);
         assert_eq!(
-            state
-                .account_by_id(&first.id)
-                .expect("old state")
-                .credential["tokens"]["access_token"],
-            "old"
+            storage::load(&path).expect("store kept").accounts[0].id,
+            first.id
         );
         assert!(reopened.recover_pending_credentials().is_err());
         let _ = fs::remove_dir_all(path.parent().expect("parent"));
@@ -2598,156 +2450,58 @@ mod tests {
             storage::load(&path).expect("migrated metadata").version,
             storage::STORE_VERSION
         );
-        assert!(!fs::read_to_string(&path)
-            .expect("metadata")
-            .contains("legacy-unversioned-token"));
 
         let _ = fs::remove_dir_all(path.parent().expect("parent"));
     }
 
     #[test]
-    fn missing_vault_never_becomes_an_empty_account_library() {
-        let path = temp_path("missing-vault");
-        let state = AppState::new(path.clone()).expect("state");
-        save(
-            &state,
-            draft("workspace", stable_credential("workspace", "access-token")),
-        );
-        fs::remove_file(path.parent().expect("parent").join("credentials.hold"))
-            .expect("remove vault");
-
-        let reopened = AppState::new(path.clone()).expect("recovery state");
-        assert_eq!(
-            reopened.storage_view().status,
-            StorageStatus::RecoveryRequired
-        );
-        assert!(reopened
-            .storage_view()
-            .message
-            .as_deref()
-            .is_some_and(|message| message.contains("protected credential storage")));
-        assert!(reopened.list().expect("recovery view").is_empty());
-        assert!(reopened.acquire_operation().is_err());
-
-        let _ = fs::remove_dir_all(path.parent().expect("parent"));
+    fn a_current_account_without_a_matching_credential_fails_closed() {
+        let own = stable_credential("workspace", "own");
+        for (name, credential) in [
+            ("credential-missing", Value::Null),
+            (
+                "credential-foreign",
+                stable_credential("other-workspace", "foreign"),
+            ),
+        ] {
+            let path = temp_path(name);
+            write_store(
+                &path,
+                json!({"version": storage::STORE_VERSION, "accounts": [{"id": "account",
+                    "label": "Account", "kind": "chat_gpt", "identity": identity_json(&own),
+                    "credential_generation": 1, "credential": credential}]}),
+            );
+            let state = AppState::new(path.clone()).expect("recovery state");
+            assert_eq!(state.storage_view().status, StorageStatus::RecoveryRequired);
+            assert!(state.list().expect("blocked view").is_empty());
+            let _ = fs::remove_dir_all(path.parent().expect("parent"));
+        }
     }
 
     #[test]
-    fn inline_switch_recovery_without_a_vault_reference_fails_closed() {
-        let path = temp_path("inline-switch-recovery");
-        fs::create_dir_all(path.parent().expect("parent")).expect("storage root");
-        fs::write(
-            &path,
-            serde_json::to_vec(&json!({
-                "version": storage::STORE_VERSION,
-                "accounts": [],
-                "pending_switch": {
-                    "target_id": "target",
-                    "target_identity": {"type": "api_key", "fingerprint": "stable"},
-                    "previous_active_id": null,
-                    "previous_auth": {"tokens": {"access_token": "inline-secret"}},
-                    "stage": "prepared"
-                }
-            }))
-            .expect("metadata"),
-        )
-        .expect("write metadata");
-
-        let state = AppState::new(path.clone()).expect("recovery state");
-        assert_eq!(state.storage_view().status, StorageStatus::RecoveryRequired);
-        assert!(state
-            .storage_view()
-            .message
-            .unwrap()
-            .contains("protected credential"));
-
-        let _ = fs::remove_dir_all(path.parent().expect("parent"));
-    }
-
-    #[test]
-    fn inline_account_credentials_in_current_metadata_fail_closed() {
-        let path = temp_path("inline-account-secret");
-        fs::create_dir_all(path.parent().expect("parent")).expect("storage root");
-        fs::write(
-            &path,
-            serde_json::to_vec(&json!({
-                "version": storage::STORE_VERSION,
-                "accounts": [{
-                    "id": "account",
-                    "label": "Account",
-                    "kind": "chat_gpt",
-                    "credential": {"tokens": {"access_token": "inline-account-secret"}}
-                }]
-            }))
-            .expect("metadata"),
-        )
-        .expect("write metadata");
-
-        let state = AppState::new(path.clone()).expect("recovery state");
-        assert_eq!(state.storage_view().status, StorageStatus::RecoveryRequired);
-        assert!(state
-            .storage_view()
-            .message
-            .unwrap()
-            .contains("protected credential"));
-
-        let _ = fs::remove_dir_all(path.parent().expect("parent"));
-    }
-
-    #[test]
-    fn a_vault_write_failure_leaves_metadata_and_memory_unchanged() {
-        let path = temp_path("vault-write-failure");
-        let state = AppState::new(path.clone()).expect("state");
-        fs::create_dir_all(path.parent().expect("parent")).expect("storage root");
-        fs::create_dir(path.parent().expect("parent").join("credentials.hold"))
-            .expect("block vault snapshot");
-
-        let operation = state.acquire_operation().expect("operation");
-        let result = state.upsert_under_operation(
-            &operation,
-            draft("workspace", stable_credential("workspace", "not-saved")),
-        );
-        assert!(result.is_err());
-        assert!(state.list().expect("in-memory list").is_empty());
-        assert!(!path.exists());
-
-        drop(operation);
-        let _ = fs::remove_dir_all(path.parent().expect("parent"));
-    }
-
-    #[test]
-    fn metadata_commit_failure_preserves_the_old_secret_generation() {
-        let path = temp_path("metadata-commit-failure");
+    fn a_failed_write_keeps_the_previous_credential_and_generation() {
+        let path = temp_path("store-commit-failure");
         let state = AppState::new(path.clone()).expect("state");
         let first = save(
             &state,
             draft("workspace", stable_credential("workspace", "old-secret")),
         );
-        let previous_generation = state
-            .account_by_id(&first.id)
-            .expect("saved account")
-            .credential_generation;
-        fs::remove_file(&path).expect("remove metadata file");
-        fs::create_dir(&path).expect("make metadata destination unwritable");
+        let previous = state.account_by_id(&first.id).expect("saved account");
+        fs::remove_file(&path).expect("remove store");
+        fs::create_dir(&path).expect("block the store destination");
 
         let operation = state.acquire_operation().expect("operation");
-        let result = state.upsert_under_operation(
-            &operation,
-            draft("workspace", stable_credential("workspace", "new-secret")),
-        );
-        assert!(result.is_err());
+        assert!(state
+            .upsert_under_operation(
+                &operation,
+                draft("workspace", stable_credential("workspace", "new-secret")),
+            )
+            .is_err());
         let still_saved = state.account_by_id(&first.id).expect("old account remains");
+        assert_eq!(still_saved.credential, previous.credential);
         assert_eq!(
-            still_saved.credential,
-            stable_credential("workspace", "old-secret")
-        );
-        let old_secret: AccountSecret = state
-            .vault
-            .get(&format!("account:{}:{previous_generation}", first.id))
-            .expect("old generation remains readable");
-        assert_eq!(
-            old_secret.credential,
-            stable_credential("workspace", "old-secret")
+            still_saved.credential_generation,
+            previous.credential_generation
         );
 
         drop(operation);
@@ -2755,7 +2509,7 @@ mod tests {
     }
 
     #[test]
-    fn switch_rollback_auth_round_trips_only_through_the_vault() {
+    fn switch_rollback_auth_survives_a_restart() {
         let path = temp_path("pending-switch-vault");
         let state = AppState::new(path.clone()).expect("state");
         let previous_auth = json!({"tokens": {"access_token": "rollback-secret"}});
@@ -2769,15 +2523,11 @@ mod tests {
                         fingerprint: "stable-fingerprint".into(),
                     },
                     previous_active_id: None,
-                    secret_ref: None,
-                    secret_generation: 0,
                     previous_auth: Some(previous_auth.clone()),
                     stage: crate::types::PendingSwitchStage::Prepared,
                 },
             )
             .expect("persist switch transaction");
-        let metadata = fs::read_to_string(&path).expect("metadata");
-        assert!(!metadata.contains("rollback-secret"));
         drop(operation);
         drop(state);
 
@@ -2797,7 +2547,7 @@ mod tests {
     }
 
     #[test]
-    fn reset_credit_recovery_material_round_trips_only_through_the_vault() {
+    fn reset_credit_recovery_material_survives_a_restart() {
         let path = temp_path("pending-reset-vault");
         let state = AppState::new(path.clone()).expect("state");
         let operation = state.acquire_operation().expect("operation");
@@ -2806,8 +2556,6 @@ mod tests {
                 &operation,
                 PendingResetCredit {
                     account_id: "account".into(),
-                    secret_ref: None,
-                    secret_generation: 0,
                     credit_id: "provider-private-credit".into(),
                     idempotency_key: "private-idempotency-key".into(),
                     created_at_unix_ms: 123,
@@ -2815,9 +2563,6 @@ mod tests {
                 },
             )
             .expect("persist reset transaction");
-        let metadata = fs::read_to_string(&path).expect("metadata");
-        assert!(!metadata.contains("provider-private-credit"));
-        assert!(!metadata.contains("private-idempotency-key"));
         drop(operation);
         drop(state);
 
@@ -2835,14 +2580,13 @@ mod tests {
     }
 
     #[test]
-    fn rereading_an_unchanged_credit_list_does_not_rewrite_the_vault() {
+    fn rereading_an_unchanged_credit_list_keeps_the_credential_generation() {
         let path = temp_path("unchanged-credit-list");
         let state = AppState::new(path.clone()).expect("state");
         let saved = save(
             &state,
             draft("workspace", stable_credential("workspace", "token")),
         );
-        let vault_path = path.parent().expect("parent").join("credentials.hold");
         let quota = |fetched_at_unix_ms| crate::types::QuotaSnapshot {
             fetched_at_unix_ms,
             account_id: None,
@@ -2866,7 +2610,6 @@ mod tests {
         state
             .update_quota_under_operation(&operation, &saved.id, quota(1), Some(credits("a", 1)))
             .expect("first credit read");
-        let vault = fs::read(&vault_path).expect("vault");
         let generation = state
             .account_by_id(&saved.id)
             .expect("account")
@@ -2875,7 +2618,6 @@ mod tests {
         state
             .update_quota_under_operation(&operation, &saved.id, quota(2), Some(credits("a", 2)))
             .expect("same list read later");
-        assert_eq!(fs::read(&vault_path).expect("vault"), vault);
         let account = state.account_by_id(&saved.id).expect("account");
         assert_eq!(account.credential_generation, generation);
         assert_eq!(account.quota.map(|quota| quota.fetched_at_unix_ms), Some(2));
@@ -2890,7 +2632,13 @@ mod tests {
         state
             .update_quota_under_operation(&operation, &saved.id, quota(3), Some(credits("b", 3)))
             .expect("changed list");
-        assert_ne!(fs::read(&vault_path).expect("vault"), vault);
+        assert!(
+            state
+                .account_by_id(&saved.id)
+                .expect("account")
+                .credential_generation
+                > generation
+        );
         drop(operation);
         drop(state);
 
@@ -2948,14 +2696,14 @@ mod tests {
     }
 
     #[test]
-    fn secret_generation_overflow_fails_before_replacing_the_current_secret() {
-        assert!(AppState::next_secret_generation(Some(u64::MAX), 1).is_err());
+    fn credential_generation_overflow_fails_before_replacing_the_credential() {
+        assert!(AppState::next_credential_generation(Some(u64::MAX), 1).is_err());
         assert_eq!(
-            AppState::next_secret_generation(Some(4), 1).expect("next"),
+            AppState::next_credential_generation(Some(4), 1).expect("next"),
             5
         );
         assert_eq!(
-            AppState::next_secret_generation(None, 0).expect("initial"),
+            AppState::next_credential_generation(None, 0).expect("initial"),
             1
         );
     }
@@ -3049,8 +2797,6 @@ mod tests {
                         workspace_id: Some("workspace-b".into()),
                     },
                     previous_active_id: Some(first.id.clone()),
-                    secret_ref: None,
-                    secret_generation: 0,
                     previous_auth: Some(json!({"token": "first"})),
                     stage: crate::types::PendingSwitchStage::Prepared,
                 },
