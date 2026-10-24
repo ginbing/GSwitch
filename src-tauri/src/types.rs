@@ -25,6 +25,9 @@ pub enum CodexCliUpdateFailure {
     Unsupported,
     CodexOpen,
     UpdateFailed,
+    LaunchFailed,
+    TimedOut,
+    CleanupFailed,
     VerificationFailed,
 }
 

@@ -47,7 +47,8 @@ production frontend build. Rust changes call its Linux mode for version,
 frontend build, Rust formatting, Clippy, and the full Rust test suite. Frontend
 only changes do not start the Rust or platform workers. Changes to application
 or build inputs also compile all Rust targets on Windows and macOS; those jobs
-do not repeat tests or create installer bundles. Node and Cargo dependencies
+run the focused CLI-update and owned-process lifecycle tests as well, without
+creating installer bundles. Node and Cargo dependencies
 use runner caches, and newer runs cancel older runs for the same pull request
 or branch.
 
@@ -120,6 +121,10 @@ as applicable:
   the vault without appearing in `accounts.json`, plus saved-account removal
   leaving the live Codex file untouched;
 - isolated App Server profile cleanup through unconditional scope cleanup;
+- CLI update success, failure, missing executable, timeout, operation-lock
+  release after cleanup, an exited launcher with inherited pipes, scoped
+  descendant termination, and an unrelated process remaining alive; these use
+  fixture subprocesses and never update the installed CLI;
 - OAuth App Server-before-profile teardown and explicit cleanup errors,
   including a Windows-exclusive `auth.json` handle fixture;
 - accepted OAuth completion surviving browser closure, protected retry after

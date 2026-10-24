@@ -80,6 +80,8 @@ Keep the backend flat and organized by concrete responsibility:
 - `wake.rs`: Wake policy, narrow Responses transport, sequential Wake All,
   cancellation, and per-account outcomes;
 - `runtime.rs`: external Codex process detection;
+- `owned_process.rs`: scoped helper process groups/jobs, bounded termination,
+  and the fail-closed state after unconfirmed cleanup;
 - `storage.rs`: versioned JSON persistence and atomic/private writes;
 - `vault.rs`: Rust-only Stronghold snapshot and native root-key boundary for
   credential and recovery secrets;

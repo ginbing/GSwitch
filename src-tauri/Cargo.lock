@@ -1958,6 +1958,7 @@ dependencies = [
  "getrandom 0.4.3",
  "iota_stronghold",
  "keyring",
+ "libc",
  "reqwest",
  "rustls",
  "serde",
@@ -1973,6 +1974,7 @@ dependencies = [
  "tauri-plugin-updater",
  "toml_edit 0.25.15+spec-1.1.0",
  "uuid",
+ "windows-sys 0.61.2",
  "zeroize",
 ]
 

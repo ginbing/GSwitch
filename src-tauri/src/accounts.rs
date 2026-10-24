@@ -794,6 +794,7 @@ impl AppState {
             .operation_lock
             .lock()
             .map_err(|_| "Unable to lock GSwitch operations".to_string())?;
+        crate::owned_process::ensure_quiet()?;
         let parent = self
             .store_path
             .parent()
@@ -842,6 +843,7 @@ impl AppState {
             .operation_lock
             .try_lock()
             .map_err(|_| OperationAcquireFailure::Busy)?;
+        crate::owned_process::ensure_quiet().map_err(OperationAcquireFailure::Failed)?;
         let parent = self.store_path.parent().ok_or_else(|| {
             OperationAcquireFailure::Failed("Invalid GSwitch storage path".to_string())
         })?;

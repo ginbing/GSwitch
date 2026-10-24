@@ -37,6 +37,12 @@ toml_edit = "0.25"
 uuid = { version = "1", features = ["v4"] }
 zeroize = "1.9"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp"] }
+
 [patch.crates-io]
 # Upstream 1.24.0 source and signed libsodium archives; only the ZIP build
 # dependency is changed to the security-fixed major. See docs/architecture.md.

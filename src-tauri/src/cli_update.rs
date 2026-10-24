@@ -1,17 +1,21 @@
 use std::{
     io::Read,
     process::{Command, Stdio},
+    sync::mpsc,
     thread,
     time::{Duration, Instant},
 };
 
 use crate::{
     accounts::AppState,
-    app_server, runtime,
+    app_server,
+    owned_process::{OwnedProcess, CLEANUP_TIMEOUT},
+    runtime,
     types::{CodexCliInfo, CodexCliUpdateFailure, CodexCliUpdateStatus},
 };
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+const UPDATE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const MAX_PROBE_OUTPUT: usize = 32 * 1024;
 const LATEST_RELEASE_URL: &str = "https://api.github.com/repos/openai/codex/releases/latest";
 
@@ -116,6 +120,7 @@ fn newer_than(latest: &str, installed: &str) -> bool {
 }
 
 pub fn update(state: &AppState) -> Result<CodexCliInfo, CodexCliUpdateFailure> {
+    crate::owned_process::ensure_quiet().map_err(|_| CodexCliUpdateFailure::CleanupFailed)?;
     let _operation = state
         .acquire_cli_update_operation()
         .map_err(|_| CodexCliUpdateFailure::UpdateFailed)?;
@@ -138,20 +143,30 @@ pub fn update(state: &AppState) -> Result<CodexCliInfo, CodexCliUpdateFailure> {
 }
 
 fn run_official_update(mut command: Command) -> Result<(), CodexCliUpdateFailure> {
+    run_update_with_timeout(&mut command, UPDATE_TIMEOUT)
+}
+
+fn run_update_with_timeout(
+    command: &mut Command,
+    timeout: Duration,
+) -> Result<(), CodexCliUpdateFailure> {
     command
         .arg("update")
         .current_dir(std::env::temp_dir())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    hide_console(&mut command);
-    let status = command
-        .status()
-        .map_err(|_| CodexCliUpdateFailure::UpdateFailed)?;
-    if !status.success() {
-        return Err(CodexCliUpdateFailure::UpdateFailed);
+    let mut process =
+        OwnedProcess::spawn(command).map_err(|_| CodexCliUpdateFailure::LaunchFailed)?;
+    let result = process.wait_until(Instant::now() + timeout);
+    if !process.cleanup(Instant::now() + CLEANUP_TIMEOUT) {
+        return Err(CodexCliUpdateFailure::CleanupFailed);
     }
-    Ok(())
+    match result {
+        Ok(Some(status)) if status.success() => Ok(()),
+        Ok(None) => Err(CodexCliUpdateFailure::TimedOut),
+        _ => Err(CodexCliUpdateFailure::UpdateFailed),
+    }
 }
 
 fn probe(mut command: Command, argument: &str) -> Option<String> {
@@ -160,54 +175,39 @@ fn probe(mut command: Command, argument: &str) -> Option<String> {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
-    hide_console(&mut command);
-    let mut child = command.spawn().ok()?;
-    let Some(mut stdout) = child.stdout.take() else {
-        let _ = child.kill();
-        let _ = child.wait();
-        return None;
-    };
+    let deadline = Instant::now() + PROBE_TIMEOUT;
+    let mut process = OwnedProcess::spawn(&mut command).ok()?;
+    let mut stdout = process.child.stdout.take()?;
+    let (sender, receiver) = mpsc::sync_channel(1);
     let reader = thread::Builder::new()
         .name("gswitch-cli-probe".to_string())
         .spawn(move || {
-            let mut captured = Vec::new();
-            let mut chunk = [0_u8; 1024];
-            loop {
-                let count = stdout.read(&mut chunk).ok()?;
-                if count == 0 {
-                    break;
+            let captured = (|| {
+                let mut captured = Vec::new();
+                let mut chunk = [0_u8; 1024];
+                loop {
+                    let count = stdout.read(&mut chunk).ok()?;
+                    if count == 0 {
+                        break;
+                    }
+                    let keep = count.min(MAX_PROBE_OUTPUT.saturating_sub(captured.len()));
+                    captured.extend_from_slice(&chunk[..keep]);
                 }
-                let keep = count.min(MAX_PROBE_OUTPUT.saturating_sub(captured.len()));
-                captured.extend_from_slice(&chunk[..keep]);
-            }
-            String::from_utf8(captured).ok()
+                String::from_utf8(captured).ok()
+            })();
+            let _ = sender.send(captured);
         })
         .ok();
-    let Some(reader) = reader else {
-        let _ = child.kill();
-        let _ = child.wait();
+    // Reserve time inside the probe's five seconds for descendants and EOF.
+    let status = process.wait_until(deadline - Duration::from_secs(1));
+    let cleaned = process.cleanup(deadline);
+    if reader.is_none() || !cleaned || !status.ok().flatten()?.success() {
         return None;
-    };
-
-    let deadline = Instant::now() + PROBE_TIMEOUT;
-    let success = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status.success(),
-            Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(30)),
-            Ok(None) | Err(_) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                break false;
-            }
-        }
-    };
-    if success {
-        reader.join().ok().flatten()
-    } else {
-        // A launcher may leave a grandchild holding stdout open. Do not make
-        // the five-second timeout wait indefinitely for that pipe to close.
-        None
     }
+    receiver
+        .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+        .ok()
+        .flatten()
 }
 
 fn parse_version(output: &str) -> Option<String> {
@@ -236,19 +236,47 @@ fn help_lists_update(output: &str) -> bool {
         .any(|line| line.split_whitespace().next() == Some("update"))
 }
 
-#[cfg(windows)]
-fn hide_console(command: &mut Command) {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    command.creation_flags(CREATE_NO_WINDOW);
-}
-
-#[cfg(not(windows))]
-fn hide_console(_command: &mut Command) {}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn update_timeout_releases_the_guard_after_owned_cleanup() {
+        let root =
+            std::env::temp_dir().join(format!("gswitch-update-test-{}", uuid::Uuid::new_v4()));
+        let state = AppState::new(root.join("accounts.json")).expect("state");
+        let started = Instant::now();
+        let result = {
+            let _guard = state.acquire_cli_update_operation().expect("guard");
+            run_update_with_timeout(
+                &mut crate::owned_process::fixture_command("launcher", &root),
+                Duration::from_millis(300),
+            )
+        };
+        assert_eq!(result, Err(CodexCliUpdateFailure::TimedOut));
+        assert!(started.elapsed() < Duration::from_secs(6));
+        drop(state.acquire_operation().expect("next eligible operation"));
+        for (kind, expected) in [
+            ("success", Ok(())),
+            ("failure", Err(CodexCliUpdateFailure::UpdateFailed)),
+        ] {
+            assert_eq!(
+                run_update_with_timeout(
+                    &mut crate::owned_process::fixture_command(kind, &root),
+                    Duration::from_secs(3)
+                ),
+                expected
+            );
+        }
+        assert_eq!(
+            run_update_with_timeout(
+                &mut Command::new(root.join("does-not-exist")),
+                Duration::from_millis(10)
+            ),
+            Err(CodexCliUpdateFailure::LaunchFailed)
+        );
+        std::fs::remove_dir_all(root).expect("cleanup fixture");
+    }
 
     #[test]
     fn accepts_only_codex_cli_versions_and_an_explicit_update_command() {

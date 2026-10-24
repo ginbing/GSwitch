@@ -7,6 +7,7 @@ mod commands;
 mod identity;
 mod intake;
 mod migration;
+mod owned_process;
 mod quota;
 mod runtime;
 mod storage;
