@@ -1248,6 +1248,33 @@ describe("GSwitch account workspace", () => {
     await waitFor(() => expect(mocks.refreshAccountQuota).toHaveBeenCalledWith("account-1", true));
   });
 
+  it("spaces automatic retries from the actual queued attempt instead of its enqueue time", async () => {
+    vi.useFakeTimers();
+    try {
+      const started = Date.now();
+      const second = { ...chatAccount, id: "account-2", email: "queued@example.com" };
+      mocks.listAccounts.mockResolvedValue([chatAccount, second]);
+      mocks.accountQuota.mockImplementation(async (id: string) => ({ account_id: id, status: "unknown" }));
+      let releaseFirst!: (quota: QuotaView) => void;
+      mocks.refreshAccountQuota.mockImplementation((id: string) => id === chatAccount.id
+        ? new Promise<QuotaView>((resolve) => { releaseFirst = resolve; })
+        : Promise.reject({ code: "network" }));
+      await act(async () => { render(<App />); });
+      expect(mocks.refreshAccountQuota.mock.calls).toEqual([[chatAccount.id, true]]);
+      vi.setSystemTime(started + 31 * 60_000);
+      await act(async () => { releaseFirst({ ...staleQuota, status: "fresh", snapshot: { ...staleQuota.snapshot!, fetched_at_unix_ms: Date.now() } }); });
+      expect(mocks.refreshAccountQuota.mock.calls).toEqual([[chatAccount.id, true], [second.id, true]]);
+      await act(async () => { fireEvent.focus(window); fireEvent.focus(window); });
+      expect(mocks.refreshAccountQuota).toHaveBeenCalledTimes(2);
+      // User intent bypasses automatic spacing and remains usable.
+      await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Refresh queued@example.com" })); });
+      expect(mocks.refreshAccountQuota).toHaveBeenCalledTimes(3);
+    } finally {
+      cleanup();
+      vi.useRealTimers();
+    }
+  });
+
   it("starts a user's refresh without waiting behind automatic refreshes", async () => {
     const secondAccount = { ...chatAccount, id: "account-2", email: "other@example.com" };
     mocks.listAccounts.mockResolvedValue([chatAccount, secondAccount]);

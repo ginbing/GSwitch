@@ -18,7 +18,7 @@ export interface RefreshDueOptions {
   // The window just regained focus.
   focused: boolean;
   failure?: QuotaRefreshFailureCode;
-  // When GSwitch last asked for this account's quota, successful or not.
+  // The last actual attempt, advanced on completion even when it fails.
   lastAttemptAt?: number;
   now: number;
 }

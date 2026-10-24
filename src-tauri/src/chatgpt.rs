@@ -26,6 +26,7 @@ pub(crate) enum RequestFailureKind {
     Http,
     Transport,
     InvalidJson,
+    InvalidResponse,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,7 +109,14 @@ impl ChatGptClient {
     }
 
     pub(crate) fn usage(&self, credential: &Value) -> Result<Value, RequestFailure> {
-        self.get_json("/wham/usage", &quota_credential(credential)?)
+        let usage = self.get_json("/wham/usage", &quota_credential(credential)?)?;
+        if !valid_usage_response(&usage) {
+            return Err(RequestFailure {
+                kind: RequestFailureKind::InvalidResponse,
+                status: Some(200),
+            });
+        }
+        Ok(usage)
     }
 
     pub(crate) fn reset_credit_details(&self, credential: &Value) -> Result<Value, RequestFailure> {
@@ -209,11 +217,7 @@ impl ChatGptClient {
 
     #[cfg(test)]
     fn get_usage(&self, credential: &Value) -> Result<Value, RequestFailure> {
-        let snapshot = credential_snapshot(credential).map_err(|_| RequestFailure {
-            kind: RequestFailureKind::Authentication,
-            status: Some(401),
-        })?;
-        self.get_json("/wham/usage", &snapshot)
+        self.usage(credential)
     }
 
     fn get_json(
@@ -242,6 +246,50 @@ impl ChatGptClient {
             status: Some(status.as_u16()),
         })
     }
+}
+
+/// Validate only the usage fields consumed here. The official 0.164.0
+/// RateLimitStatusPayload requires plan_type, but permits absent/null quota
+/// containers and windows. Unknown plans and unrelated future fields survive.
+fn valid_usage_response(value: &Value) -> bool {
+    fn optional(value: Option<&Value>, valid: impl FnOnce(&Value) -> bool) -> bool {
+        value.is_none_or(|value| value.is_null() || valid(value))
+    }
+    fn rate_limit(value: &Value) -> bool {
+        value.is_object()
+            && value.get("allowed").is_some_and(Value::is_boolean)
+            && value.get("limit_reached").is_some_and(Value::is_boolean)
+            && ["primary_window", "secondary_window"].iter().all(|field| {
+                optional(value.get(*field), |window| {
+                    window.is_object()
+                        && window.get("used_percent").is_some_and(Value::is_number)
+                        && ["limit_window_seconds", "reset_after_seconds", "reset_at"]
+                            .iter()
+                            .all(|field| window.get(*field).is_some_and(Value::is_i64))
+                })
+            })
+    }
+    value.get("plan_type").is_some_and(Value::is_string)
+        && optional(value.get("rate_limit"), rate_limit)
+        && optional(value.get("additional_rate_limits"), |entries| {
+            entries.as_array().is_some_and(|entries| {
+                entries.iter().all(|entry| {
+                    entry.get("limit_name").is_some_and(Value::is_string)
+                        && entry.get("metered_feature").is_some_and(Value::is_string)
+                        && optional(entry.get("rate_limit"), rate_limit)
+                })
+            })
+        })
+        && optional(value.get("rate_limit_reset_credits"), |credits| {
+            credits
+                .get("available_count")
+                .and_then(Value::as_i64)
+                .is_some_and(|count| count >= 0)
+        })
+        && optional(value.get("ordinary_usage_allowed"), Value::is_boolean)
+        && ["account_id", "user_id"]
+            .iter()
+            .all(|field| optional(value.get(*field), Value::is_string))
 }
 
 fn parse_wake_stream(reader: impl BufRead) -> Result<(), WakeFailureKind> {
@@ -609,7 +657,7 @@ fn string_at(value: &Value, names: &[&str]) -> Option<String> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
     use std::{
         io::{Read, Write},
@@ -632,7 +680,7 @@ mod tests {
         })
     }
 
-    fn fixture(status: u16, body: &str) -> (String, std::thread::JoinHandle<String>) {
+    pub(crate) fn fixture(status: u16, body: &str) -> (String, std::thread::JoinHandle<String>) {
         let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
         let address = listener.local_addr().expect("address");
         let body = body.to_string();
@@ -663,6 +711,47 @@ mod tests {
         assert!(request.starts_with("GET /wham/usage HTTP/1.1"));
         assert!(request.contains("authorization: Bearer live-access-token"));
         assert!(request.contains("chatgpt-account-id: workspace"));
+    }
+
+    #[test]
+    fn usage_checks_consumed_shapes_without_rejecting_optional_empty_windows() {
+        for usage in [
+            json!({"plan_type":"future-plan"}),
+            json!({"plan_type":"plus","rate_limit":null,"additional_rate_limits":[]}),
+            json!({"plan_type":"plus","rate_limit":{"allowed":true,"limit_reached":false,"primary_window":null}}),
+            json!({"plan_type":"plus","additional_rate_limits":[{"limit_name":"Extra","metered_feature":"future","rate_limit":null}],"rate_limit_reset_credits":{"available_count":0},"future":{"ignore":true}}),
+        ] {
+            let (url, server) = fixture(200, &usage.to_string());
+            assert_eq!(
+                ChatGptClient::with_base_url(&url)
+                    .unwrap()
+                    .usage(&credential())
+                    .unwrap(),
+                usage
+            );
+            server.join().unwrap();
+        }
+        for usage in [
+            json!({}),
+            json!([]),
+            json!({"error":"unrecognized"}),
+            json!({"plan_type":3}),
+            json!({"plan_type":"plus","rate_limit":"invalid"}),
+            json!({"plan_type":"plus","rate_limit":{}}),
+            json!({"plan_type":"plus","rate_limit":{"allowed":true,"limit_reached":false,"primary_window":[]}}),
+            json!({"plan_type":"plus","additional_rate_limits":{}}),
+            json!({"plan_type":"plus","additional_rate_limits":[{}]}),
+            json!({"plan_type":"plus","rate_limit_reset_credits":{"available_count":"two"}}),
+        ] {
+            let (url, server) = fixture(200, &usage.to_string());
+            let failure = ChatGptClient::with_base_url(&url)
+                .unwrap()
+                .usage(&credential())
+                .expect_err("shape");
+            assert_eq!(failure.kind, RequestFailureKind::InvalidResponse);
+            assert!(!failure.can_fallback_to_managed_refresh());
+            server.join().unwrap();
+        }
     }
 
     #[test]
