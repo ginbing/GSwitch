@@ -52,11 +52,26 @@ Run focused tests while editing, then the full relevant path before handoff.
 ## CI coverage
 
 The CI workflow always starts and detects changed paths inside the run, so a
-path filter cannot leave a required workflow pending. Frontend changes call the
+path filter cannot leave a required workflow pending. `scripts/ci-scope.mjs`
+selects the same jobs for a pull request and for the main push that merges it,
+from `git diff --no-renames`, so a moved file counts on both sides:
+
+- documentation and repository metadata (`*.md` outside `src/` and
+  `src-tauri/`, `docs/`, `LICENSE`, README screenshots, the README demo stubs,
+  `.gitignore`, `.gitattributes`) select no source job;
+- frontend sources (`src/`, `index.html`, `tsconfig*.json`, `vitest.config.*`,
+  `release-notes.json`) select the Frontend job only;
+- everything else, including Rust, package and lock files, `.node-version`,
+  Vite configuration, workflows, scripts, the root `install.ps1`, other assets
+  and any unrecognized path, selects every source job.
+
+A new branch or a failed diff selects every job; the weekly schedule selects
+none and runs only RustSec. Frontend changes call the
 repository-owned `ci:source` command for the version check, UI tests, and
 production frontend build. Rust changes call its Linux mode for version,
-frontend build, Rust formatting, Clippy, and the full Rust test suite. Frontend
-only changes do not start the Rust or platform workers. Changes to application
+the CI scope tests, frontend build, Rust formatting, Clippy, and the full Rust
+test suite. Frontend only changes do not start the Rust or platform workers.
+Changes to application
 or build inputs also run Rust proof on Windows and macOS; those jobs first
 build the debug application through the official Tauri CLI with `--no-bundle`,
 as does Linux source proof. This checks the JavaScript/Rust package pairing and

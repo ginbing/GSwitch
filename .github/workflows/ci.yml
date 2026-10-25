@@ -32,49 +32,12 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           EVENT_NAME: ${{ github.event_name }}
-        shell: bash
-        run: |
-          if [[ "$EVENT_NAME" == "schedule" ]]; then
-            echo "frontend=false" >> "$GITHUB_OUTPUT"
-            echo "rust=false" >> "$GITHUB_OUTPUT"
-            echo "platform=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          if [[ "$BASE_SHA" =~ ^0+$ ]]; then
-            echo "frontend=true" >> "$GITHUB_OUTPUT"
-            echo "rust=true" >> "$GITHUB_OUTPUT"
-            echo "platform=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          changed=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
-          frontend=false
-          rust=false
-          platform=false
-          while IFS= read -r path; do
-            case "$path" in
-              src/*|index.html|package.json|pnpm-lock.yaml|pnpm-workspace.yaml|.node-version|tsconfig*.json|vite.config.*|postcss.config.*)
-                frontend=true
-                ;;
-              src-tauri/*|rust-toolchain.toml)
-                rust=true
-                ;;
-            esac
-            case "$path" in
-              .github/workflows/*|scripts/*|install.ps1|src-tauri/*|rust-toolchain.toml|package.json|pnpm-lock.yaml|pnpm-workspace.yaml|.node-version|vite.config.*|postcss.config.*)
-                frontend=true
-                rust=true
-                platform=true
-                ;;
-            esac
-          done <<< "$changed"
-          echo "frontend=$frontend" >> "$GITHUB_OUTPUT"
-          echo "rust=$rust" >> "$GITHUB_OUTPUT"
-          echo "platform=$platform" >> "$GITHUB_OUTPUT"
+        run: node scripts/ci-scope.mjs
 
   frontend:
     name: Frontend
     needs: changes
-    if: github.event_name == 'push' || (github.event_name == 'pull_request' && needs.changes.outputs.frontend == 'true')
+    if: needs.changes.outputs.frontend == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -95,7 +58,7 @@ jobs:
   platform-build:
     name: ${{ matrix.check_name }}
     needs: changes
-    if: github.event_name == 'push' || (github.event_name == 'pull_request' && needs.changes.outputs.platform == 'true')
+    if: needs.changes.outputs.platform == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -141,7 +104,7 @@ jobs:
   linux:
     name: Linux build
     needs: changes
-    if: github.event_name == 'push' || (github.event_name == 'pull_request' && needs.changes.outputs.rust == 'true')
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
