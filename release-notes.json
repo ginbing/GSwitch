@@ -1,13 +1,13 @@
 {
-  "version": "1.0.32",
+  "version": "1.0.33",
   "en": [
-    "The update prompt now lists what changed in the new version, in English or Simplified Chinese to match GSwitch's language.",
-    "GSwitch notices new versions sooner: when you return to it more than an hour after its last check, it checks again, and it retries five minutes after a failed check.",
-    "A coming update stops reading the encrypted storage used by GSwitch 1.0.30 and earlier. If you are updating from one of those versions, open this version once and check that your saved accounts appear, so they are moved first."
+    "GSwitch no longer includes the encrypted storage library used by 1.0.30 and earlier, along with the two third-party crates it needed patched.",
+    "If your saved accounts are still in that old storage, GSwitch changes nothing and shows how to move them: install GSwitch 1.0.32, open it once, then update again. Clear and rebuild stays available.",
+    "Files left over from a finished move to the current account file are cleaned up."
   ],
   "zh-CN": [
-    "更新提示会列出新版本的改动，按 GSwitch 的界面语言显示中文或英文。",
-    "更快发现新版本：回到 GSwitch 时，如果距上次检查已超过一小时，会重新检查；检查失败 5 分钟后重试。",
-    "后续更新将不再读取 GSwitch 1.0.30 及更早版本使用的加密存储。如果你是从这些版本升级的，请先打开一次本版本，确认已保存的账户都在，这样它们就已迁移出来。"
+    "GSwitch 不再包含 1.0.30 及更早版本使用的加密存储库，以及它所需的两个打过补丁的第三方组件。",
+    "如果已保存的账户仍在旧存储里，GSwitch 不会做任何改动，并说明如何迁移：安装 GSwitch 1.0.32，打开一次，然后再更新。“清空并重建”仍然可用。",
+    "迁移到当前账户文件后残留的旧文件会被清理。"
   ]
 }
