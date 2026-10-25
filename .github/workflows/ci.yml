@@ -9,7 +9,8 @@ on:
     - cron: '19 4 * * 1'
 
 concurrency:
-  group: gswitch-ci-${{ github.event.pull_request.number || github.ref }}
+  # The weekly schedule must not cancel the main push run that proves a commit.
+  group: gswitch-ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -19,6 +20,9 @@ jobs:
   changes:
     name: CI scope
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
     outputs:
       frontend: ${{ steps.scope.outputs.frontend }}
       rust: ${{ steps.scope.outputs.rust }}
@@ -32,6 +36,7 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           EVENT_NAME: ${{ github.event_name }}
+          GH_TOKEN: ${{ github.token }}
         run: node scripts/ci-scope.mjs
 
   frontend:
@@ -207,7 +212,10 @@ jobs:
           fi
           check_scoped() {
             name="$1"; scope="$2"; result="$3"
-            if [[ "$scope" == "true" && "$result" != "success" ]]; then
+            if [[ "$scope" != "true" && "$scope" != "false" ]]; then
+              echo "$name has no CI scope result: '$scope'"
+              fail=1
+            elif [[ "$scope" == "true" && "$result" != "success" ]]; then
               echo "$name was required ($scope) but finished as $result"
               fail=1
             elif [[ "$scope" != "true" && "$result" != "success" && "$result" != "skipped" ]]; then

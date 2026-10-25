@@ -53,20 +53,24 @@ Run focused tests while editing, then the full relevant path before handoff.
 
 The CI workflow always starts and detects changed paths inside the run, so a
 path filter cannot leave a required workflow pending. `scripts/ci-scope.mjs`
-selects the same jobs for a pull request and for the main push that merges it,
-from `git diff --no-renames`, so a moved file counts on both sides:
+selects jobs from `git diff --no-renames`, so a moved file counts on both
+sides. A pull request diffs its base and head. A main push diffs the previous
+main commit only when that commit's own push run passed, and otherwise selects
+every job, so a cancelled or failed main run is covered by the next push and a
+passing main `CI gate` covers the whole tree:
 
 - documentation and repository metadata (`*.md` outside `src/` and
   `src-tauri/`, `docs/`, `LICENSE`, README screenshots, the README demo stubs,
-  `.gitignore`, `.gitattributes`) select no source job;
+  `.gitignore`) select no source job;
 - frontend sources (`src/`, `index.html`, `tsconfig*.json`, `vitest.config.*`,
   `release-notes.json`) select the Frontend job only;
 - everything else, including Rust, package and lock files, `.node-version`,
-  Vite configuration, workflows, scripts, the root `install.ps1`, other assets
-  and any unrecognized path, selects every source job.
+  Vite configuration, workflows, scripts, the root `install.ps1`,
+  `.gitattributes`, other assets and any unrecognized path, selects every
+  source job.
 
-A new branch or a failed diff selects every job; the weekly schedule selects
-none and runs only RustSec. Frontend changes call the
+A new branch, a failed diff, or a failed lookup of the previous main run
+selects every job; the weekly schedule selects none and runs only RustSec. Frontend changes call the
 repository-owned `ci:source` command for the version check, UI tests, and
 production frontend build. Rust changes call its Linux mode for version,
 the CI scope tests, frontend build, Rust formatting, Clippy, and the full Rust
@@ -78,12 +82,14 @@ as does Linux source proof. This checks the JavaScript/Rust package pairing and
 native link boundary without generating installers. The platform jobs then run
 Clippy with warnings denied and the full Rust test suite, so platform-specific
 code and tests need no hand-maintained selection. Node and Cargo dependencies
-use runner caches, and newer runs cancel older runs for the same pull request
-or branch.
+use runner caches, and newer runs cancel older runs of the same event for the
+same pull request or branch, so the weekly schedule never cancels a main push
+run.
 
 `CI gate` reports whether the scoped source jobs and security checks succeeded.
 It runs even when a scoped source job is skipped and fails if scope detection
-fails or a required job for the changed paths did not pass. During a required
+fails or reports no scope, or a required job for the changed paths did not
+pass. During a required
 check migration, keep the old job names available until the new gate passes on
 the pull request, then update the GitHub ruleset and read it back before
 merging.
@@ -94,7 +100,8 @@ not prove interactive installation, platform signing, notarization, or public
 release readiness. The release workflow does not repeat these source checks:
 it requires `CI gate` to pass on the tagged `main` commit before attestation.
 
-The CI workflow has read-only repository permissions. A passing CI run proves
+The CI workflow has read-only repository permissions; the scope job also reads
+Actions run results. A passing CI run proves
 that the checked-in revision passed those commands on those runners; it does
 not publish or release anything.
 
