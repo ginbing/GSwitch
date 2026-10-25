@@ -311,9 +311,11 @@ as applicable:
   formatting, and the main account flow in Simplified Chinese.
 - the update prompt: Later for the current run, the Debian release-page
   fallback, restart after a relaunch update, release notes in the UI language
-  with English fallback and no markup interpretation, no list without notes, a
-  foreground check only an hour after the last one, and a retry five minutes
-  after a failed check;
+  with English fallback and no markup interpretation, at most twelve notes of
+  300 characters, no list without notes, a foreground check only an hour after
+  the last one, a retry five minutes after a failed check, check and download
+  timeouts, and a later check never replacing an update being installed or
+  resetting a failed install of the same version;
 - release notes in `release-notes.json` required for the current version, and
   `latest.json` and the draft body written from them, with a mismatch failing
   verification.

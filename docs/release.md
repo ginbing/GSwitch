@@ -163,7 +163,8 @@ twelve short single-line notes each in English (`en`) and Simplified Chinese
 (`zh-CN`), for the version in `src-tauri/tauri.conf.json`. `latest.json` carries
 the English notes in `notes` and both languages in `localized_notes`, and the
 workflow writes the draft body from the same notes plus download links and a
-changelog link from the previous published release. Verification fails when
+changelog link from the previous published release, omitted when GitHub does
+not return a release tag. Verification fails when
 `latest.json` notes differ from that file, so the notes are never edited after
 the build. For an authorized release, the agent reviews the exact assets and
 notes before publishing the draft. Missing Apple Developer credentials cannot
@@ -184,8 +185,9 @@ generated, rotated, copied into source, or printed by repository tooling.
 GSwitch uses the official Tauri updater. It checks the `latest.json` release
 manifest after startup, six hours after each successful check, when the window
 returns to the foreground at least an hour after the last check, and five
-minutes after a failed check. Checks stay quiet; **Later** hides a version for
-the rest of that run. The prompt shows that release's notes in the UI language,
+minutes after a failed check. A check that takes over 30 seconds fails, and a
+download has an hour. Checks stay quiet; **Later** hides a version for the rest
+of that run, and a check never replaces an update that is being installed. The prompt shows that release's notes in the UI language,
 falling back to English, as plain text: `latest.json` is not signed, so the
 notes are never interpreted as markup or links. The native updater verifies the
 downloaded update artifact's signature before installation.

@@ -2598,6 +2598,69 @@ describe("GSwitch account workspace", () => {
     expect(screen.queryByRole("list", { name: "What's new" })).not.toBeInTheDocument();
   });
 
+  it("caps release notes at twelve lines of 300 characters", async () => {
+    Object.defineProperty(window, "__TAURI_INTERNALS__", { configurable: true, value: {} });
+    const lines = Array.from({ length: 13 }, (_, index) => `- Change ${index + 1}`);
+    lines[0] = `- ${"x".repeat(301)}`;
+    updaterMocks.check.mockResolvedValue({ version: "1.0.2", body: lines.join("\n"), rawJson: {} });
+    render(<App />);
+
+    const items = within(await screen.findByRole("list", { name: "What's new" })).getAllByRole("listitem");
+    expect(items).toHaveLength(12);
+    expect(items[0].textContent).toHaveLength(300);
+    expect(items[11]).toHaveTextContent("Change 12");
+  });
+
+  it("keeps installing the offered release when a check finds a newer one meanwhile", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      Object.defineProperty(window, "__TAURI_INTERNALS__", { configurable: true, value: {} });
+      const started = Date.now();
+      const downloadAndInstall = vi.fn(() => new Promise<void>(() => undefined));
+      updaterMocks.check.mockResolvedValue({ version: "1.0.2", downloadAndInstall });
+      await act(async () => { render(<App />); });
+      const install = await screen.findByRole("button", { name: "Update GSwitch" });
+
+      let deliver: (value: string) => void = () => undefined;
+      mocks.updateDelivery.mockReturnValueOnce(new Promise((resolve) => { deliver = resolve; }));
+      updaterMocks.check.mockResolvedValue({ version: "1.0.3", downloadAndInstall: vi.fn() });
+      vi.setSystemTime(started + 61 * 60_000);
+      await act(async () => { fireEvent.focus(window); });
+      await waitFor(() => expect(mocks.updateDelivery).toHaveBeenCalledTimes(2));
+
+      await act(async () => { fireEvent.click(install); });
+      await act(async () => { deliver("installer_exits"); });
+      expect(downloadAndInstall).toHaveBeenCalledOnce();
+      expect(screen.getByText("Downloading GSwitch 1.0.2")).toBeInTheDocument();
+      expect(screen.queryByText("GSwitch 1.0.3 is available")).not.toBeInTheDocument();
+    } finally {
+      cleanup();
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a failed install's retry when a later check finds the same release", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      Object.defineProperty(window, "__TAURI_INTERNALS__", { configurable: true, value: {} });
+      const started = Date.now();
+      const downloadAndInstall = vi.fn().mockRejectedValue(new Error("offline"));
+      updaterMocks.check.mockResolvedValue({ version: "1.0.2", downloadAndInstall });
+      await act(async () => { render(<App />); });
+      await act(async () => { fireEvent.click(await screen.findByRole("button", { name: "Update GSwitch" })); });
+      expect(await screen.findByText("GSwitch update did not finish")).toBeInTheDocument();
+
+      vi.setSystemTime(started + 61 * 60_000);
+      await act(async () => { fireEvent.focus(window); });
+      await waitFor(() => expect(mocks.updateDelivery).toHaveBeenCalledTimes(2));
+      await act(async () => { await Promise.resolve(); });
+      expect(screen.getByText("GSwitch update did not finish")).toBeInTheDocument();
+    } finally {
+      cleanup();
+      vi.useRealTimers();
+    }
+  });
+
   it("finds a new release when GSwitch returns to the foreground an hour later", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     try {
@@ -2634,6 +2697,7 @@ describe("GSwitch account workspace", () => {
       updaterMocks.check.mockRejectedValueOnce(new Error("offline")).mockResolvedValue({ version: "1.0.2" });
       await act(async () => { render(<App />); });
       await waitFor(() => expect(updaterMocks.check).toHaveBeenCalledTimes(1));
+      expect(updaterMocks.check).toHaveBeenCalledWith({ timeout: 30_000 });
       expect(screen.queryByText("GSwitch 1.0.2 is available")).not.toBeInTheDocument();
 
       await act(async () => { await vi.advanceTimersByTimeAsync(5 * 60_000); });
@@ -2666,6 +2730,7 @@ describe("GSwitch account workspace", () => {
 
     await userEvent.click(await screen.findByRole("button", { name: "Update GSwitch" }));
     await waitFor(() => expect(downloadAndInstall).toHaveBeenCalledOnce());
+    expect(downloadAndInstall).toHaveBeenCalledWith(expect.any(Function), { timeout: 60 * 60_000 });
     expect(await screen.findByText("Restart GSwitch to finish updating")).toBeInTheDocument();
     await userEvent.click(await screen.findByRole("button", { name: "Restart now" }));
     expect(updaterMocks.relaunch).toHaveBeenCalledOnce();

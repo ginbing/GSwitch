@@ -77,6 +77,10 @@ interface PendingUpdate {
 const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const UPDATE_FOCUS_CHECK_MS = 60 * 60 * 1000;
 const UPDATE_RETRY_MS = 5 * 60 * 1000;
+// A stalled check counts as failed so the schedule keeps running. The plugin
+// carries the check timeout into the download, which gets its own longer one.
+const UPDATE_CHECK_TIMEOUT_MS = 30 * 1000;
+const UPDATE_DOWNLOAD_TIMEOUT_MS = 60 * 60 * 1000;
 const MAX_UPDATE_NOTES = 12;
 const MAX_UPDATE_NOTE_LENGTH = 300;
 
@@ -94,10 +98,6 @@ function updateNotes(update: AvailableUpdate, language: AppLanguage) {
     .filter(Boolean)
     .slice(0, MAX_UPDATE_NOTES)
     .map((line) => line.slice(0, MAX_UPDATE_NOTE_LENGTH));
-}
-
-function closeUpdate(update: AvailableUpdate) {
-  void Promise.resolve().then(() => update.close()).catch(() => undefined);
 }
 
 const switchFailureCodes = new Set<SwitchFailureCode>([
@@ -405,25 +405,19 @@ export default function App() {
     lastUpdateCheck.current = Date.now();
     let nextCheck = UPDATE_RETRY_MS;
     try {
-      const update = await updater.check();
-      if (update) {
-        const current = pendingUpdateRef.current;
-        const installing = ["downloading", "installing", "ready"].includes(updatePhaseRef.current);
-        if (dismissedUpdateVersions.current.has(update.version)
-          || current?.update.version === update.version
-          || (current && installing)) {
-          closeUpdate(update);
-        } else {
-          const delivery = await api.updateDelivery().catch((error: unknown) => {
-            closeUpdate(update);
-            throw error;
-          });
-          if (current) closeUpdate(current.update);
-          pendingUpdateRef.current = { update, delivery };
-          setPendingUpdate(pendingUpdateRef.current);
-          setUpdatePhase("available");
-          setUpdateProgress(null);
-        }
+      const update = await updater.check({ timeout: UPDATE_CHECK_TIMEOUT_MS });
+      const delivery = update ? await api.updateDelivery() : null;
+      // Read after the awaits: the user may have started installing meanwhile.
+      const current = pendingUpdateRef.current;
+      const installing = ["downloading", "installing", "ready"].includes(updatePhaseRef.current);
+      if (update && delivery
+        && !dismissedUpdateVersions.current.has(update.version)
+        && current?.update.version !== update.version
+        && !(current && installing)) {
+        pendingUpdateRef.current = { update, delivery };
+        setPendingUpdate(pendingUpdateRef.current);
+        setUpdatePhase("available");
+        setUpdateProgress(null);
       }
       nextCheck = UPDATE_CHECK_INTERVAL_MS;
     } catch {
@@ -549,7 +543,6 @@ export default function App() {
   const dismissUpdate = () => {
     if (pendingUpdate) {
       dismissedUpdateVersions.current.add(pendingUpdate.update.version);
-      closeUpdate(pendingUpdate.update);
     }
     setPendingUpdate(null);
     setUpdatePhase("available");
@@ -583,7 +576,7 @@ export default function App() {
             setUpdateProgress(Math.min(100, Math.round((downloadedBytes / expectedBytes) * 100)));
           }
         }
-      });
+      }, { timeout: UPDATE_DOWNLOAD_TIMEOUT_MS });
       setUpdatePhase(pendingUpdate.delivery === "installer_exits" ? "installing" : "ready");
     } catch {
       setUpdatePhase("error");
