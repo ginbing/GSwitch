@@ -163,9 +163,9 @@ points to the 1.0.32 release, which moves the accounts when it is opened once.
 **Clear and rebuild** stays available; it keeps the vault unread. When a start
 finds `credentials.hold.migrated`, the renamed snapshot of a migration that
 could not finish its cleanup, GSwitch deletes it and its lock and temporary
-files. That migration removed the root key before the rename; a key left by a
-failed removal stays in the credential manager but protects nothing once the
-snapshot is gone. Stores from before the vault already keep credentials inline
+files. That migration deleted the root key after the rename; a key left by an
+interrupted or refused deletion stays in the credential manager but protects
+nothing once the snapshot is gone. Stores from before the vault already keep credentials inline
 and are verified and rewritten as version 5.
 
 ## Isolated Codex profiles

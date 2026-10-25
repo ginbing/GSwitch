@@ -577,6 +577,7 @@ describe("GSwitch account workspace", () => {
 
     await userEvent.click(screen.getAllByRole("button", { name: "Review recovery" })[0]);
     expect(await screen.findByRole("dialog", { name: "Recover GSwitch account storage" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Get GSwitch 1.0.32" })).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Clear and rebuild" }));
     expect(mocks.resetDamagedAccountStore).not.toHaveBeenCalled();
 

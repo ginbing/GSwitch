@@ -29,7 +29,7 @@ procedure and trust limits belong to [release.md](./release.md).
   the library unavailable, and recovery points to 1.0.32. A vault beside a
   newer store, such as after a storage reset, is kept unread. The renamed
   snapshot of a finished migration is deleted with its lock and temporary
-  files. A root key that the credential manager refused to delete stays behind;
+  files. A root key whose deletion was interrupted or refused stays behind;
   without its snapshot it protects nothing.
 - Preserve the complete Codex-generated document rather than rebuilding known
   token fields; unknown future fields must survive a round trip.

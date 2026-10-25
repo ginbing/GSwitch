@@ -264,10 +264,11 @@ impl AppState {
     }
 
     /// Removes what is left of a vault that GSwitch 1.0.31 or 1.0.32 already
-    /// moved into the account file and renamed. Its credential-manager key was
-    /// removed before the rename; a key left by a failed removal protects
-    /// nothing once the snapshot is gone. A vault that was never moved, such
-    /// as one beside a store reset after a failed migration, is kept.
+    /// moved into the account file and renamed. Those versions deleted its
+    /// credential-manager key after the rename; a key left by an interrupted or
+    /// refused deletion stays, but protects nothing once the snapshot is gone.
+    /// A vault that was never moved, such as one beside a store reset after a
+    /// failed migration, is kept.
     fn remove_retired_vault(root: &std::path::Path) {
         let retired = root.join("credentials.hold.migrated");
         if fs::symlink_metadata(&retired).is_err() {
@@ -1877,6 +1878,7 @@ mod tests {
         vault_store(&path, &stable_credential("workspace", "vault-token"));
         let root = path.parent().expect("parent").to_path_buf();
         fs::write(root.join("credentials.lock"), b"").expect("vault lock");
+        fs::write(root.join("credentials.hold.migrated"), b"retired").expect("retired vault");
         let original = fs::read(&path).expect("original store");
 
         for _ in 0..2 {
@@ -1895,6 +1897,7 @@ mod tests {
                 b"snapshot"
             );
             assert!(root.join("credentials.lock").exists());
+            assert!(root.join("credentials.hold.migrated").exists());
         }
         let _ = fs::remove_dir_all(root);
     }
@@ -1945,6 +1948,7 @@ mod tests {
         ] {
             fs::write(root.join(name), b"left over").expect("vault leftover");
         }
+        fs::write(root.join("credentials.hold"), b"unmoved vault").expect("unmoved vault");
 
         let reopened = AppState::new(path.clone()).expect("reopen");
         assert_eq!(reopened.storage_view().status, StorageStatus::Ready);
@@ -1962,6 +1966,10 @@ mod tests {
         ] {
             assert!(!root.join(name).exists(), "{name}");
         }
+        assert_eq!(
+            fs::read(root.join("credentials.hold")).expect("vault"),
+            b"unmoved vault"
+        );
         let _ = fs::remove_dir_all(root);
     }
 

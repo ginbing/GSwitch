@@ -50,8 +50,8 @@ fn default_store_version() -> u32 {
     0
 }
 
-/// Reads the store as JSON, so a version-4 store can have its vault
-/// references resolved before it is typed. A missing file is `None`.
+/// Reads the store as JSON, so its version is known before it is typed. A
+/// missing file is `None`.
 pub fn read_store_json(path: &Path) -> Result<Option<Value>, String> {
     let content = match fs::read_to_string(path) {
         Ok(content) => content,
