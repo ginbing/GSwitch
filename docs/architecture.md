@@ -106,6 +106,8 @@ state, requests, errors, drag-and-drop registration and the add-account view.
 Their hooks stay mounted independently of their dialogs. Polling is keyed by
 operation ID and phase. Closing a pending login cancels it; an accepted login
 continues saving. Wake continues when its details close.
+`Update.tsx` owns the signed-update check schedule, the offered update and its
+install, restart and notice.
 
 `useAccountQuota` owns the transient quota/error view, request coalescing,
 concurrency lanes, attempt timing, automatic checks and batch progress. Cache,
