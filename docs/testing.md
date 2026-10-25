@@ -313,8 +313,8 @@ as applicable:
   fallback, restart after a relaunch update, release notes in the UI language
   with English fallback and no markup interpretation, at most twelve notes of
   300 characters, no list without notes, a foreground check only an hour after
-  the last one, a retry five minutes after a failed check, check and download
-  timeouts, and a later check never replacing an update being installed or
+  the last one, a retry five minutes after a failed check, the check timeout,
+  and a later check never replacing an update being installed or
   resetting a failed install of the same version;
 - release notes in `release-notes.json` required for the current version, and
   `latest.json` and the draft body written from them, with a mismatch failing

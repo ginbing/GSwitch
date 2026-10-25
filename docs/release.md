@@ -185,8 +185,8 @@ generated, rotated, copied into source, or printed by repository tooling.
 GSwitch uses the official Tauri updater. It checks the `latest.json` release
 manifest after startup, six hours after each successful check, when the window
 returns to the foreground at least an hour after the last check, and five
-minutes after a failed check. A check that takes over 30 seconds fails, and a
-download has an hour. Checks stay quiet; **Later** hides a version for the rest
+minutes after a failed check. A check that takes over 30 seconds fails; the
+download itself has no time limit. Checks stay quiet; **Later** hides a version for the rest
 of that run, and a check never replaces an update that is being installed. The prompt shows that release's notes in the UI language,
 falling back to English, as plain text: `latest.json` is not signed, so the
 notes are never interpreted as markup or links. The native updater verifies the

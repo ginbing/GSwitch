@@ -77,10 +77,9 @@ interface PendingUpdate {
 const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const UPDATE_FOCUS_CHECK_MS = 60 * 60 * 1000;
 const UPDATE_RETRY_MS = 5 * 60 * 1000;
-// A stalled check counts as failed so the schedule keeps running. The plugin
-// carries the check timeout into the download, which gets its own longer one.
+// A stalled check counts as failed so the schedule keeps running. The timeout
+// applies to the check request only, not to the download.
 const UPDATE_CHECK_TIMEOUT_MS = 30 * 1000;
-const UPDATE_DOWNLOAD_TIMEOUT_MS = 60 * 60 * 1000;
 const MAX_UPDATE_NOTES = 12;
 const MAX_UPDATE_NOTE_LENGTH = 300;
 
@@ -576,7 +575,7 @@ export default function App() {
             setUpdateProgress(Math.min(100, Math.round((downloadedBytes / expectedBytes) * 100)));
           }
         }
-      }, { timeout: UPDATE_DOWNLOAD_TIMEOUT_MS });
+      });
       setUpdatePhase(pendingUpdate.delivery === "installer_exits" ? "installing" : "ready");
     } catch {
       setUpdatePhase("error");

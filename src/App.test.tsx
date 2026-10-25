@@ -2730,7 +2730,6 @@ describe("GSwitch account workspace", () => {
 
     await userEvent.click(await screen.findByRole("button", { name: "Update GSwitch" }));
     await waitFor(() => expect(downloadAndInstall).toHaveBeenCalledOnce());
-    expect(downloadAndInstall).toHaveBeenCalledWith(expect.any(Function), { timeout: 60 * 60_000 });
     expect(await screen.findByText("Restart GSwitch to finish updating")).toBeInTheDocument();
     await userEvent.click(await screen.findByRole("button", { name: "Restart now" }));
     expect(updaterMocks.relaunch).toHaveBeenCalledOnce();
