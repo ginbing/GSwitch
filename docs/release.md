@@ -170,6 +170,17 @@ the build. For an authorized release, the agent reviews the exact assets and
 notes before publishing the draft. Missing Apple Developer credentials cannot
 block either macOS build.
 
+A reviewed draft can be published later without anyone present.
+`.github/workflows/publish-release.yml` names one tag and its schedule, with a
+retry and a manual dispatch. It publishes that release as Latest only while it
+is that tag's single draft, with 14 assets, built from the tagged commit; once
+the release is published it does nothing. It does not repeat the draft review,
+so schedule it only after the draft passed review. To cancel, disable the
+workflow in the Actions tab; deleting the draft also makes the run fail
+visibly instead of publishing. The built-in workflow token can publish, but its
+tag pushes and merges would not start the release or CI workflows, so the draft
+itself is always prepared and reviewed first.
+
 See the repository's [Code signing policy](code-signing-policy.md) for the
 current roles, privacy statement, SignPath application facts, and future
 Windows signing order.
