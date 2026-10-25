@@ -20,7 +20,7 @@ import {
   useState,
 } from "react";
 
-import { api, type UpdateDelivery } from "./api";
+import { api } from "./api";
 import {
   createTranslator,
   formatDateTime,
@@ -29,7 +29,6 @@ import {
   readLanguagePreference,
   resolveLocale,
   saveLanguagePreference,
-  type AppLanguage,
   type LanguagePreference,
   type Translator,
 } from "./i18n";
@@ -50,7 +49,7 @@ import { AccountIntakeDialog, FirstRun, useAccountIntake } from "./AccountIntake
 import { WakeDialog, useWake } from "./Wake";
 import { Modal } from "./Modal";
 import { friendlyError, type Notice } from "./feedback";
-import { updater, type AvailableUpdate } from "./updater";
+import { UpdateNotice, useUpdate } from "./Update";
 
 type Dialog =
   | "add"
@@ -64,40 +63,6 @@ type Dialog =
   | "wake"
   | null;
 
-
-type UpdatePhase = "available" | "downloading" | "installing" | "ready" | "error";
-
-interface PendingUpdate {
-  update: AvailableUpdate;
-  delivery: UpdateDelivery;
-}
-
-// A running GSwitch checks again after six hours, when it comes back to the
-// foreground an hour after its last check, and five minutes after a failure.
-const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
-const UPDATE_FOCUS_CHECK_MS = 60 * 60 * 1000;
-const UPDATE_RETRY_MS = 5 * 60 * 1000;
-// A stalled check counts as failed so the schedule keeps running. The timeout
-// applies to the check request only, not to the download.
-const UPDATE_CHECK_TIMEOUT_MS = 30 * 1000;
-const MAX_UPDATE_NOTES = 12;
-const MAX_UPDATE_NOTE_LENGTH = 300;
-
-// Notes come from the unsigned latest.json, so they are only ever shown as
-// bounded plain text. GSwitch's manifest adds them per UI language.
-function updateNotes(update: AvailableUpdate, language: AppLanguage) {
-  const localized = update.rawJson?.localized_notes;
-  const value = localized && typeof localized === "object"
-    ? (localized as Record<string, unknown>)[language]
-    : undefined;
-  const text = typeof value === "string" ? value : update.body ?? "";
-  return text
-    .split(/\r?\n/)
-    .map((line) => line.replace(/^\s*-\s+/, "").trim())
-    .filter(Boolean)
-    .slice(0, MAX_UPDATE_NOTES)
-    .map((line) => line.slice(0, MAX_UPDATE_NOTE_LENGTH));
-}
 
 const switchFailureCodes = new Set<SwitchFailureCode>([
   "operation_busy",
@@ -224,79 +189,6 @@ function useConfirmClick() {
   return { armed, click, disarm: () => setArmed(null) };
 }
 
-function UpdateNotice({
-  pending,
-  notes,
-  phase,
-  progress,
-  onInstall,
-  onLater,
-  onRestart,
-  t,
-}: {
-  pending: PendingUpdate;
-  notes: string[];
-  phase: UpdatePhase;
-  progress: number | null;
-  onInstall: () => void;
-  onLater: () => void;
-  onRestart: () => void;
-  t: Translator;
-}) {
-  const downloading = phase === "downloading" || phase === "installing";
-  const isReleaseDownload = pending.delivery === "release_download";
-  const title = t(({
-    available: "update.available",
-    downloading: "update.downloadTitle",
-    installing: "update.installTitle",
-    ready: "update.readyTitle",
-    error: "update.failedTitle",
-  } as const)[phase], { version: pending.update.version });
-  const primaryLabel = isReleaseDownload
-    ? t("update.download")
-    : phase === "ready"
-      ? t("update.restart")
-      : phase === "error"
-        ? t("update.retry")
-        : phase === "installing"
-          ? t("update.installing")
-          : downloading
-            ? t("update.downloading", { progress: progress ?? "…" })
-            : t("update.install");
-
-  return (
-    <section aria-label={title} className="update-notice">
-      <div>
-        <strong role="status">{title}</strong>
-        {isReleaseDownload ? <p>{t("update.debianFallback")}</p>
-          : phase === "downloading" ? <p>{t("update.downloading", { progress: progress ?? "…" })}</p>
-          : phase === "ready" ? <p>{t("update.restartRequired")}</p>
-          : phase === "error" ? <p>{t("update.failed")}</p>
-          : null}
-        {phase === "available" && notes.length ? (
-          <ul aria-label={t("update.notes")} className="update-notes" tabIndex={0}>
-            {notes.map((note, index) => <li key={index}>{note}</li>)}
-          </ul>
-        ) : null}
-      </div>
-      <div className="update-actions">
-        {phase !== "ready" && !downloading ? (
-          <button className="button button-quiet" onClick={onLater} type="button">{t("update.later")}</button>
-        ) : null}
-        <button
-          className="button button-primary"
-          disabled={downloading}
-          onClick={phase === "ready" ? onRestart : onInstall}
-          type="button"
-        >
-          {downloading ? <LoaderCircle className="spin" size={15} /> : <RefreshCw size={15} />}
-          {primaryLabel}
-        </button>
-      </div>
-    </section>
-  );
-}
-
 export default function App() {
   const [languagePreference, setLanguagePreference] = useState<LanguagePreference>(() => readLanguagePreference());
   const [accounts, setAccounts] = useState<AccountView[]>([]);
@@ -318,16 +210,6 @@ export default function App() {
   const [removeAccount, setRemoveAccount] = useState<AccountView | null>(null);
   const [removeError, setRemoveError] = useState<string | null>(null);
   const [redeemingCredit, setRedeemingCredit] = useState<string | null>(null);
-  const [pendingUpdate, setPendingUpdate] = useState<PendingUpdate | null>(null);
-  const [updatePhase, setUpdatePhase] = useState<UpdatePhase>("available");
-  const [updateProgress, setUpdateProgress] = useState<number | null>(null);
-  const dismissedUpdateVersions = useRef(new Set<string>());
-  const updateCheckInFlight = useRef(false);
-  const updateChecksActive = useRef(false);
-  const updateCheckTimer = useRef<number | undefined>(undefined);
-  const lastUpdateCheck = useRef(0);
-  const pendingUpdateRef = useRef<PendingUpdate | null>(null);
-  const updatePhaseRef = useRef<UpdatePhase>("available");
   const accountOperations = useRef(new Set<string>());
   const snapshotSequence = useRef(0);
   const initialSnapshotLoaded = useRef(false);
@@ -393,61 +275,7 @@ export default function App() {
     void loadSnapshot();
   }, [loadSnapshot]);
 
-  useEffect(() => { pendingUpdateRef.current = pendingUpdate; }, [pendingUpdate]);
-  useEffect(() => { updatePhaseRef.current = updatePhase; }, [updatePhase]);
-
-  const checkForUpdate = useCallback(async () => {
-    if (!("__TAURI_INTERNALS__" in window) || updateCheckInFlight.current) {
-      return;
-    }
-    updateCheckInFlight.current = true;
-    lastUpdateCheck.current = Date.now();
-    let nextCheck = UPDATE_RETRY_MS;
-    try {
-      const update = await updater.check({ timeout: UPDATE_CHECK_TIMEOUT_MS });
-      const delivery = update ? await api.updateDelivery() : null;
-      // Read after the awaits: the user may have started installing meanwhile.
-      const current = pendingUpdateRef.current;
-      const installing = ["downloading", "installing", "ready"].includes(updatePhaseRef.current);
-      if (update && delivery
-        && !dismissedUpdateVersions.current.has(update.version)
-        && current?.update.version !== update.version
-        && !(current && installing)) {
-        pendingUpdateRef.current = { update, delivery };
-        setPendingUpdate(pendingUpdateRef.current);
-        setUpdatePhase("available");
-        setUpdateProgress(null);
-      }
-      nextCheck = UPDATE_CHECK_INTERVAL_MS;
-    } catch {
-      // A failed background check stays quiet and is retried soon. A
-      // user-initiated install reports an actionable retry state instead.
-    } finally {
-      updateCheckInFlight.current = false;
-      window.clearTimeout(updateCheckTimer.current);
-      if (updateChecksActive.current) {
-        updateCheckTimer.current = window.setTimeout(() => void checkForUpdate(), nextCheck);
-      }
-    }
-  }, []);
-
-  useEffect(() => {
-    updateChecksActive.current = true;
-    void checkForUpdate();
-    const checkIfStale = () => {
-      if (document.visibilityState !== "hidden" && Date.now() - lastUpdateCheck.current >= UPDATE_FOCUS_CHECK_MS) {
-        void checkForUpdate();
-      }
-    };
-    window.addEventListener("focus", checkIfStale);
-    document.addEventListener("visibilitychange", checkIfStale);
-    return () => {
-      updateChecksActive.current = false;
-      window.clearTimeout(updateCheckTimer.current);
-      window.removeEventListener("focus", checkIfStale);
-      document.removeEventListener("visibilitychange", checkIfStale);
-    };
-  }, [checkForUpdate]);
+  const updateFlow = useUpdate();
 
   const intake = useAccountIntake({
     t, formatLocale: locale.formatLocale, notify: setNotice, onChanged: loadSnapshot,
@@ -538,57 +366,6 @@ export default function App() {
     },
     [t],
   );
-
-  const dismissUpdate = () => {
-    if (pendingUpdate) {
-      dismissedUpdateVersions.current.add(pendingUpdate.update.version);
-    }
-    setPendingUpdate(null);
-    setUpdatePhase("available");
-    setUpdateProgress(null);
-  };
-
-  const installUpdate = async () => {
-    if (!pendingUpdate) {
-      return;
-    }
-    if (pendingUpdate.delivery === "release_download") {
-      try {
-        await api.openLatestRelease();
-      } catch {
-        setUpdatePhase("error");
-      }
-      return;
-    }
-
-    setUpdatePhase("downloading");
-    setUpdateProgress(null);
-    let expectedBytes: number | undefined;
-    let downloadedBytes = 0;
-    try {
-      await pendingUpdate.update.downloadAndInstall((event) => {
-        if (event.event === "Started") {
-          expectedBytes = event.data.contentLength;
-        } else if (event.event === "Progress") {
-          downloadedBytes += event.data.chunkLength;
-          if (expectedBytes && expectedBytes > 0) {
-            setUpdateProgress(Math.min(100, Math.round((downloadedBytes / expectedBytes) * 100)));
-          }
-        }
-      });
-      setUpdatePhase(pendingUpdate.delivery === "installer_exits" ? "installing" : "ready");
-    } catch {
-      setUpdatePhase("error");
-    }
-  };
-
-  const restartAfterUpdate = async () => {
-    try {
-      await updater.relaunch();
-    } catch {
-      setUpdatePhase("error");
-    }
-  };
 
   const copyAccountEmail = async (account: AccountView) => {
     if (!account.email) return;
@@ -920,18 +697,7 @@ export default function App() {
       </header>
 
       <div className="content">
-        {pendingUpdate ? (
-          <UpdateNotice
-            onInstall={() => void installUpdate()}
-            onLater={dismissUpdate}
-            onRestart={() => void restartAfterUpdate()}
-            notes={updateNotes(pendingUpdate.update, locale.language)}
-            pending={pendingUpdate}
-            phase={updatePhase}
-            progress={updateProgress}
-            t={t}
-          />
-        ) : null}
+        <UpdateNotice flow={updateFlow} language={locale.language} t={t} />
 
         {notice ? (
           <div className={"toast toast-" + notice.kind} role={notice.kind === "error" ? "alert" : "status"}>
