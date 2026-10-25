@@ -2,12 +2,12 @@
   "version": "1.0.32",
   "en": [
     "The update prompt now lists what changed in the new version, in English or Simplified Chinese to match GSwitch's language.",
-    "GSwitch notices new versions sooner: it checks again when you come back to it after an hour or more, and retries five minutes after a failed check.",
-    "A coming update stops reading the encrypted storage used by GSwitch 1.0.30 and earlier. If you are updating from one of those versions, open this version once so it moves your saved accounts first."
+    "GSwitch notices new versions sooner: when you return to it more than an hour after its last check, it checks again, and it retries five minutes after a failed check.",
+    "A coming update stops reading the encrypted storage used by GSwitch 1.0.30 and earlier. If you are updating from one of those versions, open this version once and check that your saved accounts appear, so they are moved first."
   ],
   "zh-CN": [
     "更新提示会列出新版本的改动，按 GSwitch 的界面语言显示中文或英文。",
-    "更快发现新版本：离开一小时以上再回到 GSwitch 时会重新检查，检查失败 5 分钟后重试。",
-    "后续更新将不再读取 GSwitch 1.0.30 及更早版本使用的加密存储。如果你是从这些版本升级的，请先打开一次本版本，让它把已保存的账户迁移出来。"
+    "更快发现新版本：回到 GSwitch 时，如果距上次检查已超过一小时，会重新检查；检查失败 5 分钟后重试。",
+    "后续更新将不再读取 GSwitch 1.0.30 及更早版本使用的加密存储。如果你是从这些版本升级的，请先打开一次本版本，确认已保存的账户都在，这样它们就已迁移出来。"
   ]
 }
