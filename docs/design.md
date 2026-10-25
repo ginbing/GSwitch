@@ -196,7 +196,9 @@ reset button does: the first click changes it to a confirm label, a second
 click within 300 ms is ignored, and pressing anywhere else disarms it. Unknown quota
 shows an actionable Refresh control rather than a disabled Wake action whose
 only explanation is a tooltip. Update copy names the available version and
-each actual phase without promising that signing protects account data.
+each actual phase without promising that signing protects account data. While
+an update is offered, the notice lists that release's short notes in the UI
+language under its title, in a bounded scrolling list.
 
 ## Language
 

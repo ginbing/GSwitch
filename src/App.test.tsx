@@ -2564,6 +2564,87 @@ describe("GSwitch account workspace", () => {
     expect(screen.queryByText("GSwitch 1.0.2 is available")).not.toBeInTheDocument();
   });
 
+  it("shows the release notes for the UI language as plain text", async () => {
+    Object.defineProperty(window, "__TAURI_INTERNALS__", { configurable: true, value: {} });
+    const english = "- First change\n- <b>Not markup</b>";
+    updaterMocks.check.mockResolvedValue({
+      version: "1.0.2",
+      body: english,
+      rawJson: { localized_notes: { en: english, "zh-CN": "- 第一项改动" } },
+    });
+    const first = render(<App />);
+
+    const notes = await screen.findByRole("list", { name: "What's new" });
+    expect(within(notes).getAllByRole("listitem").map((item) => item.textContent)).toEqual(["First change", "<b>Not markup</b>"]);
+    expect(notes.querySelector("b")).toBeNull();
+    first.unmount();
+
+    window.localStorage.setItem("gswitch.language", "zh-CN");
+    const second = render(<App />);
+    expect(within(await screen.findByRole("list", { name: "更新内容" })).getByRole("listitem")).toHaveTextContent("第一项改动");
+    second.unmount();
+
+    updaterMocks.check.mockResolvedValue({ version: "1.0.2", body: "- First change", rawJson: {} });
+    render(<App />);
+    expect(within(await screen.findByRole("list", { name: "更新内容" })).getByRole("listitem")).toHaveTextContent("First change");
+  });
+
+  it("omits the notes list when a release has no notes", async () => {
+    Object.defineProperty(window, "__TAURI_INTERNALS__", { configurable: true, value: {} });
+    updaterMocks.check.mockResolvedValue({ version: "1.0.2", body: "", rawJson: {} });
+    render(<App />);
+
+    expect(await screen.findByText("GSwitch 1.0.2 is available")).toBeInTheDocument();
+    expect(screen.queryByRole("list", { name: "What's new" })).not.toBeInTheDocument();
+  });
+
+  it("finds a new release when GSwitch returns to the foreground an hour later", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      Object.defineProperty(window, "__TAURI_INTERNALS__", { configurable: true, value: {} });
+      const started = Date.now();
+      await act(async () => { render(<App />); });
+      await waitFor(() => expect(updaterMocks.check).toHaveBeenCalledTimes(1));
+
+      updaterMocks.check.mockResolvedValue({ version: "1.0.2" });
+      vi.setSystemTime(started + 30 * 60_000);
+      await act(async () => { fireEvent.focus(window); });
+      expect(updaterMocks.check).toHaveBeenCalledTimes(1);
+
+      vi.setSystemTime(started + 61 * 60_000);
+      await act(async () => { fireEvent.focus(window); });
+      expect(await screen.findByText("GSwitch 1.0.2 is available")).toBeInTheDocument();
+      expect(updaterMocks.check).toHaveBeenCalledTimes(2);
+
+      await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Later" })); });
+      vi.setSystemTime(started + 125 * 60_000);
+      await act(async () => { fireEvent.focus(window); });
+      await waitFor(() => expect(updaterMocks.check).toHaveBeenCalledTimes(3));
+      expect(screen.queryByText("GSwitch 1.0.2 is available")).not.toBeInTheDocument();
+    } finally {
+      cleanup();
+      vi.useRealTimers();
+    }
+  });
+
+  it("retries a failed update check after five minutes", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      Object.defineProperty(window, "__TAURI_INTERNALS__", { configurable: true, value: {} });
+      updaterMocks.check.mockRejectedValueOnce(new Error("offline")).mockResolvedValue({ version: "1.0.2" });
+      await act(async () => { render(<App />); });
+      await waitFor(() => expect(updaterMocks.check).toHaveBeenCalledTimes(1));
+      expect(screen.queryByText("GSwitch 1.0.2 is available")).not.toBeInTheDocument();
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(5 * 60_000); });
+      expect(await screen.findByText("GSwitch 1.0.2 is available")).toBeInTheDocument();
+      expect(updaterMocks.check).toHaveBeenCalledTimes(2);
+    } finally {
+      cleanup();
+      vi.useRealTimers();
+    }
+  });
+
   it("uses the release page fallback for a Debian package without touching accounts", async () => {
     Object.defineProperty(window, "__TAURI_INTERNALS__", { configurable: true, value: {} });
     updaterMocks.check.mockResolvedValue({ version: "1.0.2" });

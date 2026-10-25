@@ -25,16 +25,24 @@ const platformFiles = {
   ],
 };
 
+const notes = { version, en: ["First change", "Second change"], "zh-CN": ["第一项改动"] };
+
 function run(cwd, ...args) {
   return spawnSync(process.execPath, [script, ...args], { cwd, encoding: "utf8" });
 }
 
-test("stages and verifies the exact release asset set", async () => {
+async function releaseRoot(releaseNotes = notes) {
   const root = await mkdtemp(join(tmpdir(), "gswitch-release-assets-"));
   assert(root.startsWith(join(tmpdir(), "gswitch-release-assets-")));
+  await mkdir(join(root, "src-tauri"), { recursive: true });
+  await writeFile(join(root, "src-tauri/tauri.conf.json"), JSON.stringify({ version }));
+  await writeFile(join(root, "release-notes.json"), JSON.stringify(releaseNotes));
+  return root;
+}
+
+test("stages and verifies the exact release asset set", async () => {
+  const root = await releaseRoot();
   try {
-    await mkdir(join(root, "src-tauri"), { recursive: true });
-    await writeFile(join(root, "src-tauri/tauri.conf.json"), JSON.stringify({ version }));
     const release = join(root, "release-assets");
     await mkdir(release);
     for (const [platform, files] of Object.entries(platformFiles)) {
@@ -64,13 +72,57 @@ test("stages and verifies the exact release asset set", async () => {
     assert.equal(assembled.status, 0, assembled.stderr);
     const manifest = JSON.parse(await readFile(join(release, "latest.json"), "utf8"));
     assert.equal(manifest.version, version);
+    assert.equal(manifest.notes, "- First change\n- Second change");
+    assert.deepEqual(manifest.localized_notes, { en: manifest.notes, "zh-CN": "- 第一项改动" });
     assert.equal(Object.keys(manifest.platforms).length, 9);
     assert.equal(run(root, "verify", release, tag, "ginbing/GSwitch").status, 0);
+    await writeFile(join(root, "release-notes.json"), JSON.stringify({ ...notes, "zh-CN": ["别的改动"] }));
+    const renoted = run(root, "verify", release, tag, "ginbing/GSwitch");
+    assert.notEqual(renoted.status, 0);
+    assert.match(renoted.stderr, /Updater notes do not match/);
+    await writeFile(join(root, "release-notes.json"), JSON.stringify(notes));
     await writeFile(join(release, "unexpected.bin"), "unexpected");
     const changed = run(root, "verify", release, tag, "ginbing/GSwitch");
     assert.notEqual(changed.status, 0);
     assert.match(changed.stderr, /Unexpected release asset set/);
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("writes bilingual release notes from the committed file", async () => {
+  const root = await releaseRoot();
+  try {
+    const tag = `v${version}`;
+    const output = join(root, "release-notes.md");
+    const written = run(root, "notes", output, tag, "ginbing/GSwitch", "v1.0.0");
+    assert.equal(written.status, 0, written.stderr);
+    const body = await readFile(output, "utf8");
+    assert.match(body, /^## Changes\n\n- First change\n- Second change\n\n## 更新内容\n\n- 第一项改动\n/);
+    assert.match(body, new RegExp(`releases/download/${tag}/${base}x64-setup\\.exe`));
+    assert.match(body, new RegExp(`compare/v1\\.0\\.0\\.\\.\\.${tag}\\)\n$`));
+    assert.equal(run(root, "notes", output, tag, "ginbing/GSwitch").status, 0);
+    assert.doesNotMatch(await readFile(output, "utf8"), /Full changelog/);
+    assert.notEqual(run(root, "notes", output, tag, "ginbing/GSwitch", "main").status, 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("rejects stale, missing or malformed release notes", async () => {
+  for (const [releaseNotes, message] of [
+    [{ ...notes, version: "0.0.1" }, /must describe version/],
+    [{ version, en: notes.en }, /zh-CN notes/],
+    [{ ...notes, en: ["two\nlines"] }, /en notes/],
+    [{ ...notes, en: [] }, /en notes/],
+  ]) {
+    const root = await releaseRoot(releaseNotes);
+    try {
+      const result = run(root, "notes", join(root, "release-notes.md"), `v${version}`, "ginbing/GSwitch");
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, message);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   }
 });

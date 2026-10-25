@@ -205,11 +205,14 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          previous="$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name 2>/dev/null || true)"
+          node scripts/release-assets.mjs notes "$RUNNER_TEMP/release-notes.md" "$GITHUB_REF_NAME" "$GITHUB_REPOSITORY" "$previous"
           if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             test "$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" = true
+            gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --notes-file "$RUNNER_TEMP/release-notes.md"
           else
             gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
-              --draft --generate-notes --title "GSwitch $GITHUB_REF_NAME" --target "$GITHUB_SHA"
+              --draft --notes-file "$RUNNER_TEMP/release-notes.md" --title "GSwitch $GITHUB_REF_NAME" --target "$GITHUB_SHA"
           fi
           gh release upload "$GITHUB_REF_NAME" release-assets/* --repo "$GITHUB_REPOSITORY" --clobber
 

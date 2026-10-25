@@ -1,0 +1,13 @@
+{
+  "version": "1.0.31",
+  "en": [
+    "Saved credentials are now kept in files that only your user account can read, the same way Codex keeps its own sign-in. They no longer live in an encrypted vault whose key was held by the system credential manager.",
+    "The first start after the update moves the accounts saved by 1.0.30 and earlier into the new file, reads them back, and only then deletes the old vault and its key. If the old vault cannot be read, nothing is changed and GSwitch tries again the next time it starts.",
+    "After this update, going back to 1.0.30 or earlier will not open your saved accounts."
+  ],
+  "zh-CN": [
+    "保存的凭据改为存放在只有你的系统账户能读取的文件里，和 Codex 保存自己登录信息的方式相同，不再使用由系统凭据管理器保管密钥的加密保险库。",
+    "更新后首次启动时，GSwitch 会把 1.0.30 及更早版本保存的账户搬到新文件，读回核对后才删除旧保险库和密钥。如果旧保险库读不出来，什么都不会改，下次启动时再试。",
+    "更新后如果退回 1.0.30 或更早版本，将无法打开已保存的账户。"
+  ]
+}
