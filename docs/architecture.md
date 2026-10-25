@@ -103,6 +103,8 @@ requires a demonstrated current need.
 dialog entry points and notices. `AccountIntake.tsx` owns login/import/discovery
 state, requests, errors, drag-and-drop registration and the add-account view.
 `Wake.tsx` owns Wake starts, cancellation, polling and per-account outcomes.
+`Update.tsx` owns the signed-update check schedule, the offered update and its
+install, restart and notice.
 Their hooks stay mounted independently of their dialogs. Polling is keyed by
 operation ID and phase. Closing a pending login cancels it; an accepted login
 continues saving. Wake continues when its details close.
