@@ -81,6 +81,9 @@ identities disabled.
 A damaged GSwitch account library is not an empty state. It replaces the cards
 with one recovery-only surface, disables account actions, and explains that an
 explicit reset preserves GSwitch's damaged file without touching Codex.
+Accounts still in the vault of GSwitch 1.0.30 or earlier use the same surface:
+it says nothing was changed, and its recovery dialog offers **Get GSwitch
+1.0.32**, which moves them, before the reset.
 
 ## Interaction states
 

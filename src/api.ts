@@ -87,4 +87,5 @@ export const api = {
     invoke<void>("cancel_wake", { operationId }),
   updateDelivery: () => invoke<UpdateDelivery>("get_update_delivery"),
   openLatestRelease: () => invoke<void>("open_latest_release"),
+  openStorageMigrationRelease: () => invoke<void>("open_storage_migration_release"),
 };

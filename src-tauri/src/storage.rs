@@ -12,7 +12,8 @@ use uuid::Uuid;
 use crate::types::{PendingResetCredit, PendingSwitch, StoredAccount};
 
 /// Version 5 keeps complete credentials in this owner-only file. Version 4
-/// kept them in a Stronghold vault and is migrated once at startup.
+/// kept them in the Stronghold vault of GSwitch 1.0.30 and earlier, which only
+/// 1.0.31 and 1.0.32 move into this file; this version leaves it unchanged.
 pub const STORE_VERSION: u32 = 5;
 pub const VAULT_STORE_VERSION: u32 = 4;
 const PENDING_CREDENTIAL_PREFIX: &str = "pending-credential-";

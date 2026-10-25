@@ -83,8 +83,6 @@ Keep the backend flat and organized by concrete responsibility:
   and the fail-closed state after unconfirmed cleanup;
 - `storage.rs`: versioned JSON persistence, pending credential files, and
   atomic owner-only writes;
-- `vault.rs`: read-only access to the Stronghold vault of GSwitch 1.0.30 and
-  earlier, used once to migrate it, and its removal;
 - `types.rs`: backend state and sanitized serializable view models.
 
 Split a module only after it has acquired two real responsibilities. Do not add
@@ -157,19 +155,18 @@ config directory. The live Codex `auth.json` remains a distinct file-backed
 projection, never proof of the saved account.
 
 Version-4 stores from GSwitch 1.0.30 and earlier reference a Stronghold
-snapshot whose root key is held by the platform credential manager. At startup,
-under the operation lock, GSwitch reads every referenced record and pending
-entry from one snapshot session, verifies each credential's identity, writes
-the version-5 file and pending files, rereads both, and only then retires the
-snapshot: it is renamed, its root key is deleted, and the renamed file is
-deleted last, so a cleanup interrupted after the rename finishes at a later
-start; a snapshot that cannot be renamed stays in place. A vault that cannot
-be read leaves both files unchanged and the library unavailable until a later
-start. A snapshot that was not migrated this way, such as one beside a store
-reset after a failed migration, is kept unread. Stores from before the vault
-already keep credentials inline and are verified and rewritten as version 5.
-Removing Stronghold, `keyring` and the two patched crates below ends
-this direct migration path.
+snapshot, `credentials.hold`, whose root key is held by the platform credential
+manager. GSwitch 1.0.31 and 1.0.32 moved such a store into the version-5 file;
+this version no longer contains Stronghold or `keyring`. A version-4 store
+leaves the library unavailable, both files unchanged, and the recovery view
+points to the 1.0.32 release, which moves the accounts when it is opened once.
+**Clear and rebuild** stays available; it keeps the vault unread. When a start
+finds `credentials.hold.migrated`, the renamed snapshot of a migration that
+could not finish its cleanup, GSwitch deletes it and its lock and temporary
+files. That migration removed the root key before the rename; a key left by a
+failed removal stays in the credential manager but protects nothing once the
+snapshot is gone. Stores from before the vault already keep credentials inline
+and are verified and rewritten as version 5.
 
 ## Isolated Codex profiles
 
@@ -213,28 +210,3 @@ Keep Tauri's JavaScript API and Rust crate on the same minor release, and paired
 plugin packages on the same exact version, following the official
 [dependency update contract](https://v2.tauri.app/develop/updating-dependencies/#sync-npm-packages-and-cargo-crates-versions).
 The Tauri CLI build validates the resolved pairs; do not bypass its mismatch check.
-
-The Cargo patch for `libsodium-sys-stable` preserves the published 1.24.0
-source (upstream revision `b17dd40bd8ff878a308b79423efc0a086ee2e7d3`,
-crates.io checksum `72b04bf6da2c98b727af37ab62cb505f4d751b975b034a9b9ad491d333b0564e`).
-The library and build source files are unchanged; the build dependency's ZIP
-version requirement moves from 8.5 to 9 because released upstream versions
-still require a vulnerable ZIP major. Upstream integration tests and examples
-are omitted with their manifest targets because GSwitch consumes this package
-only as a library. The original signed libsodium archives and their verification
-code stay byte-for-byte intact; no vault format or credential path changes. Cargo's
-lock file owns the resolved dependency versions. Remove this patch when a
-compatible upstream release uses a fixed ZIP dependency, or with Stronghold.
-
-The maintainer-approved `iota-crypto` patch retains the published 0.23.2 source
-(upstream `8c13125541e762206e2dc57b8bfde89c7f6ce8e3`, crate SHA-256
-`98a38db844c910d78825e173c083f2ef416b69cb091bba8ac1055763c6db065b`).
-Its k256 dependency moves to 0.14 so the locked graph can use crypto-bigint
-0.7.6 or newer. Only the secp256k1 and SLIP10 API call sites adapt to the new
-upstream names, return types, and RNG trait; key generation and cryptographic
-arithmetic remain upstream implementations. The RNG bridge preserves the old
-caller interface and forwards bytes without changing the entropy source.
-Stronghold, snapshot encryption, credential metadata, and key derivation are
-unchanged. Published upstream vectors and a synthetic snapshot generated with
-unmodified Stronghold verify the boundary. Remove this patch when a compatible
-published IOTA release adopts the fixed dependency chain, or with Stronghold.

@@ -179,11 +179,22 @@ pub enum StorageStatus {
     RecoveryRequired,
 }
 
+/// Why recovery is required, when the frontend needs to offer more than a
+/// reset. A legacy vault is the version-4 store of GSwitch 1.0.30 or earlier,
+/// which only 1.0.31 and 1.0.32 can move into the account file.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum StorageRecoveryReason {
+    LegacyVault,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StorageView {
     pub status: StorageStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<StorageRecoveryReason>,
 }
 
 /// A single read-only view for the initial workspace render. Credential
@@ -614,6 +625,7 @@ mod tests {
     fn app_snapshot_names_only_the_account_of_a_pending_reset() {
         let snapshot = AppSnapshot {
             storage: StorageView {
+                reason: None,
                 status: StorageStatus::Ready,
                 message: None,
             },

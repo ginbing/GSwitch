@@ -464,10 +464,10 @@ plus the recovery material in the account store so a retry can distinguish a
 completed operation from one that is still pending. If a validated credential
 refresh cannot be committed to the store, GSwitch keeps it as an owner-only
 pending credential. If that write also fails, the isolated profile is removed
-instead of being kept. Version-4 stores migrate out of the Stronghold vault
-and older inline stores are verified and rewritten, as described in
-[architecture.md](./architecture.md); interruption leaves the old source
-recoverable.
+instead of being kept. Older inline stores are verified and rewritten, and a
+version-4 store from the Stronghold vault is left for GSwitch 1.0.32 to move,
+as described in [architecture.md](./architecture.md); interruption leaves the
+old source recoverable.
 
 Pending-credential recovery is an explicit Rust command, not automatic startup
 replay. It rederives identity, checks the saved generation before replacing an

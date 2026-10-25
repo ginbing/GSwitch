@@ -23,14 +23,14 @@ procedure and trust limits belong to [release.md](./release.md).
   directory. Any process running as that user can read them, and so can a
   backup of that directory.
 - GSwitch 1.0.30 and earlier kept these secrets in a Stronghold vault whose
-  root key lived in the platform credential manager. The first start of a
-  newer version reads that vault once, writes and rereads the owner-only files,
-  and only then deletes the vault and its root key. If the vault cannot be read,
-  nothing is changed and the account library stays unavailable until a later
-  start succeeds. Only a vault moved this way is deleted; one left beside a
-  newer store, such as after a storage reset, is kept unread, and so is a
-  moved vault that could not be renamed for deletion at that moment. A root
-  key that the credential manager refuses to delete stays behind.
+  root key lived in the platform credential manager. Only GSwitch 1.0.31 and
+  1.0.32 move that vault into the owner-only files; this version cannot read
+  it. A store that still references the vault leaves both files unchanged and
+  the library unavailable, and recovery points to 1.0.32. A vault beside a
+  newer store, such as after a storage reset, is kept unread. The renamed
+  snapshot of a finished migration is deleted with its lock and temporary
+  files. A root key that the credential manager refused to delete stays behind;
+  without its snapshot it protects nothing.
 - Preserve the complete Codex-generated document rather than rebuilding known
   token fields; unknown future fields must survive a round trip.
 - A pasted auth document or API key may exist only in its transient input until

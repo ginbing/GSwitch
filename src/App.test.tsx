@@ -57,6 +57,7 @@ const mocks = vi.hoisted(() => ({
   cancelWake: vi.fn(),
   updateDelivery: vi.fn(),
   openLatestRelease: vi.fn(),
+  openStorageMigrationRelease: vi.fn(),
 }));
 
 const updaterMocks = vi.hoisted(() => ({
@@ -223,6 +224,7 @@ function prepareDefaults() {
   mocks.cancelWake.mockResolvedValue(undefined);
   mocks.updateDelivery.mockResolvedValue("installer_exits");
   mocks.openLatestRelease.mockResolvedValue(undefined);
+  mocks.openStorageMigrationRelease.mockResolvedValue(undefined);
   updaterMocks.check.mockResolvedValue(null);
   updaterMocks.relaunch.mockResolvedValue(undefined);
   webviewMocks.onDragDropEvent.mockResolvedValue(() => undefined);
@@ -581,6 +583,28 @@ describe("GSwitch account workspace", () => {
     await pastConfirmGuard();
     await userEvent.click(screen.getByRole("button", { name: "Confirm clear" }));
     await waitFor(() => expect(mocks.resetDamagedAccountStore).toHaveBeenCalledOnce());
+  });
+
+  it("sends accounts saved by 1.0.30 or earlier to the release that moves them", async () => {
+    mocks.appSnapshot.mockResolvedValue({
+      storage: { status: "recovery_required", reason: "legacy_vault" },
+      accounts: [],
+    });
+    mocks.openStorageMigrationRelease.mockRejectedValueOnce(new Error("no browser"));
+    render(<App />);
+
+    expect(await screen.findByText(/still in the format of GSwitch 1.0.30 or earlier/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add account" })).toBeDisabled();
+    await userEvent.click(screen.getAllByRole("button", { name: "Review recovery" })[0]);
+    const dialog = await screen.findByRole("dialog", { name: "Recover GSwitch account storage" });
+    expect(within(dialog).getByText(/Install GSwitch 1.0.32 and open it once/)).toBeInTheDocument();
+
+    await userEvent.click(within(dialog).getByRole("button", { name: "Get GSwitch 1.0.32" }));
+    expect(await screen.findByText(/Couldn't open the release page/)).toBeInTheDocument();
+    await userEvent.click(within(dialog).getByRole("button", { name: "Get GSwitch 1.0.32" }));
+    await waitFor(() => expect(mocks.openStorageMigrationRelease).toHaveBeenCalledTimes(2));
+    expect(within(dialog).getByRole("button", { name: "Clear and rebuild" })).toBeEnabled();
+    expect(mocks.resetDamagedAccountStore).not.toHaveBeenCalled();
   });
 
   it("clears pasted auth JSON before the import request completes", async () => {
