@@ -210,7 +210,6 @@ export default function App() {
   const [removeAccount, setRemoveAccount] = useState<AccountView | null>(null);
   const [removeError, setRemoveError] = useState<string | null>(null);
   const [redeemingCredit, setRedeemingCredit] = useState<string | null>(null);
-  const update = useUpdate();
   const accountOperations = useRef(new Set<string>());
   const snapshotSequence = useRef(0);
   const initialSnapshotLoaded = useRef(false);
@@ -275,6 +274,8 @@ export default function App() {
   useEffect(() => {
     void loadSnapshot();
   }, [loadSnapshot]);
+
+  const updateFlow = useUpdate();
 
   const intake = useAccountIntake({
     t, formatLocale: locale.formatLocale, notify: setNotice, onChanged: loadSnapshot,
@@ -686,7 +687,7 @@ export default function App() {
       </header>
 
       <div className="content">
-        <UpdateNotice flow={update} language={locale.language} t={t} />
+        <UpdateNotice flow={updateFlow} language={locale.language} t={t} />
 
         {notice ? (
           <div className={"toast toast-" + notice.kind} role={notice.kind === "error" ? "alert" : "status"}>
