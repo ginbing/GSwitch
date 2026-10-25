@@ -13,7 +13,7 @@ const commands = {
   ],
   linux: [
     ["pnpm", ["run", "version:check"]],
-    ["node", ["--test", "scripts/ci-scope.nodecheck.mjs"]],
+    ["node", ["--test", "scripts/ci-scope.nodecheck.mjs", "scripts/release-assets.nodecheck.mjs"]],
     ["pnpm", ["tauri", "build", "--debug", "--no-bundle", "--ci", "--", "--locked"]],
     ["cargo", ["fmt", "--manifest-path", "src-tauri/Cargo.toml", "--check"]],
     ["cargo", ["clippy", "--manifest-path", "src-tauri/Cargo.toml", "--all-targets", "--locked", "--", "-D", "warnings"]],

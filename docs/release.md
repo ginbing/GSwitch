@@ -158,9 +158,17 @@ attestations bind each exact asset to the tagged source commit and attach the
 SBOM to the packages. The final workflow job downloads the draft assets and
 verifies their exact set, manifest, and provenance again.
 
-The draft uses GitHub-generated release notes. For an authorized release, the
-agent reviews the exact assets and user-facing notes before publishing the
-draft. Missing Apple Developer credentials cannot block either macOS build.
+The release notes come from `release-notes.json` at the tagged commit: one to
+twelve short single-line notes each in English (`en`) and Simplified Chinese
+(`zh-CN`), for the version in `src-tauri/tauri.conf.json`. `latest.json` carries
+the English notes in `notes` and both languages in `localized_notes`, and the
+workflow writes the draft body from the same notes plus download links and a
+changelog link from the previous published release, omitted when GitHub does
+not return a release tag. Verification fails when
+`latest.json` notes differ from that file, so the notes are never edited after
+the build. For an authorized release, the agent reviews the exact assets and
+notes before publishing the draft. Missing Apple Developer credentials cannot
+block either macOS build.
 
 See the repository's [Code signing policy](code-signing-policy.md) for the
 current roles, privacy statement, SignPath application facts, and future
@@ -175,8 +183,14 @@ generated, rotated, copied into source, or printed by repository tooling.
 ## Signed in-app updates
 
 GSwitch uses the official Tauri updater. It checks the `latest.json` release
-manifest once after startup and then at most once every six hours. The native
-updater verifies the downloaded update artifact's signature before installation.
+manifest after startup, six hours after each successful check, when the window
+returns to the foreground at least an hour after the last check, and five
+minutes after a failed check. A check that takes over 30 seconds fails; the
+download itself has no time limit. Checks stay quiet; **Later** hides a version for the rest
+of that run, and a check never replaces an update that is being installed. The prompt shows that release's notes in the UI language,
+falling back to English, as plain text: `latest.json` is not signed, so the
+notes are never interpreted as markup or links. The native updater verifies the
+downloaded update artifact's signature before installation.
 This verifies the update source; it is not a guarantee about what an installed
 version may do with account data.
 
@@ -237,8 +251,9 @@ pnpm run version:check
 ```
 
 Make the version change its own commit and pull request, after the product
-changes it releases have merged. A product pull request does not touch the
-version files.
+changes it releases have merged. The same pull request rewrites
+`release-notes.json` for the new version; `version:check` fails until it does.
+A product pull request does not touch the version files or the release notes.
 
 After an authorized version change is merged, tag that exact `main` commit as
 the matching `v<version>`. The workflow waits for the commit's `CI gate` and
