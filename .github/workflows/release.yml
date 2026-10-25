@@ -114,7 +114,7 @@ jobs:
         run: node scripts/release-assets.mjs sign ${{ matrix.id }}
       - name: Stage verified platform assets
         run: node scripts/release-assets.mjs stage ${{ matrix.id }} release-stage
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: release-${{ matrix.id }}
           path: release-stage/*
@@ -144,7 +144,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y minisign
       - name: Install pinned Syft
         id: syft
-        uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        uses: anchore/sbom-action/download-syft@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         with:
           syft-version: v1.52.0
       - name: Generate CycloneDX SBOM from frozen pnpm and locked Cargo graphs
@@ -181,7 +181,7 @@ jobs:
             release-assets/*.deb
             release-assets/*.app.tar.gz
           sbom-path: ${{ steps.sbom.outputs.path }}
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: release-candidate
           path: release-assets/*
