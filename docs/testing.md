@@ -145,14 +145,12 @@ as applicable:
 - complete credential-document preservation, including unknown fields;
 - the account file and pending credential files written `0600` in `0700`
   directories on Unix, including a store that was previously more open;
-- migration of a synthetic version-4 store and Stronghold vault (two accounts,
-  reset credits, switch rollback auth, a pending reset credit and a pending
-  credential) into version 5, reread and compared, with the vault deleted;
-- a missing or damaged vault leaving the version-4 store and vault unchanged
-  until a later start can read it; a vault kept unread beside a store that was
-  reset after a failed migration or migrated from inline credentials; an
-  interrupted vault retirement finished at the next start; the unmodified
-  Stronghold 2.1.0 snapshot fixture still reads;
+- a version-4 store and its vault left byte-for-byte unchanged across starts,
+  with mutation blocked and the recovery view naming the legacy vault and the
+  1.0.32 release; a storage reset clearing that reason and keeping the vault;
+  a vault kept unread beside a store migrated from inline credentials; the
+  renamed snapshot of an earlier migration removed with its lock and temporary
+  files;
 - version-3 and unversioned inline-store migration with identity verification,
   pre-vault pending files read in place, an account whose credential no longer
   derives its identity failing closed, and same-identity token rotation
@@ -189,6 +187,8 @@ as applicable:
 - malformed or unreadable state failing closed without leaking contents;
 - a damaged account store opening a recovery-only workspace, preserving its
   source on explicit reset, and leaving unrelated live Codex files untouched;
+  accounts left in the vault of 1.0.30 or earlier explained in that workspace,
+  with a retryable **Get GSwitch 1.0.32** action beside the reset;
 - external or uninspectable Codex runtimes blocking sensitive mutation;
 - current live credentials being reconciled before replacement;
 - Add current account using a read-only ChatGPT access-token snapshot without

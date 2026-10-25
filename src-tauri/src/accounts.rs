@@ -18,13 +18,13 @@ use crate::{
     storage::{self, AccountStore},
     types::{
         AccountIdentity, AccountKind, AccountView, OAuthLoginStatus, PendingResetCredit,
-        PendingResetView, PendingSwitch, StorageStatus, StorageView, StoredAccount,
-        StoredResetCredits, WakeOperationStatus, WakeOperationView,
+        PendingResetView, PendingSwitch, StorageRecoveryReason, StorageStatus, StorageView,
+        StoredAccount, StoredResetCredits, WakeOperationStatus, WakeOperationView,
     },
-    vault::LegacyVault,
 };
 
-const VAULT_MIGRATION_FAILED: &str = "Legacy vault migration could not read saved accounts";
+const LEGACY_VAULT_STORE: &str =
+    "Saved accounts are still in the Stronghold vault of GSwitch 1.0.30 or earlier";
 const PENDING_CREDENTIAL_VERSION: u32 = 2;
 
 #[derive(Clone)]
@@ -35,6 +35,7 @@ pub struct AppState {
     store: Arc<Mutex<AccountStore>>,
     store_recovery_required: Arc<AtomicBool>,
     store_recovery_message: Arc<Mutex<Option<String>>>,
+    store_recovery_reason: Arc<Mutex<Option<StorageRecoveryReason>>>,
     operation_lock: Arc<Mutex<()>>,
     oauth_logins: Arc<Mutex<HashMap<String, OAuthLoginControl>>>,
     wake_operations: Arc<Mutex<HashMap<String, WakeControl>>>,
@@ -114,14 +115,10 @@ impl AppState {
             .parent()
             .ok_or_else(|| "Invalid GSwitch storage path".to_string())?
             .to_path_buf();
-        #[cfg(test)]
-        let vault = LegacyVault::with_test_root(storage_root.join("credentials.hold"));
-        #[cfg(not(test))]
-        let vault = LegacyVault::new(storage_root.join("credentials.hold"));
         let pending_dir = storage_root.join("pending-credentials");
-        let (store, store_recovery_required, store_recovery_message) =
-            match Self::load_store_serialized(&store_path, &pending_dir, &vault) {
-                Ok(store) => (store, false, None),
+        let (store, store_recovery_required, store_recovery_message, store_recovery_reason) =
+            match Self::load_store_serialized(&store_path, &pending_dir) {
+                Ok(store) => (store, false, None, None),
                 // Do not prevent the desktop application from opening because
                 // GSwitch's own account file is unreadable. The replacement
                 // default is intentionally unusable until the user confirms a
@@ -130,6 +127,7 @@ impl AppState {
                     AccountStore::default(),
                     true,
                     Some(Self::recovery_message(&error)),
+                    (error == LEGACY_VAULT_STORE).then_some(StorageRecoveryReason::LegacyVault),
                 ),
             };
 
@@ -140,6 +138,7 @@ impl AppState {
             store: Arc::new(Mutex::new(store)),
             store_recovery_required: Arc::new(AtomicBool::new(store_recovery_required)),
             store_recovery_message: Arc::new(Mutex::new(store_recovery_message)),
+            store_recovery_reason: Arc::new(Mutex::new(store_recovery_reason)),
             operation_lock: Arc::new(Mutex::new(())),
             oauth_logins: Arc::new(Mutex::new(HashMap::new())),
             wake_operations: Arc::new(Mutex::new(HashMap::new())),
@@ -151,8 +150,8 @@ impl AppState {
     }
 
     fn recovery_message(error: &str) -> String {
-        if error == VAULT_MIGRATION_FAILED {
-            "GSwitch could not move saved accounts out of its previous encrypted storage. Nothing was changed, and GSwitch will try again the next time it starts."
+        if error == LEGACY_VAULT_STORE {
+            "Saved accounts are still in the encrypted storage of GSwitch 1.0.30 or earlier, which this version no longer reads. Open GSwitch 1.0.32 once to move them, then update again. Nothing was changed."
                 .to_string()
         } else if error.starts_with("Legacy") {
             "GSwitch could not complete account storage migration. The previous account library was left unchanged."
@@ -166,7 +165,6 @@ impl AppState {
     fn load_store_serialized(
         store_path: &std::path::Path,
         pending_dir: &std::path::Path,
-        vault: &LegacyVault,
     ) -> Result<AccountStore, String> {
         let parent = store_path
             .parent()
@@ -184,42 +182,33 @@ impl AppState {
             .map_err(|_| "Unable to lock GSwitch operations".to_string())?;
         // The file lock spans the load, a one-time migration and its readback.
         // Closing it also unlocks.
-        Self::load_store(store_path, pending_dir, vault)
+        Self::load_store(store_path, pending_dir)
     }
 
     fn load_store(
         store_path: &std::path::Path,
         pending_dir: &std::path::Path,
-        vault: &LegacyVault,
     ) -> Result<AccountStore, String> {
         let store = match storage::read_store_json(store_path)? {
-            Some(mut raw) => {
+            Some(raw) => {
                 let version = storage::store_version(&raw)?;
-                let from_vault = version == storage::VAULT_STORE_VERSION;
-                let vault_pending = if from_vault {
-                    vault
-                        .resolve(&mut raw)
-                        .map_err(|_| VAULT_MIGRATION_FAILED.to_string())?
-                } else {
-                    Vec::new()
-                };
+                // Only GSwitch 1.0.31 and 1.0.32 can read the vault that holds
+                // this store's credentials. Both files are left as they are.
+                if version == storage::VAULT_STORE_VERSION {
+                    return Err(LEGACY_VAULT_STORE.to_string());
+                }
                 let mut store = storage::store_from_json(raw)?;
                 Self::verify_credentials(&mut store, version)?;
                 if version < storage::STORE_VERSION {
-                    Self::commit_migration(store_path, pending_dir, &mut store, &vault_pending)?;
-                    // Only the vault this start moved into the file is retired.
-                    // Any other vault, such as one beside a store that was reset
-                    // after a failed migration, is kept unread.
-                    if from_vault {
-                        let _ = vault.retire();
-                    }
+                    Self::commit_migration(store_path, &mut store)?;
                 }
                 store
             }
             None => AccountStore::default(),
         };
-        // Finishes a retirement that an earlier start could not complete.
-        let _ = vault.finish_retirement();
+        if let Some(root) = store_path.parent() {
+            Self::remove_retired_vault(root);
+        }
         for (_, pending) in storage::pending_credentials::<PendingCredential>(pending_dir)? {
             Self::validate_pending(&pending)?;
         }
@@ -261,42 +250,34 @@ impl AppState {
         Ok(())
     }
 
-    /// Writes a migrated store and its pending entries, then reads both back.
-    /// Only after this succeeds may the previous vault be retired.
+    /// Writes a migrated store, then reads it back.
     fn commit_migration(
         store_path: &std::path::Path,
-        pending_dir: &std::path::Path,
         store: &mut AccountStore,
-        vault_pending: &[(String, Value)],
     ) -> Result<(), String> {
-        let failure = || "Migrated account storage could not be confirmed".to_string();
-        let mut pending = Vec::with_capacity(vault_pending.len());
-        for (reference, value) in vault_pending {
-            let mut record = value.clone();
-            record
-                .as_object_mut()
-                .ok_or_else(failure)?
-                .insert("version".into(), PENDING_CREDENTIAL_VERSION.into());
-            let entry: PendingCredential = serde_json::from_value(record).map_err(|_| failure())?;
-            Self::validate_pending(&entry).map_err(|_| failure())?;
-            pending.push((reference, entry));
-        }
-        for (reference, entry) in &pending {
-            storage::write_pending_credential(pending_dir, reference, entry)?;
-        }
         store.version = storage::STORE_VERSION;
         storage::save_atomic(store_path, store)?;
         if !same_json(&storage::load(store_path)?, store) {
-            return Err(failure());
-        }
-        for (reference, entry) in &pending {
-            let saved: PendingCredential =
-                storage::read_pending_credential(pending_dir, reference)?;
-            if !same_json(&saved, entry) {
-                return Err(failure());
-            }
+            return Err("Migrated account storage could not be confirmed".to_string());
         }
         Ok(())
+    }
+
+    /// Removes what is left of a vault that GSwitch 1.0.31 or 1.0.32 already
+    /// moved into the account file and renamed. Those versions deleted its
+    /// credential-manager key after the rename; a key left by an interrupted or
+    /// refused deletion stays, but protects nothing once the snapshot is gone.
+    /// A vault that was never moved, such as one beside a store reset after a
+    /// failed migration, is kept.
+    fn remove_retired_vault(root: &std::path::Path) {
+        let retired = root.join("credentials.hold.migrated");
+        if fs::symlink_metadata(&retired).is_err() {
+            return;
+        }
+        for name in ["credentials.hold.tmp", "credentials.lock"] {
+            let _ = fs::remove_file(root.join(name));
+        }
+        let _ = fs::remove_file(retired);
     }
 
     fn validate_pending(pending: &PendingCredential) -> Result<(), String> {
@@ -362,11 +343,17 @@ impl AppState {
                                 .to_string(),
                         )
                     }),
+                reason: self
+                    .store_recovery_reason
+                    .lock()
+                    .ok()
+                    .and_then(|reason| reason.clone()),
             }
         } else {
             StorageView {
                 status: StorageStatus::Ready,
                 message: None,
+                reason: None,
             }
         }
     }
@@ -409,6 +396,9 @@ impl AppState {
         self.store_recovery_required.store(false, Ordering::SeqCst);
         if let Ok(mut message) = self.store_recovery_message.lock() {
             *message = None;
+        }
+        if let Ok(mut reason) = self.store_recovery_reason.lock() {
+            *reason = None;
         }
         Ok(())
     }
@@ -1869,181 +1859,62 @@ mod tests {
         fs::write(path, serde_json::to_vec_pretty(&store).expect("store")).expect("store file");
     }
 
-    fn legacy_vault(path: &std::path::Path) -> LegacyVault {
-        LegacyVault::with_test_root(path.parent().expect("parent").join("credentials.hold"))
+    fn vault_store(path: &std::path::Path, credential: &Value) -> Value {
+        let store = json!({"version": 4, "accounts": [{"id": "a", "label": "A", "kind": "chat_gpt",
+            "identity": identity_json(credential), "credential_ref": "account:a",
+            "credential_generation": 1}]});
+        write_store(path, store.clone());
+        fs::write(
+            path.parent().expect("parent").join("credentials.hold"),
+            b"snapshot",
+        )
+        .expect("vault");
+        store
     }
 
     #[test]
-    fn a_vault_store_moves_to_the_owner_only_file_and_the_vault_is_removed() {
-        let path = temp_path("vault-migration");
-        let first = stable_credential("workspace-a", "first-token");
-        let second = stable_credential("workspace-b", "second-token");
-        let rollback = json!({"tokens": {"access_token": "rollback-token"}, "future": [1]});
-        write_store(
-            &path,
-            json!({
-                "version": 4,
-                "active_account_id": "a",
-                "accounts": [
-                    {"id": "a", "label": "A", "kind": "chat_gpt", "identity": identity_json(&first),
-                     "credential_ref": "account:a", "credential_generation": 3},
-                    {"id": "b", "label": "B", "kind": "chat_gpt", "identity": identity_json(&second),
-                     "credential_ref": "account:b", "credential_generation": 1}
-                ],
-                "pending_switch": {"target_id": "b", "target_identity": identity_json(&second),
-                    "previous_active_id": "a", "secret_ref": "pending-switch-x",
-                    "secret_generation": 2, "stage": "prepared"},
-                "pending_reset_credit": {"account_id": "a", "secret_ref": "pending-reset-credit-x",
-                    "secret_generation": 1, "created_at_unix_ms": 123, "discard_allowed": false}
-            }),
-        );
-        let vault = legacy_vault(&path);
-        vault
-            .put(
-                "account:a:3",
-                &json!({"credential": first, "reset_credits": {"available_count": 1,
-                    "credits": [{"id": "credit-private", "status": "available"}]}}),
-            )
-            .expect("first account");
-        vault
-            .put("account:b:1", &json!({"credential": second}))
-            .expect("second account");
-        vault
-            .put("pending-switch-x:2", &json!({"previous_auth": rollback}))
-            .expect("switch rollback");
-        vault
-            .put(
-                "pending-reset-credit-x:1",
-                &json!({"credit_id": "credit-private", "idempotency_key": "key-private"}),
-            )
-            .expect("reset credit");
-        let reference = format!("pending-credential-{}", Uuid::new_v4());
-        vault
-            .put_pending_credential(
-                &reference,
-                &json!({"credential": stable_credential("workspace-a", "queued-token"),
-                    "expected_account_id": "a", "expected_generation": 3}),
-            )
-            .expect("pending credential");
-
-        let state = AppState::new(path.clone()).expect("migrate");
-        assert_eq!(state.storage_view().status, StorageStatus::Ready);
-        let account = state.account_by_id("a").expect("first account");
-        assert_eq!(account.credential, first);
-        assert_eq!(account.credential_generation, 3);
-        let credits = account.reset_credits.expect("reset credits");
-        assert_eq!(
-            credits.credits.expect("credit list")[0].id,
-            "credit-private"
-        );
-        assert_eq!(state.account_by_id("b").expect("second").credential, second);
-        let operation = state.acquire_operation().expect("operation");
-        assert_eq!(
-            state
-                .pending_switch_under_operation(&operation)
-                .expect("switch")
-                .expect("pending switch")
-                .previous_auth,
-            Some(rollback)
-        );
-        let reset = state
-            .pending_reset_credit_under_operation(&operation)
-            .expect("reset")
-            .expect("pending reset");
-        assert_eq!(reset.credit_id, "credit-private");
-        assert_eq!(reset.idempotency_key, "key-private");
-        drop(operation);
-        let pending = pending_entries(&state);
-        assert_eq!(pending.len(), 1);
-        assert_eq!(pending[0].0, reference);
-        assert_eq!(pending[0].1.expected_account_id.as_deref(), Some("a"));
-        assert_eq!(pending[0].1.expected_generation, Some(3));
-
-        let raw = fs::read_to_string(&path).expect("store");
-        assert!(!raw.contains("credential_ref") && !raw.contains("secret_ref"));
-        assert_eq!(
-            storage::load(&path).expect("store").version,
-            storage::STORE_VERSION
-        );
-        assert!(!vault.exists());
-        for leftover in ["credentials.hold.migrated", "credentials.lock"] {
-            assert!(!path.parent().expect("parent").join(leftover).exists());
-        }
-
-        drop(state);
-        let reopened = AppState::new(path.clone()).expect("reopen");
-        assert_eq!(
-            reopened.account_by_id("a").expect("first").credential,
-            first
-        );
-        let _ = fs::remove_dir_all(path.parent().expect("parent"));
-    }
-
-    #[test]
-    fn an_unreadable_vault_leaves_the_vault_store_unchanged_until_it_can_be_read() {
-        let path = temp_path("vault-unreadable");
-        let credential = stable_credential("workspace", "vault-token");
-        write_store(
-            &path,
-            json!({"version": 4, "accounts": [{"id": "a", "label": "A", "kind": "chat_gpt",
-                "identity": identity_json(&credential), "credential_ref": "account:a",
-                "credential_generation": 1}]}),
-        );
+    fn a_vault_store_is_left_unchanged_and_points_to_the_migrating_release() {
+        let path = temp_path("vault-store");
+        vault_store(&path, &stable_credential("workspace", "vault-token"));
+        let root = path.parent().expect("parent").to_path_buf();
+        fs::write(root.join("credentials.lock"), b"").expect("vault lock");
+        fs::write(root.join("credentials.hold.migrated"), b"retired").expect("retired vault");
         let original = fs::read(&path).expect("original store");
-        let vault_path = path.parent().expect("parent").join("credentials.hold");
 
-        // Without a snapshot the reference cannot be resolved.
-        let state = AppState::new(path.clone()).expect("recovery state");
-        assert_eq!(state.storage_view().status, StorageStatus::RecoveryRequired);
-        assert!(state
-            .storage_view()
-            .message
-            .is_some_and(|message| message.contains("try again the next time it starts")));
-        assert!(state.list().expect("blocked view").is_empty());
-        assert!(state.acquire_operation().is_err());
-        assert_eq!(fs::read(&path).expect("store"), original);
-        drop(state);
-
-        // A damaged snapshot cannot be opened either, and is kept.
-        fs::write(&vault_path, b"not a snapshot").expect("damaged snapshot");
-        let state = AppState::new(path.clone()).expect("recovery state");
-        assert_eq!(state.storage_view().status, StorageStatus::RecoveryRequired);
-        assert_eq!(fs::read(&path).expect("store"), original);
-        assert_eq!(fs::read(&vault_path).expect("vault"), b"not a snapshot");
-        drop(state);
-
-        fs::remove_file(&vault_path).expect("replace snapshot");
-        legacy_vault(&path)
-            .put("account:a:1", &json!({"credential": credential}))
-            .expect("readable vault");
-        let state = AppState::new(path.clone()).expect("migrated");
-        assert_eq!(
-            state.account_by_id("a").expect("account").credential,
-            credential
-        );
-        assert!(!vault_path.exists());
-        let _ = fs::remove_dir_all(path.parent().expect("parent"));
+        for _ in 0..2 {
+            let state = AppState::new(path.clone()).expect("recovery state");
+            let view = state.storage_view();
+            assert_eq!(view.status, StorageStatus::RecoveryRequired);
+            assert_eq!(view.reason, Some(StorageRecoveryReason::LegacyVault));
+            assert!(view
+                .message
+                .is_some_and(|message| message.contains("1.0.32")));
+            assert!(state.list().expect("blocked view").is_empty());
+            assert!(state.acquire_operation().is_err());
+            assert_eq!(fs::read(&path).expect("store"), original);
+            assert_eq!(
+                fs::read(root.join("credentials.hold")).expect("vault"),
+                b"snapshot"
+            );
+            assert!(root.join("credentials.lock").exists());
+            assert!(root.join("credentials.hold.migrated").exists());
+        }
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
-    fn a_storage_reset_after_a_failed_migration_keeps_the_vault() {
+    fn a_storage_reset_of_a_vault_store_keeps_the_vault() {
         let path = temp_path("reset-keeps-vault");
-        let credential = stable_credential("workspace", "vault-token");
-        write_store(
-            &path,
-            json!({"version": 4, "accounts": [{"id": "a", "label": "A", "kind": "chat_gpt",
-                "identity": identity_json(&credential), "credential_ref": "account:a",
-                "credential_generation": 1}]}),
-        );
-        let vault_path = path.parent().expect("parent").join("credentials.hold");
-        fs::write(&vault_path, b"locked snapshot").expect("unreadable snapshot");
+        vault_store(&path, &stable_credential("workspace", "vault-token"));
+        let root = path.parent().expect("parent").to_path_buf();
 
         let state = AppState::new(path.clone()).expect("recovery state");
-        assert_eq!(state.storage_view().status, StorageStatus::RecoveryRequired);
         state.reset_damaged_store().expect("reset");
+        let view = state.storage_view();
+        assert_eq!(view.status, StorageStatus::Ready);
+        assert_eq!(view.reason, None);
         drop(state);
 
-        // The reset store is current, but it was not written from this vault.
         let reopened = AppState::new(path.clone()).expect("reopen");
         assert_eq!(reopened.storage_view().status, StorageStatus::Ready);
         save(
@@ -2053,12 +1924,15 @@ mod tests {
         drop(reopened);
         let reopened = AppState::new(path.clone()).expect("reopen again");
         assert_eq!(reopened.list().expect("accounts").len(), 1);
-        assert_eq!(fs::read(&vault_path).expect("vault"), b"locked snapshot");
-        let _ = fs::remove_dir_all(path.parent().expect("parent"));
+        assert_eq!(
+            fs::read(root.join("credentials.hold")).expect("vault"),
+            b"snapshot"
+        );
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
-    fn an_interrupted_vault_retirement_finishes_at_the_next_start() {
+    fn the_rest_of_a_vault_moved_by_an_earlier_version_is_removed() {
         let path = temp_path("retired-vault");
         let state = AppState::new(path.clone()).expect("state");
         let saved = save(
@@ -2067,8 +1941,14 @@ mod tests {
         );
         drop(state);
         let root = path.parent().expect("parent").to_path_buf();
-        fs::write(root.join("credentials.hold.migrated"), b"retired").expect("retired vault");
-        fs::write(root.join("credentials.lock"), b"").expect("vault lock");
+        for name in [
+            "credentials.hold.migrated",
+            "credentials.hold.tmp",
+            "credentials.lock",
+        ] {
+            fs::write(root.join(name), b"left over").expect("vault leftover");
+        }
+        fs::write(root.join("credentials.hold"), b"unmoved vault").expect("unmoved vault");
 
         let reopened = AppState::new(path.clone()).expect("reopen");
         assert_eq!(reopened.storage_view().status, StorageStatus::Ready);
@@ -2079,8 +1959,17 @@ mod tests {
                 .credential,
             stable_credential("workspace", "current")
         );
-        assert!(!root.join("credentials.hold.migrated").exists());
-        assert!(!root.join("credentials.lock").exists());
+        for name in [
+            "credentials.hold.migrated",
+            "credentials.hold.tmp",
+            "credentials.lock",
+        ] {
+            assert!(!root.join(name).exists(), "{name}");
+        }
+        assert_eq!(
+            fs::read(root.join("credentials.hold")).expect("vault"),
+            b"unmoved vault"
+        );
         let _ = fs::remove_dir_all(root);
     }
 
@@ -2090,13 +1979,10 @@ mod tests {
         let credential = stable_credential("workspace", "legacy-access-token");
         // The inline store stays authoritative. A vault beside it was not
         // written from it, so it is kept unread.
-        fs::create_dir_all(path.parent().expect("parent")).expect("storage root");
-        legacy_vault(&path)
-            .put(
-                "account:legacy-account:1",
-                &json!({"credential": stable_credential("workspace", "stale")}),
-            )
-            .expect("stale vault");
+        let root = path.parent().expect("parent").to_path_buf();
+        fs::create_dir_all(&root).expect("storage root");
+        fs::write(root.join("credentials.hold"), b"stale vault").expect("stale vault");
+        fs::write(root.join("credentials.lock"), b"").expect("vault lock");
         write_store(
             &path,
             json!({
@@ -2122,7 +2008,11 @@ mod tests {
         assert_eq!(saved.version, storage::STORE_VERSION);
         assert_eq!(saved.accounts[0].credential, credential);
         assert!(saved.accounts[0].identity.is_some());
-        assert!(legacy_vault(&path).exists());
+        assert_eq!(
+            fs::read(root.join("credentials.hold")).expect("vault"),
+            b"stale vault"
+        );
+        assert!(root.join("credentials.lock").exists());
         drop(first);
 
         let reopened = AppState::new(path.clone()).expect("restart-safe reopen");

@@ -31,6 +31,8 @@ export type StorageStatus = "ready" | "recovery_required";
 export interface StorageView {
   status: StorageStatus;
   message?: string;
+  // Accounts saved by GSwitch 1.0.30 or earlier, which only 1.0.31 and 1.0.32 can move.
+  reason?: "legacy_vault";
 }
 
 // The provider credit and idempotency key of a pending reset stay in Rust.

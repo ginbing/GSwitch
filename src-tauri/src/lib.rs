@@ -13,7 +13,6 @@ mod runtime;
 mod storage;
 mod switching;
 mod types;
-mod vault;
 mod wake;
 
 use tauri::Manager;
@@ -54,6 +53,7 @@ pub fn run() {
             commands::open_oauth_login,
             commands::get_update_delivery,
             commands::open_latest_release,
+            commands::open_storage_migration_release,
             commands::import_auth_json,
             commands::import_auth_file,
             commands::import_auth_files,

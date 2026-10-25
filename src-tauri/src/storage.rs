@@ -12,7 +12,8 @@ use uuid::Uuid;
 use crate::types::{PendingResetCredit, PendingSwitch, StoredAccount};
 
 /// Version 5 keeps complete credentials in this owner-only file. Version 4
-/// kept them in a Stronghold vault and is migrated once at startup.
+/// kept them in the Stronghold vault of GSwitch 1.0.30 and earlier, which only
+/// 1.0.31 and 1.0.32 move into this file; this version leaves it unchanged.
 pub const STORE_VERSION: u32 = 5;
 pub const VAULT_STORE_VERSION: u32 = 4;
 const PENDING_CREDENTIAL_PREFIX: &str = "pending-credential-";
@@ -49,8 +50,8 @@ fn default_store_version() -> u32 {
     0
 }
 
-/// Reads the store as JSON, so a version-4 store can have its vault
-/// references resolved before it is typed. A missing file is `None`.
+/// Reads the store as JSON, so its version is known before it is typed. A
+/// missing file is `None`.
 pub fn read_store_json(path: &Path) -> Result<Option<Value>, String> {
     let content = match fs::read_to_string(path) {
         Ok(content) => content,

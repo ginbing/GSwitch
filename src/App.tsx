@@ -528,6 +528,14 @@ export default function App() {
     }
   };
 
+  const openMigrationRelease = async () => {
+    try {
+      await api.openStorageMigrationRelease();
+    } catch {
+      setNotice({ kind: "error", text: t("recovery.openMigrationReleaseFailed") });
+    }
+  };
+
   const resetDamagedAccountStore = async () => {
     const completed = await runVoidTask(
       "reset-damaged-store",
@@ -560,6 +568,8 @@ export default function App() {
     ? accounts.find((account) => account.id === pendingReset.account_id)
     : undefined;
   const storageRecovery = storage?.status === "recovery_required";
+  // Accounts saved by 1.0.30 or earlier that only 1.0.31 and 1.0.32 can move.
+  const legacyVault = storageRecovery && storage?.reason === "legacy_vault";
   const accountGridBusy = accountGridHasGlobalMutation(busy);
   // A dialog stays closable while unrelated work runs; only its own operation
   // holds it open. A key ending in ":" matches that operation for any account.
@@ -799,7 +809,7 @@ export default function App() {
               <ShieldAlert size={28} />
               <div>
                 <h3 id="storage-recovery-title">{t("accounts.protectedTitle")}</h3>
-                <p>{t("accounts.protectedBody")}</p>
+                <p>{t(legacyVault ? "accounts.legacyVaultBody" : "accounts.protectedBody")}</p>
               </div>
               <button
                 className="button button-primary"
@@ -926,8 +936,14 @@ export default function App() {
         >
           <div className="confirm-panel">
             <ShieldAlert size={26} />
-            <p>{t("recovery.storageBody")}</p>
+            <p>{t(legacyVault ? "recovery.legacyVaultBody" : "recovery.storageBody")}</p>
             <div className="modal-actions">
+              {legacyVault ? (
+                <button className="button button-primary" onClick={() => void openMigrationRelease()} type="button">
+                  <Download size={16} />
+                  {t("recovery.openMigrationRelease")}
+                </button>
+              ) : null}
               <button
                 className="button button-secondary"
                 disabled={busy !== null}

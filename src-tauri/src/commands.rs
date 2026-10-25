@@ -140,6 +140,18 @@ pub fn open_latest_release(app: AppHandle) -> Result<(), String> {
         .map_err(|_| "Unable to open the GSwitch release page in your browser".to_string())
 }
 
+/// Opens GSwitch 1.0.32, the last release that moves a version-4 store out of
+/// the Stronghold vault of 1.0.30 and earlier.
+#[tauri::command]
+pub fn open_storage_migration_release(app: AppHandle) -> Result<(), String> {
+    app.opener()
+        .open_url(
+            "https://github.com/ginbing/GSwitch/releases/tag/v1.0.32",
+            None::<&str>,
+        )
+        .map_err(|_| "Unable to open the GSwitch release page in your browser".to_string())
+}
+
 fn update_delivery_for(os: &str, appimage: bool) -> UpdateDelivery {
     match os {
         "windows" => UpdateDelivery::InstallerExits,
