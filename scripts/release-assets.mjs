@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { copyFile, mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { noteText, readReleaseNotes, releaseNotesFile } from "./release-notes.mjs";
 
 const version = JSON.parse(await readFile("src-tauri/tauri.conf.json", "utf8")).version;
 const name = (suffix) => `GSwitch_${version}_${suffix}`;
@@ -99,6 +100,35 @@ function releaseUrl(repository, tag, file) {
   return `https://github.com/${repository}/releases/download/${tag}/${encodeURIComponent(file)}`;
 }
 
+// The updater reads `notes`; GSwitch's prompt prefers `localized_notes` for
+// its UI language. Older updaters ignore the extra field.
+async function updaterNotes() {
+  const notes = await readReleaseNotes(releaseNotesFile, version);
+  const localized = Object.fromEntries(Object.entries(notes).map(([language, items]) => [language, noteText(items)]));
+  return { notes: localized.en, localized_notes: localized };
+}
+
+async function releaseBody(output, tag, repository, previousTag) {
+  requireCondition(tag === `v${version}`, `Release tag ${tag} does not match ${version}`);
+  requireCondition(/^[\w.-]+\/[\w.-]+$/.test(repository), "Invalid GitHub repository");
+  requireCondition(!previousTag || /^v\d+\.\d+\.\d+$/.test(previousTag), "Invalid previous release tag");
+  const notes = await readReleaseNotes(releaseNotesFile, version);
+  const download = (file) => releaseUrl(repository, tag, name(file));
+  const lines = [
+    "## Changes", "", noteText(notes.en), "",
+    "## 更新内容", "", noteText(notes["zh-CN"]), "",
+    "## Downloads", "",
+    `- [Windows x64 installer](${download("x64-setup.exe")})`,
+    `- macOS: [Apple Silicon](${download("aarch64.dmg")}) · [Intel](${download("x64.dmg")})`,
+    `- Linux: [AppImage](${download("amd64.AppImage")}) · [Debian package](${download("amd64.deb")})`,
+    "",
+    "The Windows installer is not Authenticode-signed. macOS builds use ad-hoc signing and are not notarized. In-app update packages have verified Tauri updater signatures.",
+  ];
+  if (previousTag) lines.push("", `[Full changelog](https://github.com/${repository}/compare/${previousTag}...${tag})`);
+  await writeFile(output, `${lines.join("\n")}\n`);
+  console.log(`Wrote release notes for ${tag}`);
+}
+
 async function expectedPlatforms(directory, repository, tag) {
   const entries = [
     ["windows-x86_64", name("x64-setup.exe")],
@@ -130,7 +160,7 @@ async function assemble(directory, tag, repository) {
   await requireExactFiles(directory, [...stagedFiles, sbomFile]);
   await validateSbom(directory);
   const platforms = await expectedPlatforms(directory, repository, tag);
-  const latest = { version, notes: "", pub_date: new Date().toISOString(), platforms };
+  const latest = { version, ...await updaterNotes(), pub_date: new Date().toISOString(), platforms };
   await writeFile(join(directory, "latest.json"), `${JSON.stringify(latest, null, 2)}\n`);
   await verify(directory, tag, repository);
   console.log(`Assembled ${finalFiles.length} final assets for ${tag}`);
@@ -142,15 +172,18 @@ async function verify(directory, tag, repository) {
   await validateSbom(directory);
   const latest = JSON.parse(await readFile(join(directory, "latest.json"), "utf8"));
   requireCondition(latest.version === version && !Number.isNaN(Date.parse(latest.pub_date)), "Invalid updater version or publication date");
+  const notes = await updaterNotes();
+  requireCondition(latest.notes === notes.notes && JSON.stringify(latest.localized_notes) === JSON.stringify(notes.localized_notes), `Updater notes do not match ${releaseNotesFile}`);
   const platforms = await expectedPlatforms(directory, repository, tag);
   requireCondition(JSON.stringify(latest.platforms) === JSON.stringify(platforms), "Updater manifest does not match final assets");
   console.log(`Verified ${tag} release asset set and updater manifest`);
 }
 
-const [command, path, tag, repository] = process.argv.slice(2);
-requireCondition(path, "Usage: release-assets.mjs <stage|assemble|verify> <directory|platform> ...");
+const [command, path, tag, repository, previousTag] = process.argv.slice(2);
+requireCondition(path, "Usage: release-assets.mjs <stage|sign|assemble|verify|notes> <directory|platform|file> ...");
 if (command === "stage") await stage(path, resolve(tag));
 else if (command === "sign") await sign(path);
 else if (command === "assemble") await assemble(resolve(path), tag, repository);
 else if (command === "verify") await verify(resolve(path), tag, repository);
+else if (command === "notes") await releaseBody(resolve(path), tag, repository, previousTag);
 else throw new Error(`Unknown release asset command: ${command}`);

@@ -35,10 +35,12 @@ Desktop compilation without producing an installer:
 pnpm tauri build --no-bundle
 ```
 
-Release configuration checks:
+Release configuration checks, including the notes in `release-notes.json` for
+the current version, and the release asset and notes tooling:
 
 ```bash
 pnpm run version:check
+node --test scripts/release-assets.nodecheck.mjs
 ```
 
 Linux distribution bundles, on a Linux host with the current Tauri prerequisites:
@@ -55,7 +57,8 @@ The CI workflow always starts and detects changed paths inside the run, so a
 path filter cannot leave a required workflow pending. Frontend changes call the
 repository-owned `ci:source` command for the version check, UI tests, and
 production frontend build. Rust changes call its Linux mode for version,
-frontend build, Rust formatting, Clippy, and the full Rust test suite. Frontend
+release tooling tests, frontend build, Rust formatting, Clippy, and the full
+Rust test suite. Frontend
 only changes do not start the Rust or platform workers. Changes to application
 or build inputs also run Rust proof on Windows and macOS; those jobs first
 build the debug application through the official Tauri CLI with `--no-bundle`,
@@ -306,6 +309,16 @@ as applicable:
 - system-language selection, unsupported-locale fallback, immediate manual
   language selection, language preference persistence, locale-aware reset-time
   formatting, and the main account flow in Simplified Chinese.
+- the update prompt: Later for the current run, the Debian release-page
+  fallback, restart after a relaunch update, release notes in the UI language
+  with English fallback and no markup interpretation, at most twelve notes of
+  300 characters, no list without notes, a foreground check only an hour after
+  the last one, a retry five minutes after a failed check, the check timeout,
+  and a later check never replacing an update being installed or
+  resetting a failed install of the same version;
+- release notes in `release-notes.json` required for the current version, and
+  `latest.json` and the draft body written from them, with a mismatch failing
+  verification.
 
 Prefer behavior assertions over broad snapshots. Mock protocol payloads prove
 normalization and local policy; they do not prove the current remote provider.

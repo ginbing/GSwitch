@@ -29,6 +29,7 @@ import {
   readLanguagePreference,
   resolveLocale,
   saveLanguagePreference,
+  type AppLanguage,
   type LanguagePreference,
   type Translator,
 } from "./i18n";
@@ -69,6 +70,33 @@ type UpdatePhase = "available" | "downloading" | "installing" | "ready" | "error
 interface PendingUpdate {
   update: AvailableUpdate;
   delivery: UpdateDelivery;
+}
+
+// A running GSwitch checks again after six hours, when it comes back to the
+// foreground an hour after its last check, and five minutes after a failure.
+const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
+const UPDATE_FOCUS_CHECK_MS = 60 * 60 * 1000;
+const UPDATE_RETRY_MS = 5 * 60 * 1000;
+// A stalled check counts as failed so the schedule keeps running. The timeout
+// applies to the check request only, not to the download.
+const UPDATE_CHECK_TIMEOUT_MS = 30 * 1000;
+const MAX_UPDATE_NOTES = 12;
+const MAX_UPDATE_NOTE_LENGTH = 300;
+
+// Notes come from the unsigned latest.json, so they are only ever shown as
+// bounded plain text. GSwitch's manifest adds them per UI language.
+function updateNotes(update: AvailableUpdate, language: AppLanguage) {
+  const localized = update.rawJson?.localized_notes;
+  const value = localized && typeof localized === "object"
+    ? (localized as Record<string, unknown>)[language]
+    : undefined;
+  const text = typeof value === "string" ? value : update.body ?? "";
+  return text
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^\s*-\s+/, "").trim())
+    .filter(Boolean)
+    .slice(0, MAX_UPDATE_NOTES)
+    .map((line) => line.slice(0, MAX_UPDATE_NOTE_LENGTH));
 }
 
 const switchFailureCodes = new Set<SwitchFailureCode>([
@@ -198,6 +226,7 @@ function useConfirmClick() {
 
 function UpdateNotice({
   pending,
+  notes,
   phase,
   progress,
   onInstall,
@@ -206,6 +235,7 @@ function UpdateNotice({
   t,
 }: {
   pending: PendingUpdate;
+  notes: string[];
   phase: UpdatePhase;
   progress: number | null;
   onInstall: () => void;
@@ -243,6 +273,11 @@ function UpdateNotice({
           : phase === "ready" ? <p>{t("update.restartRequired")}</p>
           : phase === "error" ? <p>{t("update.failed")}</p>
           : null}
+        {phase === "available" && notes.length ? (
+          <ul aria-label={t("update.notes")} className="update-notes" tabIndex={0}>
+            {notes.map((note, index) => <li key={index}>{note}</li>)}
+          </ul>
+        ) : null}
       </div>
       <div className="update-actions">
         {phase !== "ready" && !downloading ? (
@@ -288,6 +323,11 @@ export default function App() {
   const [updateProgress, setUpdateProgress] = useState<number | null>(null);
   const dismissedUpdateVersions = useRef(new Set<string>());
   const updateCheckInFlight = useRef(false);
+  const updateChecksActive = useRef(false);
+  const updateCheckTimer = useRef<number | undefined>(undefined);
+  const lastUpdateCheck = useRef(0);
+  const pendingUpdateRef = useRef<PendingUpdate | null>(null);
+  const updatePhaseRef = useRef<UpdatePhase>("available");
   const accountOperations = useRef(new Set<string>());
   const snapshotSequence = useRef(0);
   const initialSnapshotLoaded = useRef(false);
@@ -353,32 +393,60 @@ export default function App() {
     void loadSnapshot();
   }, [loadSnapshot]);
 
+  useEffect(() => { pendingUpdateRef.current = pendingUpdate; }, [pendingUpdate]);
+  useEffect(() => { updatePhaseRef.current = updatePhase; }, [updatePhase]);
+
   const checkForUpdate = useCallback(async () => {
     if (!("__TAURI_INTERNALS__" in window) || updateCheckInFlight.current) {
       return;
     }
     updateCheckInFlight.current = true;
+    lastUpdateCheck.current = Date.now();
+    let nextCheck = UPDATE_RETRY_MS;
     try {
-      const update = await updater.check();
-      if (!update || dismissedUpdateVersions.current.has(update.version)) {
-        return;
+      const update = await updater.check({ timeout: UPDATE_CHECK_TIMEOUT_MS });
+      const delivery = update ? await api.updateDelivery() : null;
+      // Read after the awaits: the user may have started installing meanwhile.
+      const current = pendingUpdateRef.current;
+      const installing = ["downloading", "installing", "ready"].includes(updatePhaseRef.current);
+      if (update && delivery
+        && !dismissedUpdateVersions.current.has(update.version)
+        && current?.update.version !== update.version
+        && !(current && installing)) {
+        pendingUpdateRef.current = { update, delivery };
+        setPendingUpdate(pendingUpdateRef.current);
+        setUpdatePhase("available");
+        setUpdateProgress(null);
       }
-      const delivery = await api.updateDelivery();
-      setPendingUpdate({ update, delivery });
-      setUpdatePhase("available");
-      setUpdateProgress(null);
+      nextCheck = UPDATE_CHECK_INTERVAL_MS;
     } catch {
-      // A failed background check is intentionally quiet. A user-initiated
-      // install reports an actionable retry state instead.
+      // A failed background check stays quiet and is retried soon. A
+      // user-initiated install reports an actionable retry state instead.
     } finally {
       updateCheckInFlight.current = false;
+      window.clearTimeout(updateCheckTimer.current);
+      if (updateChecksActive.current) {
+        updateCheckTimer.current = window.setTimeout(() => void checkForUpdate(), nextCheck);
+      }
     }
   }, []);
 
   useEffect(() => {
+    updateChecksActive.current = true;
     void checkForUpdate();
-    const interval = window.setInterval(() => void checkForUpdate(), 6 * 60 * 60 * 1000);
-    return () => window.clearInterval(interval);
+    const checkIfStale = () => {
+      if (document.visibilityState !== "hidden" && Date.now() - lastUpdateCheck.current >= UPDATE_FOCUS_CHECK_MS) {
+        void checkForUpdate();
+      }
+    };
+    window.addEventListener("focus", checkIfStale);
+    document.addEventListener("visibilitychange", checkIfStale);
+    return () => {
+      updateChecksActive.current = false;
+      window.clearTimeout(updateCheckTimer.current);
+      window.removeEventListener("focus", checkIfStale);
+      document.removeEventListener("visibilitychange", checkIfStale);
+    };
   }, [checkForUpdate]);
 
   const intake = useAccountIntake({
@@ -847,6 +915,7 @@ export default function App() {
             onInstall={() => void installUpdate()}
             onLater={dismissUpdate}
             onRestart={() => void restartAfterUpdate()}
+            notes={updateNotes(pendingUpdate.update, locale.language)}
             pending={pendingUpdate}
             phase={updatePhase}
             progress={updateProgress}

@@ -1,10 +1,12 @@
 import { readFile, writeFile } from "node:fs/promises";
+import { readReleaseNotes } from "./release-notes.mjs";
 
 const paths = {
   tauri: new URL("../src-tauri/tauri.conf.json", import.meta.url),
   package: new URL("../package.json", import.meta.url),
   cargo: new URL("../src-tauri/Cargo.toml", import.meta.url),
   lock: new URL("../src-tauri/Cargo.lock", import.meta.url),
+  notes: new URL("../release-notes.json", import.meta.url),
 };
 const checkOnly = process.argv.includes("--check");
 
@@ -60,5 +62,8 @@ for (const [path, content, label] of expected) {
   }
   await writeFile(path, content);
 }
+
+// The version pull request also writes that release's notes.
+if (checkOnly) await readReleaseNotes(paths.notes, version);
 
 console.log(`${checkOnly ? "Verified" : "Synchronized"} version ${version}.`);
