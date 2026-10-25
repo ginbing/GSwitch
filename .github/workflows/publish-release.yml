@@ -1,0 +1,47 @@
+name: Publish reviewed release
+
+# Publishes one release draft that already passed review, at a planned time.
+# The tag and schedule below name it; once it is published this does nothing.
+on:
+  schedule:
+    # 2026-10-28 10:00 and 14:00 China Standard Time; the second run is a retry.
+    - cron: '0 2 28 10 *'
+    - cron: '0 6 28 10 *'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: gswitch-publish-release
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish reviewed draft
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: v1.0.33
+    steps:
+      - name: Publish the draft once
+        run: |
+          release="$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=30" \
+            --jq "[.[] | select(.tag_name == \"$TAG\")] | if length == 1 then .[0] | \"\(.draft) \(.assets | length) \(.target_commitish)\" else \"missing\" end")"
+          read -r draft assets target <<< "$release"
+          if [[ "$draft" == false ]]; then
+            echo "$TAG is already published."
+            exit 0
+          fi
+          if [[ "$draft" != true ]]; then
+            echo "Expected one $TAG release draft, found: $release" >&2
+            exit 1
+          fi
+          tagged="$(gh api "repos/$GITHUB_REPOSITORY/commits/$TAG" --jq .sha)"
+          if [[ "$assets" != 14 || "$target" != "$tagged" ]]; then
+            echo "The $TAG draft does not match its tag: $assets assets, target $target, tag $tagged" >&2
+            exit 1
+          fi
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+          echo "Published $TAG."
