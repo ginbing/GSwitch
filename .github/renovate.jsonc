@@ -1,6 +1,6 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "description": "Dashboard-gated dependency updates for GSwitch.",
+  "description": "Dashboard-gated dependency updates for GSwitch. Routine updates wait until a release is three days old; security fixes do not.",
   "extends": ["config:recommended", "helpers:pinGitHubActionDigests"],
   "enabledManagers": ["npm", "cargo", "github-actions"],
   "dependencyDashboard": true,
@@ -14,6 +14,8 @@
   "separateMajorMinor": true,
   "separateMultipleMajor": true,
   "labels": ["dependencies"],
+  "minimumReleaseAge": "3 days",
+  "internalChecksFilter": "strict",
   "lockFileMaintenance": {
     "enabled": true
   },
@@ -28,12 +30,6 @@
     "platformAutomerge": false
   },
   "packageRules": [
-    {
-      "description": "Let npm packages age out of the unpublish window before normal updates.",
-      "matchDatasources": ["npm"],
-      "minimumReleaseAge": "3 days",
-      "internalChecksFilter": "strict"
-    },
     {
       "description": "Keep major updates isolated for compatibility review.",
       "matchUpdateTypes": ["major"],
