@@ -383,15 +383,14 @@ fn read_detail(path: &Path, root: &Path) -> Result<Value, String> {
         .map_err(|_| "secure storage key is invalid".to_string())?;
     let nonce = STANDARD
         .decode(envelope.nonce.trim())
-        .map_err(|_| "secure envelope nonce is invalid".to_string())?;
-    if nonce.len() != 12 {
-        return Err("secure envelope nonce is invalid".to_string());
-    }
+        .ok()
+        .and_then(|nonce| Nonce::try_from(nonce.as_slice()).ok())
+        .ok_or_else(|| "secure envelope nonce is invalid".to_string())?;
     let ciphertext = STANDARD
         .decode(envelope.ciphertext.trim())
         .map_err(|_| "secure envelope ciphertext is invalid".to_string())?;
     let plaintext = cipher
-        .decrypt(Nonce::from_slice(&nonce), ciphertext.as_ref())
+        .decrypt(&nonce, ciphertext.as_ref())
         .map_err(|_| "secure envelope could not be decrypted".to_string())?;
     serde_json::from_slice(&plaintext).map_err(|_| "secure detail is not valid JSON".to_string())
 }
@@ -829,7 +828,7 @@ mod tests {
         let cipher = Aes256Gcm::new_from_slice(&key).expect("cipher");
         let ciphertext = cipher
             .encrypt(
-                Nonce::from_slice(&nonce),
+                &Nonce::try_from(nonce.as_slice()).expect("nonce"),
                 serde_json::to_vec(&plaintext).unwrap().as_ref(),
             )
             .expect("encrypt");
@@ -897,6 +896,34 @@ mod tests {
             MigrationCandidateState::Unsupported
         );
         assert!(!cockpit.join(COCKPIT_KEY_NAME).exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_nonce_of_the_wrong_length_is_rejected_without_decrypting() {
+        let root = temp_dir("short-nonce");
+        fs::create_dir_all(&root).expect("root");
+        fs::write(root.join(COCKPIT_KEY_NAME), STANDARD.encode([7u8; 32])).expect("key");
+        let detail_path = root.join("account-1.json");
+        fs::write(
+            &detail_path,
+            serde_json::to_vec(&json!({
+                "version": 1,
+                "kind": "codex",
+                "algorithm": "AES-256-GCM",
+                "key_id": "local-secure-account-storage-v1",
+                "nonce": STANDARD.encode([0u8; 8]),
+                "ciphertext": STANDARD.encode([1u8; 16]),
+                "encrypted_at": 1
+            }))
+            .unwrap(),
+        )
+        .expect("detail");
+
+        assert_eq!(
+            read_detail(&detail_path, &root).unwrap_err(),
+            "secure envelope nonce is invalid"
+        );
         let _ = fs::remove_dir_all(root);
     }
 
