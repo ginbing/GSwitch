@@ -1546,7 +1546,7 @@ dependencies = [
 
 [[package]]
 name = "gswitch"
-version = "1.0.33"
+version = "1.0.34"
 dependencies = [
  "aes-gcm",
  "atomic-write-file",
