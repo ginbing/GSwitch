@@ -122,12 +122,13 @@ Rust and Node versions are owned by `rust-toolchain.toml` and `.node-version`;
 pnpm is owned by `package.json`'s `packageManager`.
 
 Renovate's [Dependency Dashboard](https://github.com/ginbing/GSwitch/issues/110)
-is the intake queue for routine npm, Cargo, and GitHub Actions updates. A
-routine update creates a branch only after dashboard approval and once the
-release is at least three days old; recreating one by hand follows the same
-age rule. Renovate opens security remediation PRs immediately, without
-automerge; GitHub Dependabot Alerts remain a signal but Dependabot Security
-Updates PRs are disabled.
+lists routine npm, Cargo, and GitHub Actions updates. Minor and patch updates
+open a pull request once the release is at least three days old, at most two
+at a time. Major updates and lock file maintenance also wait for dashboard
+approval. Recreating an update by hand follows the same age rule. Renovate
+opens security remediation PRs immediately, without automerge; GitHub
+Dependabot Alerts remain a signal but Dependabot Security Updates PRs are
+disabled.
 
 A Renovate pull request is a proposal, not a merge candidate. Merging it
 directly records the bot as a commit author and lists it as a contributor.
