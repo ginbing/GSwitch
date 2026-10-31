@@ -1,10 +1,10 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "description": "Dashboard-gated dependency updates for GSwitch. Routine updates wait until a release is three days old; security fixes do not.",
+  "description": "Dependency update proposals for GSwitch. Routine updates wait until a release is three days old, and major updates and lock file maintenance also wait for dashboard approval; security fixes do neither.",
   "extends": ["config:recommended", "helpers:pinGitHubActionDigests"],
   "enabledManagers": ["npm", "cargo", "github-actions"],
   "dependencyDashboard": true,
-  "dependencyDashboardApproval": true,
+  "dependencyDashboardApproval": false,
   "dependencyDashboardAutoclose": false,
   "dependencyDashboardLabels": ["dependencies"],
   "automerge": false,
@@ -17,7 +17,8 @@
   "minimumReleaseAge": "3 days",
   "internalChecksFilter": "strict",
   "lockFileMaintenance": {
-    "enabled": true
+    "enabled": true,
+    "dependencyDashboardApproval": true
   },
   "vulnerabilityAlerts": {
     "enabled": true,
@@ -31,9 +32,10 @@
   },
   "packageRules": [
     {
-      "description": "Keep major updates isolated for compatibility review.",
+      "description": "Keep major updates isolated and behind dashboard approval for compatibility review.",
       "matchUpdateTypes": ["major"],
-      "groupName": null
+      "groupName": null,
+      "dependencyDashboardApproval": true
     },
     {
       "description": "Update compatible Tauri Rust and JavaScript packages together.",
