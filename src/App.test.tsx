@@ -1615,7 +1615,7 @@ describe("GSwitch account workspace", () => {
     expect(mocks.refreshAccountQuota).not.toHaveBeenCalled();
   });
 
-  it("shows a direct recovery action with the saved email and workspace", async () => {
+  it("shows a direct recovery action with the saved email and without its workspace", async () => {
     mocks.listAccounts.mockResolvedValue([{ ...chatAccount, sign_in_required: true }]);
     mocks.accountQuota.mockResolvedValue(staleQuota);
     render(<App />);
@@ -1625,7 +1625,41 @@ describe("GSwitch account workspace", () => {
     expect(mocks.startOAuth).toHaveBeenCalledWith("account-1");
     const dialog = await screen.findByRole("dialog", { name: "Sign in again · person@example.com" });
     expect(dialog).toHaveTextContent("Account: person@example.com");
-    expect(dialog).toHaveTextContent("Workspace: Personal");
+    expect(dialog).not.toHaveTextContent("Workspace");
+    expect(dialog).not.toHaveTextContent("Personal");
+  });
+
+  it("reports sign-in copies on their own buttons because the dialog covers the notice", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const writeText = vi.fn().mockResolvedValue(undefined);
+      Object.defineProperty(window.navigator, "clipboard", { configurable: true, value: { writeText } });
+      mocks.listAccounts.mockResolvedValue([{ ...chatAccount, sign_in_required: true }]);
+      render(<App />);
+      const card = (await screen.findByRole("heading", { name: "person@example.com" })).closest("article");
+      await act(async () => { fireEvent.click(within(card as HTMLElement).getByRole("button", { name: "Sign in again" })); });
+      const dialog = await screen.findByRole("dialog", { name: "Sign in again · person@example.com" });
+
+      await act(async () => { fireEvent.click(within(dialog).getByRole("button", { name: "Copy email" })); });
+      expect(writeText).toHaveBeenLastCalledWith("person@example.com");
+      expect(within(dialog).getByRole("button", { name: "Copied" })).toBeInTheDocument();
+      expect(screen.queryByText("Email copied.")).not.toBeInTheDocument();
+      await act(async () => { vi.advanceTimersByTime(2000); });
+      expect(within(dialog).getByRole("button", { name: "Copy email" })).toBeInTheDocument();
+
+      await act(async () => { fireEvent.click(within(dialog).getByRole("button", { name: "Copy link" })); });
+      expect(writeText).toHaveBeenLastCalledWith("https://auth.openai.com/example");
+      expect(within(dialog).getByRole("button", { name: "Copied" })).toBeInTheDocument();
+      await act(async () => { vi.advanceTimersByTime(2000); });
+      expect(within(dialog).getByRole("button", { name: "Copy link" })).toBeInTheDocument();
+
+      writeText.mockRejectedValueOnce(new Error("denied"));
+      await act(async () => { fireEvent.click(within(dialog).getByRole("button", { name: "Copy email" })); });
+      expect(within(dialog).getByRole("button", { name: "Copy failed" })).toBeInTheDocument();
+    } finally {
+      cleanup();
+      vi.useRealTimers();
+    }
   });
 
   it("updates one account quota without reloading the account workspace", async () => {

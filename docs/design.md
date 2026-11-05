@@ -93,7 +93,8 @@ it says nothing was changed, and its recovery dialog offers **Get GSwitch
   the account grid or reload the whole workspace before showing it. Other brief
   success and information messages use one compact floating notice without
   moving the grid and dismiss themselves. Errors stay until dismissed. Focused
-  dialogs cover this notice; recovery and update actions use their own surfaces.
+  dialogs cover this notice; recovery and update actions use their own surfaces,
+  and a copy action inside a dialog reports its result on its own button.
 - Opening a dialog moves keyboard focus inside it. Tab stays inside, and closing
   restores focus to the launching control. A dialog cannot be dismissed while
   its non-cancellable action is in progress.
@@ -153,9 +154,10 @@ it says nothing was changed, and its recovery dialog offers **Get GSwitch
   also keeps **Sign in again** in that menu, so recovery never depends on
   GSwitch diagnosing a failure correctly. After a confirmed authentication
   failure, the card additionally shows **Sign in required** and makes
-  **Sign in again** its primary action. The focused dialog shows the saved
-  email and workspace, offers Copy email, and updates the original record only
-  after verifying the returning identity. A saved login for the current account
+  **Sign in again** its primary action. The focused dialog names the saved
+  email without its workspace, offers Copy email and Copy link as equally
+  visible buttons, and updates the original record only after verifying the
+  returning identity. A saved login for the current account
   that could not be applied shows **Apply**. The current badge identifies the
   selected local Codex account without claiming that its remote sign-in is valid.
 - After Wake, sign-in, or refresh, update affected cards in place. Preserve
