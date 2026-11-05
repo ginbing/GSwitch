@@ -23,6 +23,26 @@ interface OAuthFlow extends OAuthLoginStart {
   status: OAuthLoginStatus;
 }
 
+// A focused dialog covers the floating notice, so a copy reports on its own button.
+function CopyButton({ label, text, t }: { label: string; text: string; t: Translator }) {
+  const [state, setState] = useState<"idle" | "copied" | "failed">("idle");
+  const timer = useRef<number | undefined>(undefined);
+  useEffect(() => () => window.clearTimeout(timer.current), []);
+  const copy = async () => {
+    let outcome: "copied" | "failed" = "copied";
+    try { await navigator.clipboard.writeText(text); } catch { outcome = "failed"; }
+    setState(outcome);
+    window.clearTimeout(timer.current);
+    timer.current = window.setTimeout(() => setState("idle"), 2000);
+  };
+  const Icon = state === "copied" ? Check : state === "failed" ? CircleAlert : Copy;
+  return (
+    <button aria-live="polite" className="button button-secondary copy-button" data-copy={state} onClick={() => void copy()} type="button">
+      <Icon size={16} />{state === "idle" ? label : t(state === "copied" ? "oauth.copied" : "oauth.copyFailed")}
+    </button>
+  );
+}
+
 function fileFilters(t: Translator) { return [{ name: t("file.accountExports"), extensions: ["json"] }]; }
 function migrationSourceLabel(candidate: MigrationCandidate, t: Translator) {
   return candidate.source === "official_codex"
@@ -361,18 +381,6 @@ export function useAccountIntake(input: Input) {
     }
   };
 
-  const copyOAuthUrl = async () => {
-    if (!oauth) {
-      return;
-    }
-    try {
-      await navigator.clipboard.writeText(oauth.auth_url);
-      setNotice({ kind: "success", text: t("notice.oauthCopied") });
-    } catch {
-      setNotice({ kind: "info", text: t("notice.copyManually") });
-    }
-  };
-
   const submitJson = async (event: FormEvent) => {
     event.preventDefault();
     const rawJson = jsonRef.current?.value ?? "";
@@ -415,15 +423,14 @@ export function useAccountIntake(input: Input) {
     catch { setNotice({ kind: "error", text: t("oauth.openFailed") }); }
   };
   return { busy, addMethod, setAddMethod, migrationPreview, migrationRoot, migrationSelection, setMigrationSelection, migrationScanned, oauth, oauthTarget, oauthStatusUnavailable, label, setLabel, jsonRef, apiKeyRef,
-    startOAuth, openAddDialog, closeAddDialog, chooseImportFile, chooseMigrationFolder, scanMigration, confirmMigration, cancelOAuth, retryOAuthSave, copyOAuthUrl, submitJson, submitApiKey, openBrowser };
+    startOAuth, openAddDialog, closeAddDialog, chooseImportFile, chooseMigrationFolder, scanMigration, confirmMigration, cancelOAuth, retryOAuthSave, submitJson, submitApiKey, openBrowser };
 }
 
-export function AccountIntakeDialog({ flow, busy, onCopyEmail, t }: {
-  flow: ReturnType<typeof useAccountIntake>; busy: string | null; onCopyEmail: (account: AccountView) => Promise<void>; t: Translator;
+export function AccountIntakeDialog({ flow, busy, t }: {
+  flow: ReturnType<typeof useAccountIntake>; busy: string | null; t: Translator;
 }) {
   const { addMethod, setAddMethod, migrationPreview, migrationRoot, migrationSelection, setMigrationSelection, migrationScanned, oauth, oauthTarget, oauthStatusUnavailable, label, setLabel, jsonRef, apiKeyRef,
-    startOAuth, openAddDialog, closeAddDialog, chooseImportFile, chooseMigrationFolder, scanMigration, confirmMigration, cancelOAuth, retryOAuthSave, copyOAuthUrl, submitJson, submitApiKey } = flow;
-  const copyAccountEmail = onCopyEmail;
+    startOAuth, openAddDialog, closeAddDialog, chooseImportFile, chooseMigrationFolder, scanMigration, confirmMigration, cancelOAuth, retryOAuthSave, submitJson, submitApiKey } = flow;
   const runningAny = (...keys: string[]) => busy !== null && keys.includes(busy);
   return (
         <Modal dismissible={!runningAny("import", "migration-scan", "migration-import", "oauth", "oauth-cancel", "oauth-retry", "import-json", "import-key")} onClose={closeAddDialog} t={t} title={t(oauthTarget ? "oauth.reauthenticateTitle" : "add.title", oauthTarget ? { name: accountPrimaryName(oauthTarget) } : undefined)} wide>
@@ -517,9 +524,8 @@ export function AccountIntakeDialog({ flow, busy, onCopyEmail, t }: {
           {addMethod === "oauth" && oauth ? (
             <div className="oauth-flow">
               {oauthTarget ? <div className="oauth-target">
-                <span>{t("oauth.targetEmail", { email: oauthTarget.email || accountPrimaryName(oauthTarget) })}</span>
-                {oauthTarget.workspace_name ? <span>{t("oauth.targetWorkspace", { workspace: oauthTarget.workspace_name })}</span> : null}
-                {oauthTarget.email ? <button className="text-button" onClick={() => void copyAccountEmail(oauthTarget)} type="button">{t("account.copyEmail")}</button> : null}
+                <span>{t("oauth.targetEmail")}<strong>{oauthTarget.email || accountPrimaryName(oauthTarget)}</strong></span>
+                {oauthTarget.email ? <CopyButton label={t("account.copyEmail")} t={t} text={oauthTarget.email} /> : null}
               </div> : null}
               {oauth.status.status === "pending" ? (
                 <>
@@ -531,7 +537,7 @@ export function AccountIntakeDialog({ flow, busy, onCopyEmail, t }: {
                   <label className="field-label" htmlFor="oauth-link">{t("oauth.link")}</label>
                   <div className="copy-field">
                     <input id="oauth-link" readOnly value={oauth.auth_url} />
-                    <button aria-label={t("oauth.copyLink")} className="icon-button" onClick={() => void copyOAuthUrl()} type="button"><Copy size={17} /></button>
+                    <CopyButton label={t("oauth.copyLink")} t={t} text={oauth.auth_url} />
                   </div>
                   <div className="modal-actions">
                     <button className="button button-secondary" onClick={() => void cancelOAuth()} type="button">{t("oauth.cancel")}</button>

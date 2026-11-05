@@ -882,7 +882,7 @@ export default function App() {
         </section>
       </div>
 
-      {dialog === "add" ? <AccountIntakeDialog flow={intake} busy={busy} onCopyEmail={copyAccountEmail} t={t} /> : null}
+      {dialog === "add" ? <AccountIntakeDialog flow={intake} busy={busy} t={t} /> : null}
 
       {dialog === "export" ? (
         <Modal
