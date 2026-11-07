@@ -40,21 +40,17 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
-      checks: read
+      contents: read
+      actions: read
     steps:
-      - name: Wait for CI gate on the tagged main commit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .node-version
+      - name: Wait for the main push CI run of the tagged commit
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          while :; do
-            state="$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?check_name=CI%20gate" \
-              --jq '.check_runs | map(select(.app.slug == "github-actions")) | first | "\(.status) \(.conclusion)"')"
-            case "$state" in
-              "completed success") exit 0 ;;
-              completed*) echo "CI gate did not pass on $GITHUB_SHA: $state" >&2; exit 1 ;;
-            esac
-            sleep 30
-          done
+        run: node scripts/main-ci.mjs "$GITHUB_SHA" 55
 
   build:
     needs: prepare

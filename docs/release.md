@@ -139,7 +139,9 @@ merges; do not wait for that commit's CI run first.
 checks the version and release-asset tooling, then builds all release bundles
 locally through the official Tauri CLI while the `main` CI run proves the same
 commit's source checks. It does not attest or draft anything until that
-commit's `CI gate` passes; CodeQL results are not awaited. It smoke checks the
+commit's main push CI run passes; a pull request or weekly schedule run on the
+same commit does not count, the release fails if that run fails or does not
+finish within 55 minutes, and CodeQL results are not awaited. It smoke checks the
 Windows install and uninstall,
 both macOS DMGs and updater archives, and both Linux package payloads before
 signing the final updater bytes. The workflow verifies signatures against the
@@ -256,5 +258,5 @@ changes it releases have merged. The same pull request rewrites
 A product pull request does not touch the version files or the release notes.
 
 After an authorized version change is merged, tag that exact `main` commit as
-the matching `v<version>`. The workflow waits for the commit's `CI gate` and
-then creates a draft; review its assets and notes before publishing it.
+the matching `v<version>`. The workflow waits for the commit's main push CI run
+and then creates a draft; review its assets and notes before publishing it.
