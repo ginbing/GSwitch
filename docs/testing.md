@@ -36,11 +36,12 @@ pnpm tauri build --no-bundle
 ```
 
 Release configuration checks, including the notes in `release-notes.json` for
-the current version, and the release asset and notes tooling:
+the current version, the release asset and notes tooling, and the release's
+choice of main CI run:
 
 ```bash
 pnpm run version:check
-node --test scripts/release-assets.nodecheck.mjs
+node --test scripts/release-assets.nodecheck.mjs scripts/main-ci.nodecheck.mjs
 ```
 
 Linux distribution bundles, on a Linux host with the current Tauri prerequisites:
@@ -100,7 +101,10 @@ Ordinary CI does not create or upload installers. The release workflow builds
 and smoke-checks final platform packages before upload; CI success alone does
 not prove interactive installation, platform signing, notarization, or public
 release readiness. The release workflow does not repeat these source checks:
-it requires `CI gate` to pass on the tagged `main` commit before attestation.
+`scripts/main-ci.mjs` requires the CI run for the main push of the tagged
+commit to pass before attestation. Pull request and weekly schedule runs also
+report `CI gate` on that commit but do not count, since the schedule selects no
+source job.
 
 The CI workflow has read-only repository permissions; the scope job also reads
 Actions run results. A passing CI run proves
