@@ -1,11 +1,9 @@
 {
-  "version": "1.0.35",
+  "version": "1.0.36",
   "en": [
-    "In the Sign in again dialog, Copy email and Copy link are now clear buttons that show the result on the button.",
-    "The Sign in again dialog shows the account in larger, darker text and no longer shows the workspace."
+    "Updated bundled Rust dependencies to address two security advisories."
   ],
   "zh-CN": [
-    "重新登录弹窗的复制邮箱和复制链接改成了醒目的按钮，复制结果直接显示在按钮上。",
-    "重新登录弹窗的账户文字更大更清晰，不再显示工作区。"
+    "更新内置 Rust 依赖，修复两项安全公告涉及的问题。"
   ]
 }
